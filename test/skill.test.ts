@@ -5,7 +5,7 @@
  * own tests in packages/verifier/test.
  */
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Rpc, SolanaRpcApi } from '@solana/kit';
@@ -141,9 +141,14 @@ describe('one swap per wallet', () => {
 
   it('a lock left by a process that died is taken over once stale', () => {
     const dir = tmp();
-    writeFileSync(join(dir, `lock-${W}`), JSON.stringify({ pid: 1, at: 0, token: 'dead' }));
-    expect(() => acquireLock(dir, W, 60_000)).toThrow(/Another swap/);
-    acquireLock(dir, W, 0)();
+    const lock = join(dir, `lock-${W}`);
+    writeFileSync(lock, JSON.stringify({ pid: 1, at: 0, token: 'dead' }));
+    // Two minutes old: fresh for a ten-minute limit, stale for a one-minute one. A file's time is
+    // set, not raced against the clock, since file systems round it.
+    const twoMinutesAgo = (Date.now() - 120_000) / 1000;
+    utimesSync(lock, twoMinutesAgo, twoMinutesAgo);
+    expect(() => acquireLock(dir, W, 600_000)).toThrow(/Another swap/);
+    acquireLock(dir, W, 60_000)();
   });
 });
 
