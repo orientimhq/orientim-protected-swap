@@ -1,10 +1,10 @@
 name: Release
 
-# A tag v<version> builds the skill and publishes it as a release: the zip and SHA256SUMS, the same
+# A published release v<version> gets the skill built and attached: the zip and SHA256SUMS, the same
 # bytes Orientim serves at /skill/ for that version. The tag must name the skill's own version.
 on:
-  push:
-    tags: ['v*']
+  release:
+    types: [published]
 
 permissions:
   contents: write
@@ -26,13 +26,9 @@ jobs:
           version=$(node -p "require('./skills/orientim-protected-swap/package.json').version")
           test "$GITHUB_REF_NAME" = "v$version"
       - run: npm run build
-      - name: Publish
+      - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           cp skills/orientim-protected-swap/SHA256SUMS dist/SHA256SUMS
-          notes=$(awk -v v="## ${GITHUB_REF_NAME#v} " 'index($0, v) == 1 { on = 1; next } /^## / { on = 0 } on' CHANGELOG.md)
-          gh release create "$GITHUB_REF_NAME" dist/orientim-protected-swap.zip dist/SHA256SUMS \
-            --title "Orientim protected swap skill $GITHUB_REF_NAME" --notes "$notes
-
-          Check your copy: \`sha256sum -c SHA256SUMS\` in the unzipped folder, and compare with https://orientim.com/skill/SHA256SUMS."
+          gh release upload "$GITHUB_REF_NAME" dist/orientim-protected-swap.zip dist/SHA256SUMS --clobber
