@@ -29,13 +29,16 @@
  *   (without --slippage-bps the tolerance is automatic: 0.5%, or 3% on a Pump.fun curve; above 5% price impact, refused)
  *   node swap.ts ... --owner <address> --dry-run      prepare and verify only: nothing is signed
  *
- * Unattended, the command line keeps every signed swap in a state directory (ORIENTIM_STATE_DIR or
- * --state, default ./.orientim-state) before finalize, settles what a stopped run left there before it
- * starts another, and holds a lock per wallet so that two workers never swap from it at once.
+ * Unattended, the command line keeps every signed swap in a state directory (the policy's stateDir,
+ * ORIENTIM_STATE_DIR or --state, default ./.orientim-state; absolute with a daily limit) before
+ * finalize, settles what a stopped run left there before it starts another, and holds a lock per
+ * wallet so that two workers never swap from it at once. It exits 0 only for a confirmed swap, 1 when
+ * nothing was swapped, 2 on a usage error, and 3 when something must be settled first.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { chmodSync, closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync } from 'node:fs';
+import { hostname } from 'node:os';
+import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   createKeyPairSignerFromBytes, createSolanaRpc, getCompiledTransactionMessageDecoder, getPublicKeyFromAddress,
@@ -177,7 +180,49 @@ export const ERROR_MEANINGS: Readonly<Record<string, string>> = {
   'bad-request': 'Orientim could not read the request.',
   unauthorized: 'The API key was refused.',
   'not-found': 'Orientim does not know this request.',
+  'wrong-wallet': 'This API key belongs to another wallet: a key prepares swaps for its own wallet only. Use this wallet\'s own key (requestApiKey, or orientim-verify key-challenge then key).',
+  'invalid-ticket': 'Orientim did not issue this ticket to this API key. Finalize with the ticket prepare returned, under the same key.',
+  'not-enabled': 'This deployment does not offer what was asked (such as a v1 transaction). Ask without it.',
+  'bad-quote': 'Orientim could not use the quote it got for this swap, so it built nothing. Try again in a moment.',
+  'verification-failed': "Orientim's own verifier refused the transaction it built, so nothing was built or signed.",
+  'token-data-mismatch': 'The token data Orientim read does not agree with the chain, so it built nothing. Try again in a moment.',
+  'output-account-restricted': "The wallet's account for the output token is frozen or restricted, so this swap cannot be made safely.",
+  'input-account-restricted': "The wallet's account for the input token is frozen or restricted, so this swap cannot be made safely.",
+  internal: 'Orientim failed on its side; this request signed and sent nothing. Try again in a moment.',
 };
+
+/**
+ * The data fields an error may carry to the agent, each with the one shape it may take. Any other
+ * field, or a value of another shape, is dropped: an error's fields reach a model, so a server must
+ * not be able to write prose into them.
+ */
+const DIGITS = /^\d{1,20}$/;
+const ERROR_FIELDS: Readonly<Record<string, (v: unknown) => boolean>> = {
+  newMinOut: v => typeof v === 'string' && DIGITS.test(v),
+  newOutAmount: v => typeof v === 'string' && DIGITS.test(v),
+  gapBps: v => (typeof v === 'string' && DIGITS.test(v)) || (typeof v === 'number' && Number.isInteger(v) && v >= 0),
+  outAmount: v => typeof v === 'string' && DIGITS.test(v),
+  baselineOut: v => typeof v === 'string' && DIGITS.test(v),
+  requiresApproval: v => typeof v === 'boolean',
+  signature: v => typeof v === 'string' && /^[1-9A-HJ-NP-Za-km-z]{64,88}$/.test(v),
+  lastValidBlockHeight: v => typeof v === 'string' && DIGITS.test(v),
+  minimum: v => typeof v === 'string' && (DIGITS.test(v) || /^\d{1,4}\.\d{1,4}\.\d{1,4}$/.test(v)),
+  balanceAtPrepare: v => typeof v === 'string' && DIGITS.test(v),
+  balanceNow: v => typeof v === 'string' && DIGITS.test(v),
+};
+
+/** An error's data fields, as ERROR_FIELDS allows them; nothing else. */
+export function errorDetails(body: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, allowed] of Object.entries(ERROR_FIELDS)) if (Object.hasOwn(body, k) && allowed(body[k])) out[k] = body[k];
+  return out;
+}
+
+/** The fields of a prepare answer the skill reads or shows; any other field is dropped. */
+const PREPARED_FIELDS = [
+  'ticket', 'transaction', 'messageSha256', 'wallet', 'temporaryAuthority', 'version', 'lastValidBlockHeight', 'blocksLeft',
+  'amounts', 'costs', 'notices', 'tokens', 'slippageBps', 'route', 'certificate', 'policy',
+] as const;
 
 const CODE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 /** An error code as data: Orientim's own shape, or `other`. */
@@ -222,8 +267,7 @@ export class OrientimApiError extends Error {
     super(`${Number(e.status) || 0} ${code}: ${ERROR_MEANINGS[code] ?? 'Orientim refused this request; this request signed and sent nothing.'}`);
     this.status = Number(e.status) || 0;
     this.code = code;
-    const { message: _message, code: _code, ...data } = (e.body ?? {}) as Record<string, unknown>;
-    this.body = dataOnly(data) as Record<string, unknown>;
+    this.body = errorDetails((e.body ?? {}) as Record<string, unknown>);
     this.serverMessage = untrustedLine(e.message);
     this.retryAfter = e.retryAfter ?? null;
   }
@@ -236,7 +280,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.3.2';
+export const SKILL_VERSION = '1.4.0';
 
 /** Each call to Orientim ends within `timeoutMs`: an answer that never comes is no answer. */
 async function call<T>(fetchImpl: Fetch, url: string, key: string, body: unknown, timeoutMs = 30_000): Promise<T> {
@@ -694,6 +738,13 @@ export type OwnerPolicy = {
    * share only when its 24 hours pass.
    */
   maxAmountInPerDay?: Record<string, string>;
+  /**
+   * Where swaps, orders and what the last 24 hours spent are kept, as an absolute path. With it,
+   * every command uses this directory and refuses another (`--state`, `ORIENTIM_STATE_DIR`), so a
+   * daily limit counts every swap wherever the command is started from. A policy with a daily limit
+   * and no `stateDir` needs `ORIENTIM_STATE_DIR` as an absolute path.
+   */
+  stateDir?: string;
 };
 
 const DAY_MS = 24 * 60 * 60_000;
@@ -708,7 +759,7 @@ export function loadPolicy(path: string): OwnerPolicy {
   }
   const bad = (why: string) => new Error(`The owner's policy ${path} ${why}. Nothing was prepared.`);
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw bad('is not a JSON object');
-  const known = ['maxAmountIn', 'maxAmountInPerDay'];
+  const known = ['maxAmountIn', 'maxAmountInPerDay', 'stateDir'];
   const unknown = Object.keys(raw).filter(k => !known.includes(k));
   if (unknown.length) throw bad(`has fields it does not know: ${unknown.join(', ')}`);
   const limits = (name: string, value: unknown): Record<string, string> => {
@@ -720,9 +771,41 @@ export function loadPolicy(path: string): OwnerPolicy {
     return value as Record<string, string>;
   };
   const policy = raw as Record<string, unknown>;
+  if (policy.stateDir !== undefined && !(typeof policy.stateDir === 'string' && isAbsolute(policy.stateDir))) {
+    throw bad('needs stateDir as an absolute path');
+  }
   return {
     maxAmountIn: limits('maxAmountIn', policy.maxAmountIn),
     ...(policy.maxAmountInPerDay !== undefined ? { maxAmountInPerDay: limits('maxAmountInPerDay', policy.maxAmountInPerDay) } : {}),
+    ...(policy.stateDir !== undefined ? { stateDir: policy.stateDir as string } : {}),
+  };
+}
+
+/** The default state directory: relative to wherever the command is started, so named only as a last resort. */
+export const DEFAULT_STATE_DIR = '.orientim-state';
+
+/**
+ * The state directory a command uses: the policy's own when it names one (and nothing else is
+ * accepted then), otherwise the one given (`--state`, `ORIENTIM_STATE_DIR`), otherwise
+ * `DEFAULT_STATE_DIR`. A policy with a daily limit needs an absolute directory: a relative one is a
+ * new, empty record for every place the command is started from, and so a new day's allowance.
+ * `warning` says when the directory is the relative default.
+ */
+export function stateDirFor(policy: OwnerPolicy | undefined, given: string | undefined): { dir: string; warning?: string } {
+  if (policy?.stateDir) {
+    if (given !== undefined && resolve(given) !== resolve(policy.stateDir)) {
+      throw new Error(`The owner's policy keeps the state in ${policy.stateDir}; another state directory (${given}) is not used. Nothing was started.`);
+    }
+    return { dir: policy.stateDir };
+  }
+  const dailyLimit = !!policy?.maxAmountInPerDay && Object.keys(policy.maxAmountInPerDay).length > 0;
+  if (dailyLimit && !(given && isAbsolute(given))) {
+    throw new Error("The owner's policy sets a daily limit: name the state directory as an absolute path (the policy's stateDir, or ORIENTIM_STATE_DIR), so that every swap counts against it. Nothing was started.");
+  }
+  if (given) return { dir: given };
+  return {
+    dir: DEFAULT_STATE_DIR,
+    warning: `The state directory is ${resolve(DEFAULT_STATE_DIR)}, relative to where this was started: set ORIENTIM_STATE_DIR to an absolute path that outlives this process, the same for every run of this wallet.`,
   };
 }
 
@@ -743,6 +826,11 @@ export type SpendLog = {
   /** What swaps from `owner` in `mint` signed since `since` (ms) spent, other than `except`. */
   spentSince(owner: string, mint: string, since: number, except?: string): Promise<bigint>;
   recordSpend(entry: { signature: string; owner: string; mint: string; amountIn: string; at: number }): Promise<void>;
+  /**
+   * Takes back a spend recorded for a swap that was then refused before it was kept (its order was
+   * taken by another run, or it could not be kept): it was never sent, so it does not count.
+   */
+  forgetSpend?(signature: string): Promise<void>;
 };
 
 /**
@@ -775,23 +863,58 @@ export type PendingStore = {
   list(): Promise<Signed[]>;
 };
 
+/** An order recorded in the book, found by its transaction's signature (`orderBySignature`). */
+export type FoundOrder = { id: string; record: OrderRecord; recordedAt: number };
+
+/**
+ * Flushes a directory's entries to disk, so that a file just created or renamed into it survives a
+ * power cut, not only a crash of the process. Where a platform cannot open a directory, a no-op.
+ */
+function syncDir(dir: string): void {
+  let fd: number;
+  try {
+    fd = openSync(dir, 'r');
+  } catch {
+    return;
+  }
+  try {
+    fsyncSync(fd);
+  } catch {
+    // Not supported for directories here: the file itself was flushed.
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** The state directory and its files are the owner's alone: they name the wallet, its orders and its swaps. */
+const DIR_MODE = 0o700;
+const FILE_MODE = 0o600;
+
 /**
  * Pending swaps as files in `dir`, one per signature, each written to a temporary file, flushed to
- * disk and renamed into place, so a record is either whole or absent.
+ * disk and renamed into place, so a record is either whole or absent. The directory is made readable
+ * by its owner only.
  */
-export function createFileStore(dir: string): PendingStore & OrderBook & SpendLog {
-  mkdirSync(dir, { recursive: true });
+export function createFileStore(dir: string): PendingStore & OrderBook & SpendLog & { orderBySignature(signature: string): Promise<FoundOrder | null> } {
+  mkdirSync(dir, { recursive: true, mode: DIR_MODE });
   const file = (signature: string) => join(dir, `pending-${signature}.json`);
   // An id is the caller's text: its hash names the file, and the record keeps the id itself.
   const orderFile = (id: string) => join(dir, `order-${createHash('sha256').update(id).digest('hex').slice(0, 40)}.json`);
   const writeDurably = (path: string, text: string, flag: 'w' | 'wx') => {
-    const fd = openSync(path, flag);
+    const fd = openSync(path, flag, FILE_MODE);
     try {
       writeSync(fd, text);
       fsyncSync(fd);
     } finally {
       closeSync(fd);
     }
+    // A file made by an earlier version, or under another umask, is made the owner's alone too.
+    if (flag === 'w') chmodSync(path, FILE_MODE);
+  };
+  /** Renames a flushed temporary file into place, and flushes the directory that now names it. */
+  const commit = (temporary: string, path: string) => {
+    renameSync(temporary, path);
+    syncDir(dir);
   };
   const readOrder = (id: string): OrderRecord | null => {
     try {
@@ -804,7 +927,7 @@ export function createFileStore(dir: string): PendingStore & OrderBook & SpendLo
   const writeOrder = (id: string, record: OrderRecord) => {
     const temporary = `${orderFile(id)}.tmp`;
     writeDurably(temporary, JSON.stringify({ id, ...record }), 'w');
-    renameSync(temporary, orderFile(id));
+    commit(temporary, orderFile(id));
   };
   return {
     async order(id) {
@@ -816,10 +939,11 @@ export function createFileStore(dir: string): PendingStore & OrderBook & SpendLo
     async claimOrder(id, record) {
       try {
         writeDurably(orderFile(id), JSON.stringify({ id, ...record }), 'wx');
-        return true;
       } catch {
         return false;
       }
+      syncDir(dir);
+      return true;
     },
     async reclaimOrder(id, prior, record) {
       // One retry per earlier attempt: the worker that creates this marker first takes the order.
@@ -835,25 +959,25 @@ export function createFileStore(dir: string): PendingStore & OrderBook & SpendLo
     },
     async put(s) {
       const temporary = `${file(s.signature)}.tmp`;
-      const fd = openSync(temporary, 'w');
-      try {
-        writeSync(fd, JSON.stringify({
-          ...s, lastValidBlockHeight: s.lastValidBlockHeight.toString(),
-          ...(s.signedHeight !== undefined ? { signedHeight: s.signedHeight.toString() } : {}),
-        }));
-        fsyncSync(fd);
-      } finally {
-        closeSync(fd);
-      }
-      renameSync(temporary, file(s.signature));
+      writeDurably(temporary, JSON.stringify({
+        ...s, lastValidBlockHeight: s.lastValidBlockHeight.toString(),
+        ...(s.signedHeight !== undefined ? { signedHeight: s.signedHeight.toString() } : {}),
+      }), 'w');
+      commit(temporary, file(s.signature));
     },
     async remove(signature) {
       rmSync(file(signature), { force: true });
     },
     async spentSince(owner, mint, since, except) {
       let spent = 0n;
+      // A spend older than two days counts for no daily limit: it is removed, so the log stays small.
+      const expired = Math.min(since, Date.now() - 2 * DAY_MS);
       for (const f of readdirSync(dir).filter(f => f.startsWith('spend-') && f.endsWith('.json'))) {
         const s = JSON.parse(readFileSync(join(dir, f), 'utf8')) as { signature: string; owner: string; mint: string; amountIn: string; at: number };
+        if (s.at < expired) {
+          rmSync(join(dir, f), { force: true });
+          continue;
+        }
         if (s.owner === owner && s.mint === mint && s.at >= since && s.signature !== except) spent += BigInt(s.amountIn);
       }
       return spent;
@@ -861,7 +985,22 @@ export function createFileStore(dir: string): PendingStore & OrderBook & SpendLo
     async recordSpend(entry) {
       const path = join(dir, `spend-${entry.signature}.json`);
       writeDurably(`${path}.tmp`, JSON.stringify(entry), 'w');
-      renameSync(`${path}.tmp`, path);
+      commit(`${path}.tmp`, path);
+    },
+    async forgetSpend(signature) {
+      rmSync(join(dir, `spend-${signature}.json`), { force: true });
+    },
+    async orderBySignature(signature) {
+      for (const f of readdirSync(dir).filter(f => /^order-[0-9a-f]{40}\.json$/.test(f))) {
+        try {
+          const path = join(dir, f);
+          const { id, signature: sig, state } = JSON.parse(readFileSync(path, 'utf8')) as OrderRecord & { id: string };
+          if (sig === signature && typeof id === 'string') return { id, record: { signature: sig, state }, recordedAt: statSync(path).mtimeMs };
+        } catch {
+          // A file that is not an order record names no order.
+        }
+      }
+      return null;
     },
     async list() {
       return readdirSync(dir).filter(f => f.startsWith('pending-') && f.endsWith('.json')).map(f => {
@@ -933,31 +1072,79 @@ export async function resolvePending(
   return { signature, outcome: settledAs, by: onChain ? 'chain' : 'you' };
 }
 
+/** Another run from the wallet holds its lock: it may be sending a swap now. */
+export class LockBusyError extends Error {
+  readonly path: string;
+  constructor(owner: string, path: string) {
+    super(`Another swap from ${owner} is running (lock ${path}); nothing was started.`);
+    this.path = path;
+  }
+}
+
+/** The locks this process holds, released when it is told to stop (`releaseHeldLocks`). */
+const heldLocks = new Set<() => void>();
+
+/**
+ * Releases every lock this process holds. For a process told to stop (SIGTERM, SIGINT): what it
+ * kept before finalize is on disk, and the next run settles it, instead of waiting for the lock to
+ * go stale.
+ */
+export function releaseHeldLocks(): void {
+  for (const release of [...heldLocks]) release();
+}
+
+/** Is the process that wrote a lock on this machine gone? Only a process on this host can be asked. */
+function holderIsGone(lock: { pid?: unknown; host?: unknown } | null): boolean {
+  if (!lock || lock.host !== hostname() || !Number.isInteger(lock.pid) || (lock.pid as number) <= 0) return false;
+  try {
+    process.kill(lock.pid as number, 0);
+    return false;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'ESRCH';
+  }
+}
+
 /**
  * One worker per wallet at a time, across processes sharing `dir`: the lock file is created only if
- * it does not exist, and names its holder with a token of its own. A lock older than `staleMs` is
- * left by a process that died: it is moved aside, which only one process can do, and only if it is
- * still the stale lock that was judged, then taken. The release deletes the lock only while it still
- * carries this holder's token, so a worker whose lock was taken over never removes its successor's.
- * Keep `staleMs` above the longest swap (`maxWaitMs` and its requests).
- * Workers on other machines need a shared store with a lock of its own.
+ * it does not exist, and names its holder (a token of its own, its process and host). A lock whose
+ * process is gone from this host, or one older than `staleMs`, is left by a process that died: it is
+ * moved aside, which only one process can do, and only if it is still the lock that was judged, then
+ * taken. The release deletes the lock only while it still carries this holder's token, so a worker
+ * whose lock was taken over never removes its successor's. Keep `staleMs` above the longest swap
+ * (`maxWaitMs` and its requests). Workers on other machines need a shared store with a lock of its own.
+ *
+ * `owner` must be a wallet address: it names the lock file, so nothing else may reach the path.
+ * Throws `LockBusyError` when another run holds the lock, and a plain error when the directory
+ * cannot be written.
  */
 export function acquireLock(dir: string, owner: string, staleMs = 10 * 60_000): () => void {
-  mkdirSync(dir, { recursive: true });
+  if (typeof owner !== 'string' || !BASE58.test(owner)) {
+    throw new Error(`A lock is taken for a wallet address, not ${JSON.stringify(String(owner).slice(0, 60))}. Nothing was started.`);
+  }
+  mkdirSync(dir, { recursive: true, mode: DIR_MODE });
   const path = join(dir, `lock-${owner}`);
   const token = randomUUID();
-  const busy = () => new Error(`Another swap from ${owner} is running (lock ${path}); nothing was started.`);
-  const tokenAt = (file: string): string | null => {
+  const busy = () => new LockBusyError(owner, path);
+  const unwritable = (e: unknown) =>
+    new Error(`The state directory ${dir} cannot be written (${(e as NodeJS.ErrnoException).code ?? (e as Error).message}); nothing was started. Fix it first.`);
+  const lockAt = (file: string): { token?: unknown; pid?: unknown; host?: unknown } | null => {
     try {
-      return (JSON.parse(readFileSync(file, 'utf8')) as { token?: string }).token ?? null;
+      // Only a regular file is a lock; a link or a directory is never followed, moved or removed.
+      if (!lstatSync(file).isFile()) return null;
+      const json = JSON.parse(readFileSync(file, 'utf8')) as unknown;
+      return json && typeof json === 'object' ? json as { token?: unknown } : null;
     } catch {
       return null;
     }
   };
+  const tokenAt = (file: string): string | null => {
+    const t = lockAt(file)?.token;
+    return typeof t === 'string' ? t : null;
+  };
   const take = () => {
-    const fd = openSync(path, 'wx');
+    const fd = openSync(path, 'wx', FILE_MODE);
     try {
-      writeSync(fd, JSON.stringify({ pid: process.pid, at: Date.now(), token }));
+      writeSync(fd, JSON.stringify({ pid: process.pid, host: hostname(), at: Date.now(), token }));
       fsyncSync(fd);
     } finally {
       closeSync(fd);
@@ -965,13 +1152,18 @@ export function acquireLock(dir: string, owner: string, staleMs = 10 * 60_000): 
   };
   try {
     take();
-  } catch {
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw unwritable(e);
     let judged: string | null;
     try {
-      if (Date.now() - statSync(path).mtimeMs < staleMs) throw busy();
+      const info = lstatSync(path);
+      // Something other than a lock file under a lock's name is never taken over.
+      if (!info.isFile()) throw busy();
+      const lock = lockAt(path);
+      if (Date.now() - info.mtimeMs < staleMs && !holderIsGone(lock)) throw busy();
       judged = tokenAt(path);
     } catch (e) {
-      if (e instanceof Error && e.message.startsWith('Another swap')) throw e;
+      if (e instanceof LockBusyError) throw e;
       throw busy(); // gone or unreadable in between: another worker is at it
     }
     const aside = `${path}.stale-${token}`;
@@ -992,13 +1184,17 @@ export function acquireLock(dir: string, owner: string, staleMs = 10 * 60_000): 
     rmSync(aside, { force: true });
     try {
       take();
-    } catch {
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw unwritable(e);
       throw busy();
     }
   }
-  return () => {
+  const release = () => {
+    heldLocks.delete(release);
     if (tokenAt(path) === token) rmSync(path, { force: true });
   };
+  heldLocks.add(release);
+  return release;
 }
 
 /**
@@ -1075,15 +1271,42 @@ export async function prepareChecked(args: {
     ...(intent.version !== undefined ? { version: intent.version } : {}),
   }, args.requestTimeoutMs);
   // A fee in SOL from the wallet: held to a price of your own, asked of Jupiter here.
-  if ((prepared.policy as { feeSide?: unknown }).feeSide === 'sol' && intent.maxSolFeeLamports === undefined) {
-    intent.maxSolFeeLamports = await ownSolFeeLimit({
-      inputMint: intent.inputMint, amountIn: intent.amountIn, taker: owner, maxFeeBps: intent.maxFeeBps, apiKey: args.jupiterApiKey, fetchImpl,
-    });
-  }
+  await holdSolFee(intent, prepared, { fetchImpl, jupiterApiKey: args.jupiterApiKey });
   const problems = await checkPrepared(prepared, intent, args.rpc, { requestTimeoutMs: args.requestTimeoutMs });
   if (problems.length) throw new Error(`Not signing: ${problems.join('; ')}`);
-  // Checked: from here on only its data travels, never prose a server slipped into it.
-  return { prepared: dataOnly(prepared) as Prepared, intent, notices: await tokenNotices(args.rpc, [intent.inputMint, intent.outputMint], args.requestTimeoutMs ?? 10_000) };
+  return { prepared: preparedData(prepared), intent, notices: await tokenNotices(args.rpc, [intent.inputMint, intent.outputMint], args.requestTimeoutMs ?? 10_000) };
+}
+
+/**
+ * A checked answer as it travels on: only the fields the skill reads, and only their data, never
+ * prose a server slipped into them. The transaction itself was decoded and checked, so it is kept
+ * whole whatever its length (a v1 transaction may run past `dataOnly`'s longest string).
+ */
+export function preparedData(prepared: Prepared): Prepared {
+  const known: Record<string, unknown> = {};
+  for (const k of PREPARED_FIELDS) if (Object.hasOwn(prepared, k)) known[k] = (prepared as Record<string, unknown>)[k];
+  return { ...(dataOnly(known) as Prepared), transaction: prepared.transaction };
+}
+
+/**
+ * Orientim's fee when it is paid in SOL from the wallet, held to a price of your own: always the
+ * limit `ownSolFeeLimit` asks Jupiter for (0.3% of what the amount is worth in SOL, and 2%), or a
+ * lower one the intent sets. An intent cannot raise it: a limit it names above that price is
+ * lowered to it, and one that is not a whole number of lamports is refused. Sets
+ * `intent.maxSolFeeLamports`; nothing for a fee paid in either token.
+ */
+export async function holdSolFee(
+  intent: Intent, prepared: Pick<Prepared, 'policy'>, deps: { fetchImpl?: Fetch; jupiterApiKey?: string },
+): Promise<void> {
+  if ((prepared.policy as { feeSide?: unknown } | undefined)?.feeSide !== 'sol') return;
+  const given = intent.maxSolFeeLamports;
+  if (given !== undefined && !(Number.isSafeInteger(given) && given >= 0)) {
+    throw new Error('maxSolFeeLamports must be a whole number of lamports. Nothing was signed.');
+  }
+  const own = await ownSolFeeLimit({
+    inputMint: intent.inputMint, amountIn: intent.amountIn, taker: intent.owner, maxFeeBps: intent.maxFeeBps, apiKey: deps.jupiterApiKey, fetchImpl: deps.fetchImpl,
+  });
+  intent.maxSolFeeLamports = given === undefined ? own : Math.min(own, given);
 }
 
 type TokenBalance = { accountIndex: number; mint: string; owner?: string; uiTokenAmount: { amount: string } };
@@ -1178,6 +1401,12 @@ export async function finalizeSigned(args: {
   const stated = BigInt(prepared.lastValidBlockHeight);
   if (stated - height < MIN_BLOCKS_TO_FINALIZE) {
     throw new Error(`Not finalizing: only ${stated - height} blocks are left before this swap expires, too few to land. This call sent nothing; prepare it again (a swap an earlier call finalized is settled with resumeSigned or recoverPending, not here).`);
+  }
+  // The stated lifetime ends further past your RPC's height than a blockhash lives, with the margin:
+  // your RPC trails the network by more than LAG_BLOCKS (the last block kept below would come too
+  // early, and a swap that can still land could be taken for expired), or the answer overstates it.
+  if (stated - height > 150n + LAG_BLOCKS) {
+    throw new Error(`Not finalizing: the transaction's stated lifetime ends ${stated - height} blocks past your RPC's height, more blocks than any blockhash lives (150, and ${LAG_BLOCKS} of margin). Your RPC trails the network, or the answer overstates the lifetime. This call sent nothing; use an RPC that keeps up, then prepare again.`);
   }
   // The last block it can land in, on your own clock: its blockhash is older than this height and
   // lives 150 blocks, so a server that states less cannot end the wait while it could still land.
@@ -1308,26 +1537,34 @@ export async function protectedSwap(args: {
       const kept: Signed = { ...signed, ...(id ? { intentId: id } : {}) };
       // Counted again with what the last 24 hours spent, and recorded before the swap is kept: once
       // kept it may be sent, so it counts whatever its outcome.
+      let counted = false;
       if (args.policy) {
         await checkPolicy(args.policy, spend, args.spends, signed.signature);
         await args.spends?.recordSpend({ signature: signed.signature, owner, mint: spend.inputMint, amountIn: spend.amountIn, at: Date.now() });
+        counted = !!args.spends;
       }
-      if (args.pending) {
-        const others = await pendingFor(args.pending, owner, signed.signature);
-        if (others.length) throw new PendingSwapError(others);
-        await args.pending.put(kept);
-        const raced = await pendingFor(args.pending, owner, signed.signature);
-        if (raced.length) {
-          await args.pending.remove(signed.signature);
-          throw new PendingSwapError(raced);
+      try {
+        if (args.pending) {
+          const others = await pendingFor(args.pending, owner, signed.signature);
+          if (others.length) throw new PendingSwapError(others);
+          await args.pending.put(kept);
+          const raced = await pendingFor(args.pending, owner, signed.signature);
+          if (raced.length) {
+            await args.pending.remove(signed.signature);
+            throw new PendingSwapError(raced);
+          }
         }
-      }
-      if (orders) {
-        const record: OrderRecord = { signature: signed.signature, state: 'pending' };
-        if (!await takeOrder(orders, id!, prior, record)) {
-          await args.pending?.remove(signed.signature);
-          throw new OrientimOrderError(id!, (await orders.order(id!)) ?? record);
+        if (orders) {
+          const record: OrderRecord = { signature: signed.signature, state: 'pending' };
+          if (!await takeOrder(orders, id!, prior, record)) {
+            await args.pending?.remove(signed.signature);
+            throw new OrientimOrderError(id!, (await orders.order(id!)) ?? record);
+          }
         }
+      } catch (e) {
+        // Refused before it was kept: never sent, so it does not count against the day.
+        if (counted) await args.spends?.forgetSpend?.(signed.signature).catch(() => undefined);
+        throw e;
       }
       await args.onSigned?.(kept);
     },
@@ -1378,9 +1615,14 @@ async function main() {
   if (!jupiterApiKey) console.error('JUPITER_API_KEY is not set: Jupiter throttles keyless calls, and your own floor may not be priced.');
   // Your own RPC: the verification is worth what the chain state it reads is worth.
   const rpc = createSolanaRpc(need('SOLANA_RPC_URL'));
+  // The owner's limits, read first: a policy that cannot be read stops everything, the dry run included.
+  const policy = process.env.ORIENTIM_POLICY ? loadPolicy(process.env.ORIENTIM_POLICY) : undefined;
 
   if (process.argv.includes('--dry-run')) {
     const owner = flag('owner') ?? (console.error('--dry-run needs --owner <address>.'), process.exit(2));
+    // A swap the owner's policy refuses is refused here too, before anything is prepared: its mint
+    // and its amount. The daily limit is counted by the swap itself, against what the day spent.
+    if (policy) await checkPolicy({ maxAmountIn: policy.maxAmountIn }, { owner, inputMint, amountIn });
     const own = await ownFloor({ ...intent, owner }, { rpc, jupiterApiKey });
     const minOut = own.minOut;
     const prepared = await call<Prepared>(fetch, `${apiUrl}/api/v1/prepare`, apiKey, {
@@ -1388,10 +1630,9 @@ async function main() {
       ...(intent.acceptCostBps ? { acceptCostBps: intent.acceptCostBps } : {}), ...(intent.version ? { version: 1 } : {}),
       ...(intent.slippageBps !== undefined ? { slippageBps: intent.slippageBps } : {}),
     });
-    const maxSolFeeLamports = (prepared.policy as { feeSide?: unknown }).feeSide === 'sol'
-      ? await ownSolFeeLimit({ inputMint, amountIn, taker: owner, maxFeeBps: intent.maxFeeBps, apiKey: jupiterApiKey })
-      : undefined;
-    const problems = await checkPrepared(prepared, { ...intent, owner, minOut, maxSolFeeLamports }, rpc);
+    const checked: Intent = { ...intent, owner, minOut };
+    await holdSolFee(checked, prepared, { jupiterApiKey });
+    const problems = await checkPrepared(prepared, checked, rpc);
     console.log(JSON.stringify({
       yourFloor: minOut, priceImpactBps: own.priceImpactBps, amounts: prepared.amounts, costs: prepared.costs, blocksLeft: prepared.blocksLeft, problems,
       notices: await tokenNotices(rpc, [inputMint, outputMint]),
@@ -1406,12 +1647,20 @@ async function main() {
     console.error('Give the order an id: --id <order id>, the same on every retry of this order, so that it is never swapped twice. Nothing was started.');
     process.exit(2);
   }
-  // The owner's limits, read before the key: a policy that cannot be read stops everything.
-  const policy = process.env.ORIENTIM_POLICY ? loadPolicy(process.env.ORIENTIM_POLICY) : undefined;
-  const wallet = await createKeyPairSignerFromBytes(new Uint8Array(JSON.parse(readFileSync(need('ORIENTIM_WALLET_KEYPAIR'), 'utf8'))));
-  const stateDir = flag('state') ?? process.env.ORIENTIM_STATE_DIR ?? '.orientim-state';
+  const wallet = await createKeyPairSignerFromBytes(readKeypair(need('ORIENTIM_WALLET_KEYPAIR')));
+  const { dir: stateDir, warning } = stateDirFor(policy, flag('state') ?? (process.env.ORIENTIM_STATE_DIR || undefined));
+  if (warning) console.error(warning);
   const store = createFileStore(stateDir);
-  const release = acquireLock(stateDir, wallet.address);
+  let release: () => void;
+  try {
+    release = acquireLock(stateDir, wallet.address);
+  } catch (e) {
+    if (!(e instanceof LockBusyError)) throw e;
+    // Another run from this wallet is at work, or was stopped moments ago: it may have sent a swap.
+    console.error(`${e.message} It may be sending a swap now: wait for it, then run this again with the same --id (never a new one). A run that was stopped is settled by the next one.`);
+    process.exitCode = 3;
+    return;
+  }
   try {
     // What a stopped run left is settled first; while any outcome is unknown, no new swap starts.
     const { settled, unknown, bookkeepingErrors } = await recoverPending(store, rpc, { orders: store });
@@ -1420,7 +1669,7 @@ async function main() {
     if (unknown.length || bookkeepingErrors.length) {
       if (unknown.length) {
         console.error(`The outcome of an earlier swap is still unknown: ${unknown.join(', ')}. Check it before swapping again; nothing new was started. `
-          + 'If the network can no longer prove it, look it up in a full history (an explorer), then settle it with `orientim-verify resolve`.');
+          + `If the network can no longer prove it, look it up in a full history (an explorer), then settle it with \`orientim-verify resolve\` (ORIENTIM_STATE_DIR=${resolve(stateDir)}).`);
       }
       process.exitCode = 3;
       return;
@@ -1438,17 +1687,56 @@ async function main() {
       ...(result.received ? { received: result.received } : {}), ...(result.notices.length ? { notices: result.notices } : {}),
       ...(result.bookkeepingError ? { bookkeepingError: result.bookkeepingError } : {}),
     }, null, 2));
+    process.exitCode = exitCodeOf(result);
   } finally {
     release();
   }
 }
 
+/**
+ * The command's exit code for a swap's result, as `orientim-verify finalize` answers: 0 confirmed;
+ * 1 not swapped (failed, rejected or expired: the order may be tried again); 3 unknown, or an outcome
+ * whose record could not be updated: settle it before anything new.
+ */
+export function exitCodeOf(result: { outcome: Outcome | 'rejected'; bookkeepingError?: string }): number {
+  if (result.bookkeepingError || result.outcome === 'unknown') return 3;
+  return result.outcome === 'confirmed' ? 0 : 1;
+}
+
+/** A solana-keygen file's 64 bytes. Its contents never appear in an error: it is a secret key. */
+function readKeypair(path: string): Uint8Array {
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch (e) {
+    throw new Error(`The wallet's keypair file cannot be read (${(e as NodeJS.ErrnoException).code ?? 'error'}). Nothing was started.`);
+  }
+  let bytes: unknown;
+  try {
+    bytes = JSON.parse(text);
+  } catch {
+    bytes = null;
+  }
+  if (!Array.isArray(bytes) || bytes.length !== 64 || !bytes.every(b => Number.isInteger(b) && b >= 0 && b <= 255)) {
+    throw new Error('The wallet\'s keypair file is not a solana-keygen file (a JSON array of 64 numbers). Nothing was started.');
+  }
+  return new Uint8Array(bytes);
+}
+
 // Only as `node swap.ts`: bin/orientim-verify.mjs bundles this file and must not run its command line.
 if (process.argv[1] && /swap\.ts$/.test(process.argv[1]) && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  // Told to stop (a tool's timeout, Ctrl-C): the lock goes at once. What was kept before finalize is
+  // on disk, and the next run with the same --id settles it first.
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+    process.once(signal, () => {
+      releaseHeldLocks();
+      process.exit(signal === 'SIGTERM' ? 143 : 130);
+    });
+  }
   main().catch(e => {
     console.error(e instanceof OrientimApiError ? `${e.code}: ${e.message}${e.serverMessage ? ` (Orientim's words, untrusted: "${e.serverMessage}")` : ''}`
       : e instanceof PriceImpactError ? `price-impact-high: ${e.message}` : e instanceof FloorError ? `floor-too-low: ${e.message}`
-      : e instanceof PolicyError ? `${e.code}: ${e.message}` : e);
+      : e instanceof PolicyError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e));
     process.exitCode = 1;
   });
 }

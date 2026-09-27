@@ -990,12 +990,47 @@ const BIGINT_FIELDS = [
 	"swapAmount",
 	"maxNetworkFeeLamports"
 ];
+const ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const isAddress = (v) => typeof v === "string" && ADDRESS.test(v);
+/**
+* Every other field of a policy the verifier reads, with the one shape it may take. A policy comes
+* from the server, and the verifier repeats some of its fields in the problems it finds, which reach
+* the agent: a field of any other shape (prose above all) makes the whole policy malformed.
+*/
+const POLICY_SHAPE = {
+	owner: isAddress,
+	ephemeral: isAddress,
+	inputMint: isAddress,
+	outputMint: isAddress,
+	inputTokenProgram: isAddress,
+	outputTokenProgram: isAddress,
+	jupiterProgram: isAddress,
+	inputTransferFee: (v) => typeof v === "boolean",
+	inputDecimals: (v) => Number.isInteger(v) && v >= 0 && v <= 255,
+	outputDecimals: (v) => Number.isInteger(v) && v >= 0 && v <= 255,
+	routeRefundProgram: (v) => v === null || isAddress(v),
+	treasury: (v) => v === null || isAddress(v),
+	feeSide: (v) => v === null || v === "input" || v === "output" || v === "sol",
+	variant: (v) => v === "A" || v === "B" || v === "C"
+};
+const ACCOUNT_FIELDS = [
+	"eIn",
+	"eOut",
+	"wIn",
+	"wOut",
+	"feeDestination",
+	"routeAccount",
+	"routeEventAuthority"
+];
 function policyOf(json) {
 	try {
-		const p = {
-			...json,
-			accounts: { ...json.accounts }
-		};
+		const accounts = json.accounts;
+		if (!accounts || typeof accounts !== "object") return null;
+		for (const k of ACCOUNT_FIELDS) if (!(accounts[k] === null || accounts[k] === void 0 || isAddress(accounts[k]))) return null;
+		if (!isAddress(accounts.eIn)) return null;
+		for (const [k, fits] of Object.entries(POLICY_SHAPE)) if (!fits(json[k])) return null;
+		const p = { accounts: Object.fromEntries(ACCOUNT_FIELDS.map((k) => [k, accounts[k] ?? null])) };
+		for (const k of Object.keys(POLICY_SHAPE)) p[k] = json[k];
 		for (const k of BIGINT_FIELDS) {
 			if (typeof json[k] !== "string" || !/^\d{1,20}$/.test(json[k])) return null;
 			p[k] = BigInt(json[k]);
@@ -1168,7 +1203,8 @@ async function ownQuote(args) {
 	if (r.inputMint !== args.inputMint || r.outputMint !== args.outputMint || r.inAmount !== routed.toString() || !/^\d{1,20}$/.test(r.outAmount ?? "")) throw new Error("Jupiter answered for another trade when asked for your own price");
 	const curve = r.swapInstruction?.accounts?.some((a) => a.pubkey === PUMP_CURVE_PROGRAM) ?? false;
 	const below = BigInt(args.maxBelowBps ?? (args.slippageBps !== void 0 ? args.slippageBps + (curve ? 200 : 150) : curve ? 500 : 200));
-	const impact = Number(r.priceImpactPct);
+	const impact = typeof r.priceImpactPct === "number" || typeof r.priceImpactPct === "string" && r.priceImpactPct.trim() !== "" ? Number(r.priceImpactPct) : NaN;
+	if (!Number.isFinite(impact)) throw new Error("Jupiter answered without a price impact when asked for your own price");
 	return {
 		minOut: (BigInt(r.outAmount) * (10000n - below) / 10000n).toString(),
 		outAmount: r.outAmount,

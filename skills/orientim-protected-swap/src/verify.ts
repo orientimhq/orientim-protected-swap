@@ -117,10 +117,36 @@ export type PreparedSwap = {
 };
 
 const BIGINT_FIELDS = ['minOut', 'takerRent', 'routeRefund', 'amountIn', 'feeBps', 'fee', 'swapAmount', 'maxNetworkFeeLamports'] as const;
+const ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const isAddress = (v: unknown) => typeof v === 'string' && ADDRESS.test(v);
+/**
+ * Every other field of a policy the verifier reads, with the one shape it may take. A policy comes
+ * from the server, and the verifier repeats some of its fields in the problems it finds, which reach
+ * the agent: a field of any other shape (prose above all) makes the whole policy malformed.
+ */
+const POLICY_SHAPE: Readonly<Record<string, (v: unknown) => boolean>> = {
+  owner: isAddress, ephemeral: isAddress, inputMint: isAddress, outputMint: isAddress,
+  inputTokenProgram: isAddress, outputTokenProgram: isAddress, jupiterProgram: isAddress,
+  inputTransferFee: v => typeof v === 'boolean',
+  inputDecimals: v => Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 255,
+  outputDecimals: v => Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 255,
+  routeRefundProgram: v => v === null || isAddress(v),
+  treasury: v => v === null || isAddress(v),
+  feeSide: v => v === null || v === 'input' || v === 'output' || v === 'sol',
+  variant: v => v === 'A' || v === 'B' || v === 'C',
+};
+const ACCOUNT_FIELDS = ['eIn', 'eOut', 'wIn', 'wOut', 'feeDestination', 'routeAccount', 'routeEventAuthority'] as const;
 
 function policyOf(json: Record<string, unknown>): Policy | null {
   try {
-    const p: Record<string, unknown> = { ...json, accounts: { ...(json.accounts as object) } };
+    const accounts = json.accounts as Record<string, unknown> | null | undefined;
+    if (!accounts || typeof accounts !== 'object') return null;
+    for (const k of ACCOUNT_FIELDS) if (!(accounts[k] === null || accounts[k] === undefined || isAddress(accounts[k]))) return null;
+    if (!isAddress(accounts.eIn)) return null;
+    for (const [k, fits] of Object.entries(POLICY_SHAPE)) if (!fits(json[k])) return null;
+    // Only the fields named here reach the verifier.
+    const p: Record<string, unknown> = { accounts: Object.fromEntries(ACCOUNT_FIELDS.map(k => [k, accounts[k] ?? null])) };
+    for (const k of Object.keys(POLICY_SHAPE)) p[k] = json[k];
     for (const k of BIGINT_FIELDS) {
       if (typeof json[k] !== 'string' || !/^\d{1,20}$/.test(json[k] as string)) return null;
       p[k] = BigInt(json[k] as string);
@@ -347,7 +373,11 @@ export async function ownQuote(args: OwnQuoteArgs): Promise<{ minOut: string; ou
   }
   const curve = r.swapInstruction?.accounts?.some(a => a.pubkey === PUMP_CURVE_PROGRAM) ?? false;
   const below = BigInt(args.maxBelowBps ?? (args.slippageBps !== undefined ? args.slippageBps + (curve ? 200 : 150) : (curve ? 500 : 200)));
-  const impact = Number(r.priceImpactPct);
+  // The price impact is a hard limit: an answer without it, or with one that is not a number, is
+  // refused rather than read as none.
+  const impact = typeof r.priceImpactPct === 'number' || (typeof r.priceImpactPct === 'string' && r.priceImpactPct.trim() !== '')
+    ? Number(r.priceImpactPct) : NaN;
+  if (!Number.isFinite(impact)) throw new Error('Jupiter answered without a price impact when asked for your own price');
   return {
     minOut: ((BigInt(r.outAmount!) * (10_000n - below)) / 10_000n).toString(),
     outAmount: r.outAmount!,

@@ -3,6 +3,29 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.4.0 (2026-09-27)
+
+Fixes from a review of the skill and of `orientim-verify`:
+
+- A fee paid in SOL is always held to the skill's own limit from Jupiter's price; `maxSolFeeLamports`
+  can only lower it. `orientim-verify` never takes Orientim's treasury from its JSON (exit 2).
+- `finalize` checks `checked` again in full, Jupiter's floor and the fee in SOL included, and
+  refuses a wallet that is not an address before it touches a file.
+- `finalize` that cannot read its state directory answers `outcome` `unknown` (exit 3), never "not
+  sent"; a second transaction for an order that already swapped exits 5, and its spend is not counted.
+- A transaction whose blockhash claims more than 150 blocks of life is refused.
+- A lock whose process is gone from this host is taken over at once; a stopped run gives up its locks.
+  "Another swap … is running" means wait and run again with the same `--id`.
+- The state directory is the owner's alone (0700, files 0600), written durably; spends older than two
+  days are cleared. The policy may pin it (`stateDir`); a daily limit needs an absolute directory.
+- A swap of another wallet no longer holds this wallet's `prepare` back. An order recorded pending
+  whose swap record is gone can be settled with `resolve`.
+- A service that does not answer is `error.code` `unavailable`, with `retryAfter`.
+- The policy's fields and error details from the server are checked for shape; prose never reaches
+  the agent. An answer from Jupiter without a price impact is refused.
+- The example exits 0 only for a confirmed swap and 3 for what must be settled first; its dry run holds
+  the owner's policy, and a bad key file is never repeated in an error.
+
 ## 1.3.2 (2026-09-27)
 
 - First public release, under the Apache License 2.0.

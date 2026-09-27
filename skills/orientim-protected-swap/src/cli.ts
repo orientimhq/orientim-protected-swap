@@ -7,10 +7,11 @@
  *
  *   orientim-verify prepare    {"intent": {...}}                       0 ok: sign `message`   1 refused   3 settle first   4 Orientim said no
  *   orientim-verify finalize   {"checked": ..., "signature": "..."}    0 confirmed   1 not swapped   3 unknown: recover before anything new
+ *                                                                      5 this order already swapped, or another run has it
  *   orientim-verify recover                                            0 all settled   3 something is still unknown
  *   orientim-verify resolve    {"signature": "...", "outcome": "..."}  0 settled   1 refused (it could still land, or is not kept)
- *   3 also when the state directory cannot be made or read: nothing is prepared or changed until it can,
- *   and from finalize when another run from the wallet holds its lock (that run may have sent the swap).
+ *   3 also when the state directory cannot be made, read or written: nothing is prepared or changed until
+ *   it can, and when another run from the wallet holds its lock (`busy`: that run may have sent the swap).
  *   orientim-verify check      {"prepared": ..., "intent": {...}}      0 safe to sign   1 refused   (for bots that call the API themselves)
  *   orientim-verify key-challenge  {"wallet": "<address>"}             0 sign `message` (checked: Orientim's key message for this wallet, nothing else)
  *   orientim-verify key        {"message", "challenge", "signature"}   0 `key`, bound to that wallet   4 Orientim said no
@@ -25,28 +26,36 @@
  *
  * `intent` is the example's `Intent`: owner, inputMint, outputMint, amountIn (base units, strings),
  * and optionally slippageBps, maxPriceImpactBps, minOut, maxFeeBps, maxNetworkFeeLamports, maxRouteCostLamports,
- * maxSolFeeLamports, acceptCostBps, version. `prepare` answers `checked` (pass it to finalize unchanged) and `message`,
+ * maxSolFeeLamports (only ever lower than the skill's own limit), acceptCostBps, version. Orientim's treasury is never
+ * taken from the JSON: only ORIENTIM_TREASURY names another. `prepare` answers `checked` (pass it to finalize unchanged) and `message`,
  * the transaction's message in base64: sign those bytes with the wallet's ed25519 key and pass the
  * 64-byte signature to finalize in base58 as `signature`, or the whole signed transaction in base64
- * as `signedTransaction`. Finalize checks everything again before anything is sent.
+ * as `signedTransaction`. Finalize checks everything again before anything is sent, the floor from
+ * Jupiter's own price and the hard limits included: `checked` is taken on trust for nothing.
+ *
+ * A refusal because a service did not answer (Jupiter busy, an RPC or Orientim timing out) carries
+ * `error.code` `unavailable` and `retryAfter`: try again later. Any other refusal is not a retry.
  *
  * Environment: SOLANA_RPC_URL (your own RPC; always), ORIENTIM_API_URL and ORIENTIM_API_KEY (prepare,
  * finalize), JUPITER_API_KEY (Jupiter throttles keyless calls), ORIENTIM_STATE_DIR (default ./.orientim-state; an
  * absolute path on a disk that outlives the process), ORIENTIM_TREASURY (only for another Orientim deployment),
  * ORIENTIM_POLICY (the owner's limits per swap and per day, a JSON file: see `OwnerPolicy`; a swap outside
- * them exits 1 with `error.code` `mint-not-allowed`, `amount-over-limit` or `daily-limit`).
+ * them exits 1 with `error.code` `mint-not-allowed`, `amount-over-limit` or `daily-limit`; with a daily limit
+ * the state directory must be absolute, the policy's `stateDir` or ORIENTIM_STATE_DIR). `check` counts a daily
+ * limit against the swaps this state directory kept; a bot that sends through the API itself records none,
+ * so for it a daily limit is only as good as its own record.
  * Finalize can take minutes (it reads the outcome on the chain): a run that is stopped anyway is settled
  * by `recover` before anything new.
  */
-import { createSolanaRpc, getBase58Encoder, getSignatureFromTransaction, getTransactionDecoder, getTransactionEncoder } from '@solana/kit';
+import { createSolanaRpc, getBase58Encoder, getCompiledTransactionMessageDecoder, getSignatureFromTransaction, getTransactionDecoder, getTransactionEncoder } from '@solana/kit';
 import type { Address, Rpc, SignatureBytes, SolanaRpcApi } from '@solana/kit';
 import {
   acquireLock, apiKeyChallenge, OrientimApiError, checkPrepared, createFileStore, finalizeSigned, isApiKeyMessage, pendingFor, PendingSwapError,
   prepareChecked, PriceImpactError, FloorError, ownFloor, receivedFor, recoverPending, redeemApiKey, resolvePending, resumeSigned, takeOrder,
-  checkPolicy, loadPolicy, PolicyError,
+  checkPolicy, loadPolicy, PolicyError, LockBusyError, OrientimOrderError, holdSolFee, releaseHeldLocks, stateDirFor, DEFAULT_STATE_DIR,
 } from '../examples/swap.ts';
-import type { Checked, Intent, OrderBook, OrderRecord, OwnerPolicy, PendingStore, Prepared, SpendLog } from '../examples/swap.ts';
-import { ownSolFeeLimit } from '../lib/orientim-verify.mjs';
+import type { Checked, FoundOrder, Intent, OrderBook, OrderRecord, OwnerPolicy, PendingStore, Prepared, SpendLog } from '../examples/swap.ts';
+import { ORIENTIM_TREASURY } from '../lib/orientim-verify.mjs';
 
 export type CliDeps = {
   rpc: Rpc<SolanaRpcApi>;
@@ -60,7 +69,7 @@ export type CliDeps = {
   maxWaitMs?: number;
   requestTimeoutMs?: number;
   /** Where swaps and orders are kept; the state directory's files unless given (tests give one that fails). */
-  store?: PendingStore & OrderBook & Partial<SpendLog>;
+  store?: PendingStore & OrderBook & Partial<SpendLog> & { orderBySignature?(signature: string): Promise<FoundOrder | null> };
   /** The owner's limits (`ORIENTIM_POLICY`): per swap and per day, whatever the intent says. */
   policy?: OwnerPolicy;
 };
@@ -77,6 +86,24 @@ const policyRefusal = (e: PolicyError, sent?: false): CliResult => ({
   code: 1,
   output: { ok: false, ...(sent === false ? { sent } : {}), error: { code: e.code, message: e.message, ...(e.limit ? { limit: e.limit } : {}), ...(e.spent ? { spent: e.spent } : {}) } },
 });
+/**
+ * Why a swap is refused before anything was sent, as a bot reads it: exit 1, with `error.code` for the
+ * refusals it can act on (the floor, the price impact, the owner's policy, a service that did not
+ * answer) and the reason in `problems` for the rest.
+ */
+function refusal(e: unknown, sent?: false): CliResult {
+  const s = sent === false ? { sent } : {};
+  if (e instanceof FloorError) {
+    return { code: 1, output: { ok: false, ...s, problems: [e.message], error: { code: 'floor-too-low', message: e.message, minOut: e.minOut, lowest: e.lowest } } };
+  }
+  if (e instanceof PriceImpactError) {
+    return { code: 1, output: { ok: false, ...s, problems: [e.message], error: { code: 'price-impact-high', message: e.message, impactBps: e.impactBps, limitBps: e.limitBps } } };
+  }
+  if (e instanceof PolicyError) return policyRefusal(e, sent);
+  if (unavailable(e)) return unavailableRefusal(e, sent);
+  return { code: 1, output: { ok: false, ...s, problems: [messageOf(e)] } };
+}
+
 /** The store's record of earlier swaps, for a daily limit; none when the store keeps no such record. */
 const spendsOf = (store: Partial<SpendLog>): SpendLog | undefined =>
   store.spentSince && store.recordSpend ? store as SpendLog : undefined;
@@ -85,11 +112,97 @@ const isIntent = (v: unknown): v is Intent => {
   return !!i && [i.owner, i.inputMint, i.outputMint, i.amountIn].every(x => typeof x === 'string' && x.length > 0);
 };
 const INTENT_SHAPE = '{"owner", "inputMint", "outputMint", "amountIn"} (strings)';
+/** A wallet address, as Solana writes one. */
+const ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
+/**
+ * The intent as the command uses it: Orientim's treasury only from the environment (ORIENTIM_TREASURY)
+ * or the one pinned in the skill, never from the JSON; a JSON that names another is refused. A string
+ * when the intent cannot be used.
+ */
+function ownIntent(raw: Intent, deps: CliDeps): Intent | string {
+  if (!ADDRESS.test(raw.owner)) return 'intent.owner must be a wallet address.';
+  const treasury = deps.treasury ?? ORIENTIM_TREASURY;
+  if (raw.treasury !== undefined && raw.treasury !== treasury) {
+    return `intent.treasury names ${ADDRESS.test(String(raw.treasury)) ? raw.treasury : 'another wallet'}; Orientim's treasury is taken only from ORIENTIM_TREASURY or the skill (${treasury}). Leave it out.`;
+  }
+  const { treasury: _given, ...rest } = raw;
+  return { ...rest, ...(deps.treasury ? { treasury: deps.treasury } : {}) };
+}
+
+/**
+ * A service that did not answer, or answered that it is busy: Jupiter, your RPC or Orientim. Nothing
+ * was signed or sent; the same request may be tried again later.
+ */
+function unavailable(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  return e.name === 'TimeoutError' || e.name === 'AbortError'
+    || (e instanceof TypeError && /fetch failed/i.test(e.message))
+    || /^Jupiter answered (429|5\d\d)\b/.test(e.message);
+}
+const unavailableRefusal = (e: unknown, sent?: false): CliResult => ({
+  code: 1,
+  output: {
+    ok: false, ...(sent === false ? { sent } : {}), problems: [messageOf(e)],
+    error: { code: 'unavailable', message: 'A service this needs did not answer, or is busy. Nothing was signed or sent; try again in a few seconds.', retryAfter: 5 },
+  },
+});
 /** A store for the commands that keep nothing: any use of it is the error that made it. */
 const unavailableStore = (e: unknown): PendingStore & OrderBook & SpendLog => {
   const fail = async (): Promise<never> => { throw e; };
   return { put: fail, remove: fail, list: fail, order: fail, recordOrder: fail, claimOrder: fail, spentSince: fail, recordSpend: fail };
 };
+
+/** The wallet that signed a kept transaction: its fee payer. */
+function feePayerOf(signedTransaction: string): string | null {
+  try {
+    return getCompiledTransactionMessageDecoder().decode(getTransactionDecoder().decode(Buffer.from(signedTransaction, 'base64')).messageBytes).staticAccounts[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** How long after it was recorded pending an order's transaction can surely no longer land: its blockhash lives about a minute. */
+const ORDER_SETTLED_AFTER_MS = 10 * 60_000;
+
+/**
+ * `resolve` for an order recorded pending whose own swap record is gone (a power cut between the two
+ * writes): settled by the chain's answer when your RPC has one, otherwise by yours, once the order was
+ * recorded long enough ago that its transaction can no longer land.
+ */
+async function resolveOrderOnly(
+  signature: string, outcome: 'confirmed' | 'failed' | 'expired', store: NonNullable<CliDeps['store']>, deps: CliDeps,
+): Promise<CliResult> {
+  const none: CliResult = { code: 1, output: { ok: false, error: `No kept swap has the signature ${signature}. Nothing was changed.` } };
+  let found: FoundOrder | null;
+  try {
+    found = store.orderBySignature ? await store.orderBySignature(signature) : null;
+  } catch (e) {
+    return { code: 3, output: { ok: false, error: `The order book could not be read: ${messageOf(e)}. Nothing was changed.` } };
+  }
+  if (!found || found.record.state !== 'pending') return none;
+  let status: { confirmationStatus?: string | null; err?: unknown } | null;
+  try {
+    [status] = (await deps.rpc.getSignatureStatuses([signature as never], { searchTransactionHistory: true })
+      .send({ abortSignal: AbortSignal.timeout(deps.requestTimeoutMs ?? 10_000) })).value as typeof status[];
+  } catch (e) {
+    return { code: 3, output: { ok: false, error: `Your RPC could not be asked about ${signature}: ${messageOf(e)}. Nothing was changed.` } };
+  }
+  const settled = status && (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized');
+  if (status && !settled) {
+    return { code: 1, output: { ok: false, error: `The network has seen ${signature} but not settled it yet: wait and resolve again. Nothing was changed.` } };
+  }
+  if (!settled && Date.now() - found.recordedAt < ORDER_SETTLED_AFTER_MS) {
+    return { code: 1, output: { ok: false, error: `${signature} was recorded moments ago and may still land: resolve it later. Nothing was changed.` } };
+  }
+  const state = settled ? (status!.err ? 'failed' as const : 'confirmed' as const) : outcome;
+  try {
+    await store.recordOrder(found.id, { signature, state });
+  } catch (e) {
+    return { code: 3, output: { ok: false, error: `The order could not be updated: ${messageOf(e)}.` } };
+  }
+  return { code: 0, output: { ok: true, signature, outcome: state, by: settled ? 'chain' : 'you', order: found.id } };
+}
 
 export async function runCli(command: string, input: unknown, deps: CliDeps): Promise<CliResult> {
   const body = (input ?? {}) as Record<string, unknown>;
@@ -111,24 +224,21 @@ export async function runCli(command: string, input: unknown, deps: CliDeps): Pr
     if (!prepared || typeof prepared.transaction !== 'string' || !isIntent(body.intent)) {
       return usage(`check reads {"prepared": <Orientim's prepare answer>, "intent": ${INTENT_SHAPE}}.`);
     }
-    const intent: Intent = { ...(deps.treasury ? { treasury: deps.treasury } : {}), ...body.intent };
+    const intent = ownIntent(body.intent, deps);
+    if (typeof intent === 'string') return usage(intent);
     try {
-      // The owner's limits hold here too; a bot that calls the API itself counts its own spending.
+      // The owner's limits hold here too, counted against the swaps this state directory kept.
       if (deps.policy) await checkPolicy(deps.policy, intent, spendsOf(store));
       // The same floor as prepare: Jupiter's own price, whatever the intent says.
       const own = await ownFloor(intent, { rpc: deps.rpc, fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey, requestTimeoutMs: deps.requestTimeoutMs });
       intent.minOut = own.minOut;
       const priceImpactBps = own.priceImpactBps;
-      if ((prepared.policy as { feeSide?: unknown }).feeSide === 'sol' && intent.maxSolFeeLamports === undefined) {
-        intent.maxSolFeeLamports = await ownSolFeeLimit({
-          inputMint: intent.inputMint, amountIn: intent.amountIn, taker: intent.owner, maxFeeBps: intent.maxFeeBps, apiKey: deps.jupiterApiKey, fetchImpl: deps.fetchImpl,
-        });
-      }
+      // A fee in SOL: never above the skill's own limit, whatever the intent says.
+      await holdSolFee(intent, prepared, { fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey });
       const problems = await checkPrepared(prepared, intent, deps.rpc, { requestTimeoutMs: deps.requestTimeoutMs });
       return { code: problems.length ? 1 : 0, output: { ok: problems.length === 0, problems, yourFloor: intent.minOut, priceImpactBps } };
     } catch (e) {
-      if (e instanceof PolicyError) return policyRefusal(e);
-      return { code: 1, output: { ok: false, problems: [messageOf(e)] } };
+      return refusal(e);
     }
   }
 
@@ -160,12 +270,17 @@ export async function runCli(command: string, input: unknown, deps: CliDeps): Pr
     } catch (e) {
       return { code: 3, output: { ok: false, error: `The kept swaps could not be read: ${messageOf(e)}. Nothing was changed.` } };
     }
-    if (!kept) return { code: 1, output: { ok: false, error: `No kept swap has the signature ${signature}. Nothing was changed.` } };
+    if (!kept) return resolveOrderOnly(signature, outcome, store, deps);
+    const owner = kept.owner ?? feePayerOf(kept.signedTransaction);
+    if (!owner || !ADDRESS.test(owner)) {
+      return { code: 1, output: { ok: false, error: `The kept swap ${signature} names no wallet it was signed by. Nothing was changed.` } };
+    }
     let release: () => void;
     try {
-      release = acquireLock(deps.stateDir, kept.owner ?? 'unknown-wallet');
+      release = acquireLock(deps.stateDir, owner);
     } catch (e) {
-      return { code: 1, output: { ok: false, error: messageOf(e) } };
+      // Another run from this wallet may be settling or sending this very swap: settle it later.
+      return { code: 3, output: { ok: false, ...(e instanceof LockBusyError ? { busy: true } : {}), error: `${messageOf(e)} Nothing was changed; try again once it is done.` } };
     }
     try {
       const resolved = await resolvePending(store, deps.rpc, signature, outcome, { orders: store, requestTimeoutMs: deps.requestTimeoutMs });
@@ -195,7 +310,7 @@ export async function runCli(command: string, input: unknown, deps: CliDeps): Pr
       const issued = await redeemApiKey({ apiUrl: deps.apiUrl, message, challenge, signature, fetchImpl: deps.fetchImpl, requestTimeoutMs: deps.requestTimeoutMs });
       return { code: 0, output: { ok: true, ...issued } };
     } catch (e) {
-      if (e instanceof OrientimApiError) return { code: 4, output: { ok: false, error: e.message, status: e.status, code: e.code } };
+      if (e instanceof OrientimApiError) return { code: 4, output: { ok: false, error: e.message, status: e.status, code: e.code, retryAfter: e.retryAfter } };
       return { code: 1, output: { ok: false, error: messageOf(e) } };
     }
   }
@@ -209,13 +324,16 @@ export async function runCli(command: string, input: unknown, deps: CliDeps): Pr
     if (typeof body.intent.id !== 'string' || !body.intent.id) {
       return usage('prepare needs intent.id: your order\'s own id, the same on every retry of that order, so that it is never swapped twice.');
     }
-    // One swap at a time, and none while an earlier one could still land.
-    // A state directory that cannot be read is an answer too, not a stack trace (Stage 2 re-run, E5).
+    const own = ownIntent(body.intent, deps);
+    if (typeof own === 'string') return usage(own);
+    // One swap per wallet at a time, and none while an earlier one from it could still land (a
+    // record whose wallet cannot be read counts for every wallet).
+    // A state directory that cannot be read is an answer too, not a stack trace.
     const orderId = body.intent.id;
     let pending: string[];
     let prior: OrderRecord | null;
     try {
-      pending = (await store.list()).map(s => s.signature);
+      pending = await pendingFor(store, own.owner);
       prior = orderId ? await store.order(orderId) : null;
     } catch (e) {
       return { code: 3, output: { ok: false, sent: false, error: `The kept swaps could not be read: ${messageOf(e)}. Nothing was prepared; fix the state directory first.` } };
@@ -227,12 +345,12 @@ export async function runCli(command: string, input: unknown, deps: CliDeps): Pr
     if (prior && (prior.state === 'confirmed' || prior.state === 'pending')) {
       return { code: 5, output: { ok: false, order: { id: orderId, ...prior }, error: prior.state === 'confirmed' ? 'This order already swapped. Nothing new was prepared.' : 'This order has a transaction that may still land: run `orientim-verify recover`. Nothing new was prepared.' } };
     }
-    const { owner, ...rest } = body.intent;
+    const { owner, ...rest } = own;
     try {
       // The owner's limits, before anything is asked of Orientim; finalize holds the swap to them again.
-      if (deps.policy) await checkPolicy(deps.policy, body.intent, spendsOf(store));
+      if (deps.policy) await checkPolicy(deps.policy, own, spendsOf(store));
       const checked = await prepareChecked({
-        ...api, rpc: deps.rpc, owner, intent: { ...(deps.treasury ? { treasury: deps.treasury } : {}), ...rest },
+        ...api, rpc: deps.rpc, owner, intent: rest,
         fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey, requestTimeoutMs: deps.requestTimeoutMs,
       });
       const tx = getTransactionDecoder().decode(Buffer.from(checked.prepared.transaction, 'base64'));
@@ -257,14 +375,7 @@ export async function runCli(command: string, input: unknown, deps: CliDeps): Pr
           },
         };
       }
-      if (e instanceof FloorError) {
-        return { code: 1, output: { ok: false, error: { code: 'floor-too-low', message: e.message, minOut: e.minOut, lowest: e.lowest } } };
-      }
-      if (e instanceof PriceImpactError) {
-        return { code: 1, output: { ok: false, error: { code: 'price-impact-high', message: e.message, impactBps: e.impactBps, limitBps: e.limitBps } } };
-      }
-      if (e instanceof PolicyError) return policyRefusal(e);
-      return { code: 1, output: { ok: false, problems: [messageOf(e)] } };
+      return refusal(e);
     }
   }
 
@@ -274,7 +385,12 @@ export async function runCli(command: string, input: unknown, deps: CliDeps): Pr
     if (!checked?.prepared || !isIntent(checked.intent) || (typeof signature !== 'string' && typeof signedTransaction !== 'string')) {
       return usage('finalize reads {"checked": <prepare\'s checked, unchanged>, "signature": "<base58>"} or {"checked": ..., "signedTransaction": "<base64>"}.');
     }
-    const { prepared, intent } = checked;
+    const { prepared } = checked;
+    // The wallet names the lock file: nothing but an address may reach a path.
+    if (typeof prepared.wallet !== 'string' || !ADDRESS.test(prepared.wallet)) return usage('checked.prepared.wallet must be a wallet address.');
+    const ownOrError = ownIntent(checked.intent, deps);
+    if (typeof ownOrError === 'string') return usage(ownOrError);
+    const intent: Intent = ownOrError;
     // The chain's answer is the result; a record that could not be updated is said beside it, with
     // the signature, never in its place.
     const settle = async (result: { signature: string; outcome: string; refusal?: string }, orderId: string | undefined, resumed: boolean): Promise<CliResult> => {
@@ -313,26 +429,43 @@ export async function runCli(command: string, input: unknown, deps: CliDeps): Pr
     try {
       release = acquireLock(deps.stateDir, prepared.wallet);
     } catch (e) {
-      // Another run from this wallet holds the lock: one still running, or one a bot's timeout killed
-      // (its lock stays until it is stale). That run may be sending this very transaction, or already
-      // sent it, so this is never "not sent": unknown, settled by `recover` (exit 3).
+      if (!(e instanceof LockBusyError)) {
+        // The state directory cannot be written: nothing was kept, so nothing was sent by this run.
+        return { code: 3, output: { ok: false, sent: false, error: `${messageOf(e)}` } };
+      }
+      // Another run from this wallet holds the lock: one still running, or one stopped on another
+      // machine (a stopped process on this one gives its lock up). That run may be sending this very
+      // transaction, or already sent it, so this is never "not sent": unknown, settled by `recover` (exit 3).
       return {
         code: 3,
         output: {
           ok: false, busy: true, ...(incoming ? { signature: incoming } : {}), outcome: 'unknown',
-          error: `${messageOf(e)} That run may have sent this swap: run \`orientim-verify recover\` before anything new.`,
+          error: `${messageOf(e)} That run may have sent this swap: wait for it, then run \`orientim-verify recover\` before anything new.`,
         },
       };
     }
     // Once kept before finalize, the swap may have been sent: from then on an error is not "not sent".
     let signedAs: string | null = null;
     try {
-      // Checked again here, on your RPC: finalize takes nothing on trust, not even prepare's output.
-      // One swap per wallet: another that may still land stops this one before anything is sent,
-      // whichever order it was prepared for.
       // A swap already kept under this signature may have been sent: it is asked again and settled,
-      // never checked as a first send, and the answer always carries its signature.
-      const kept = incoming ? (await store.list()).find(s => s.signature === incoming) : undefined;
+      // never checked as a first send, and the answer always carries its signature. What is kept must
+      // be read to know that: a store that cannot be read is an unknown outcome, never "not sent".
+      let kept: Awaited<ReturnType<typeof store.list>>[number] | undefined;
+      let recorded: OrderRecord | null;
+      let waiting: string[];
+      try {
+        kept = incoming ? (await store.list()).find(s => s.signature === incoming) : undefined;
+        recorded = !kept && intent.id && incoming ? await store.order(intent.id) : null;
+        waiting = kept ? [] : await pendingFor(store, prepared.wallet, incoming);
+      } catch (e) {
+        return {
+          code: 3,
+          output: {
+            ok: false, ...(incoming ? { signature: incoming } : {}), outcome: 'unknown',
+            error: `The kept swaps could not be read: ${messageOf(e)}. An earlier run may have sent this swap; fix the state directory, then run \`orientim-verify recover\`.`,
+          },
+        };
+      }
       if (kept) {
         signedAs = kept.signature;
         const result = await resumeSigned({
@@ -341,7 +474,6 @@ export async function runCli(command: string, input: unknown, deps: CliDeps): Pr
         return settle(result, kept.intentId ?? intent.id, true);
       }
       // Its order says it is this very transaction, but the swap's own record is gone: it may have landed.
-      const recorded = intent.id && incoming ? await store.order(intent.id) : null;
       if (recorded && recorded.signature === incoming) {
         return {
           code: recorded.state === 'confirmed' ? 0 : recorded.state === 'pending' ? 3 : 1,
@@ -351,10 +483,17 @@ export async function runCli(command: string, input: unknown, deps: CliDeps): Pr
           },
         };
       }
-      const waiting = await pendingFor(store, prepared.wallet, incoming);
+      // One swap per wallet: another that may still land stops this one before anything is sent,
+      // whichever order it was prepared for.
       if (waiting.length) {
         return { code: 3, output: { ok: false, sent: false, pending: waiting, error: 'An earlier swap from this wallet may still land: run `orientim-verify recover` first. Nothing was sent.' } };
       }
+      // Checked again here, on your RPC, as for a first check: finalize takes nothing on trust, not
+      // even prepare's output. The floor is held to Jupiter's own price and the hard limits again,
+      // and a fee in SOL to the skill's own limit.
+      const own = await ownFloor(intent, { rpc: deps.rpc, fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey, requestTimeoutMs: deps.requestTimeoutMs });
+      intent.minOut = own.minOut;
+      await holdSolFee(intent, prepared, { fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey });
       const problems = await checkPrepared(prepared, intent, deps.rpc, { requestTimeoutMs: deps.requestTimeoutMs });
       if (problems.length) return { code: 1, output: { ok: false, sent: false, problems } };
       let wire = typeof signedTransaction === 'string' ? signedTransaction : '';
@@ -382,22 +521,28 @@ export async function runCli(command: string, input: unknown, deps: CliDeps): Pr
           const others = await pendingFor(store, prepared.wallet, s.signature);
           if (others.length) throw new PendingSwapError(others);
           // The owner's limits again, under the wallet's lock, with what the last 24 hours spent; the
-          // swap counts from here, before it is kept, since once kept it may be sent.
+          // swap counts from here, before it is kept, since once kept it may be sent. A swap refused
+          // before it is kept was never sent, and its spend is taken back.
+          const spends = deps.policy ? spendsOf(store) : undefined;
           if (deps.policy) {
-            const spends = spendsOf(store);
             await checkPolicy(deps.policy, { owner: prepared.wallet, inputMint: intent.inputMint, amountIn: intent.amountIn }, spends, s.signature);
             await spends?.recordSpend({ signature: s.signature, owner: prepared.wallet, mint: intent.inputMint, amountIn: intent.amountIn, at: Date.now() });
           }
-          const orderId = intent.id;
-          await store.put({ ...s, ...(orderId ? { intentId: orderId } : {}) });
-          if (orderId) {
-            const record: OrderRecord = { signature: s.signature, state: 'pending' };
-            const prior = await store.order(orderId);
-            const open = prior && (prior.state === 'confirmed' || prior.state === 'pending');
-            if (open || !await takeOrder(store, orderId, prior, record)) {
-              await store.remove(s.signature);
-              throw new Error(open ? `Order ${orderId} is already ${prior!.state} (${prior!.signature}).` : `Order ${orderId} was taken by another run, or this order book cannot retry it safely.`);
+          try {
+            const orderId = intent.id;
+            await store.put({ ...s, ...(orderId ? { intentId: orderId } : {}) });
+            if (orderId) {
+              const record: OrderRecord = { signature: s.signature, state: 'pending' };
+              const prior = await store.order(orderId);
+              const open = prior && (prior.state === 'confirmed' || prior.state === 'pending');
+              if (open || !await takeOrder(store, orderId, prior, record)) {
+                await store.remove(s.signature);
+                throw new OrientimOrderError(orderId, open ? prior! : (await store.order(orderId)) ?? record);
+              }
             }
+          } catch (e) {
+            await spends?.forgetSpend?.(s.signature).catch(() => undefined);
+            throw e;
           }
           signedAs = s.signature;
         },
@@ -408,7 +553,20 @@ export async function runCli(command: string, input: unknown, deps: CliDeps): Pr
       // "not sent". Before that, nothing was sent.
       if (signedAs) return { code: 3, output: { ok: false, signature: signedAs, outcome: 'unknown', error: messageOf(e) } };
       if (e instanceof PendingSwapError) return { code: 3, output: { ok: false, sent: false, pending: e.signatures, error: e.message } };
-      if (e instanceof PolicyError) return policyRefusal(e, false);
+      // This order already swapped, or another run has it (and may be sending it): never a reason to
+      // try the same order under a new id.
+      if (e instanceof OrientimOrderError) {
+        return {
+          code: 5,
+          output: {
+            ok: false, sent: false, order: { id: e.id, ...e.record },
+            error: e.record.state === 'confirmed' ? `Order ${e.id} already swapped (${e.record.signature}). This run sent nothing.`
+              : e.record.state === 'pending' ? `Order ${e.id} has a transaction that may still land (${e.record.signature}): run \`orientim-verify recover\`. This run sent nothing.`
+                : `Order ${e.id} was taken by another run, or this order book cannot retry it safely. This run sent nothing.`,
+          },
+        };
+      }
+      if (e instanceof FloorError || e instanceof PriceImpactError || e instanceof PolicyError || unavailable(e)) return refusal(e, false);
       return { code: 1, output: { ok: false, sent: false, error: messageOf(e) } };
     } finally {
       release();
@@ -433,7 +591,8 @@ export async function main(): Promise<void> {
   if (!(COMMANDS as readonly string[]).includes(command)) return print(usage(`usage: orientim-verify <${COMMANDS.join('|')}> < input.json`));
   const rpcUrl = process.env.SOLANA_RPC_URL;
   if (!rpcUrl && !KEY_COMMANDS.includes(command)) return print(usage('Set SOLANA_RPC_URL to your own RPC.'));
-  if (!process.env.JUPITER_API_KEY && command !== 'recover' && !KEY_COMMANDS.includes(command)) {
+  // Only the commands that ask Jupiter for a price.
+  if (!process.env.JUPITER_API_KEY && (command === 'prepare' || command === 'check' || command === 'finalize')) {
     process.stderr.write('JUPITER_API_KEY is not set: Jupiter throttles keyless calls, and your own floor may not be priced.\n');
   }
   // The owner's limits: a policy named but unreadable stops everything but settling what is kept.
@@ -444,6 +603,26 @@ export async function main(): Promise<void> {
     } catch (e) {
       if (command !== 'recover' && command !== 'resolve') return print(usage(messageOf(e)));
     }
+  }
+  // The state directory: the policy's own when it names one, and absolute when it sets a daily limit.
+  const given = process.env.ORIENTIM_STATE_DIR || undefined;
+  let stateDir: string;
+  try {
+    const chosen = stateDirFor(policy, given);
+    stateDir = chosen.dir;
+    if (chosen.warning && !KEY_COMMANDS.includes(command)) process.stderr.write(`${chosen.warning}\n`);
+  } catch (e) {
+    // Settling what is kept never waits on a policy's rule about where new swaps are kept.
+    if (command !== 'recover' && command !== 'resolve') return print(usage(messageOf(e)));
+    stateDir = policy?.stateDir ?? given ?? DEFAULT_STATE_DIR;
+  }
+  // Told to stop (a bot's timeout, Ctrl-C): the lock goes at once. What was kept before finalize is
+  // on disk, and `recover` settles it.
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+    process.once(signal, () => {
+      releaseHeldLocks();
+      process.exit(signal === 'SIGTERM' ? 143 : 130);
+    });
   }
   let input: unknown = {};
   if (command !== 'recover') {
@@ -459,7 +638,7 @@ export async function main(): Promise<void> {
     apiUrl: process.env.ORIENTIM_API_URL,
     apiKey: process.env.ORIENTIM_API_KEY,
     jupiterApiKey: process.env.JUPITER_API_KEY || undefined,
-    stateDir: process.env.ORIENTIM_STATE_DIR || '.orientim-state',
+    stateDir,
     treasury: process.env.ORIENTIM_TREASURY || undefined,
     policy,
   }));

@@ -5,18 +5,18 @@
  * own tests in packages/verifier/test.
  */
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Rpc, SolanaRpcApi } from '@solana/kit';
 import { describe, expect, it } from 'vitest';
 import {
-  acquireLock, checkPolicy, dataOnly, fillAgainstQuote, isApiKeyMessage, loadPolicy, OrientimApiError, PolicyError, safeCode,
-  SKILL_VERSION, untrustedLine,
+  acquireLock, checkPolicy, createFileStore, dataOnly, exitCodeOf, fillAgainstQuote, isApiKeyMessage, loadPolicy, LockBusyError,
+  OrientimApiError, PolicyError, preparedData, releaseHeldLocks, safeCode, SKILL_VERSION, stateDirFor, untrustedLine,
 } from '../skills/orientim-protected-swap/examples/swap.ts';
 import { runCli } from '../skills/orientim-protected-swap/src/cli.ts';
 import {
-  feeLimitBps, isSlippageBps, MAX_BELOW_BPS, MAX_FEE_BPS, MAX_PRICE_IMPACT_BPS, ORIENTIM_TREASURY,
+  feeLimitBps, isSlippageBps, MAX_BELOW_BPS, MAX_FEE_BPS, MAX_PRICE_IMPACT_BPS, ORIENTIM_TREASURY, ownQuote,
 } from '../skills/orientim-protected-swap/lib/orientim-verify.mjs';
 
 const ROOT = join(import.meta.dirname, '..');
@@ -192,6 +192,114 @@ describe('orientim-verify, the command', () => {
     });
     expect(run.status).toBe(3);
     expect(JSON.parse(run.stdout).ok).toBe(false);
+  });
+});
+
+describe('the skill holds its own state and limits against what it is handed', () => {
+  const noRpc = {} as Rpc<SolanaRpcApi>;
+
+  it('a lock is only ever for a wallet address', () => {
+    expect(() => acquireLock(tmp(), '../victim')).toThrow('wallet address');
+  });
+
+  it('a lock whose process is gone from this host is taken at once; one whose process lives is not', () => {
+    const dir = tmp();
+    const gone = spawnSync(process.execPath, ['-e', '']).pid;
+    writeFileSync(join(dir, `lock-${W}`), JSON.stringify({ pid: gone, host: hostname(), at: Date.now(), token: 'killed' }));
+    const release = acquireLock(dir, W);
+    expect(() => acquireLock(dir, W)).toThrow(LockBusyError);
+    release();
+    acquireLock(dir, W);
+    releaseHeldLocks();
+    acquireLock(dir, W)();
+  });
+
+  it("the state directory is the owner's alone, and spends older than two days are cleared", async () => {
+    const dir = join(tmp(), 'state');
+    const store = createFileStore(dir);
+    expect(statSync(dir).mode & 0o777).toBe(0o700);
+    await store.recordSpend({ signature: 'old', owner: W, mint: USDC, amountIn: '5', at: Date.now() - 3 * 24 * 3_600_000 });
+    await store.recordSpend({ signature: 'new', owner: W, mint: USDC, amountIn: '7', at: Date.now() });
+    expect(statSync(join(dir, 'spend-new.json')).mode & 0o777).toBe(0o600);
+    expect(await store.spentSince(W, USDC, Date.now() - 24 * 3_600_000)).toBe(7n);
+    expect(readdirSync(dir).filter(f => f.startsWith('spend-'))).toEqual(['spend-new.json']);
+  });
+
+  it('a daily limit needs one absolute state directory; the policy may name it', () => {
+    const daily = { maxAmountIn: { [USDC]: '1' }, maxAmountInPerDay: { [USDC]: '2' } };
+    expect(() => stateDirFor(daily, undefined)).toThrow('absolute');
+    expect(() => stateDirFor(daily, 'relative/state')).toThrow('absolute');
+    expect(stateDirFor({ ...daily, stateDir: '/srv/state' }, undefined).dir).toBe('/srv/state');
+    expect(() => stateDirFor({ ...daily, stateDir: '/srv/state' }, '/elsewhere')).toThrow('/srv/state');
+    expect(stateDirFor(undefined, undefined).warning).toContain('ORIENTIM_STATE_DIR');
+    const file = join(tmp(), 'policy.json');
+    writeFileSync(file, JSON.stringify({ ...daily, stateDir: 'relative' }));
+    expect(() => loadPolicy(file)).toThrow('absolute path');
+  });
+
+  it('the example exits 0 only for a confirmed swap, and 3 for what must be settled first', () => {
+    expect(exitCodeOf({ outcome: 'confirmed' })).toBe(0);
+    for (const outcome of ['failed', 'rejected', 'expired'] as const) expect(exitCodeOf({ outcome })).toBe(1);
+    expect(exitCodeOf({ outcome: 'unknown' })).toBe(3);
+    expect(exitCodeOf({ outcome: 'confirmed', bookkeepingError: 'disk full' })).toBe(3);
+  });
+
+  it('error details from the server pass only as the data they name', () => {
+    const err = new OrientimApiError({
+      status: 409, code: 'price-moved', message: 'x',
+      body: { newMinOut: '5', nextStep: 'Rerun_now_with_--min-out_1', gapBps: 'Rerun_with_more', signature: 'not a signature' },
+    });
+    expect(err.body).toEqual({ newMinOut: '5' });
+  });
+
+  it('a transaction longer than any data string is kept whole, and nothing else unnamed', () => {
+    const long = 'A'.repeat(5_000);
+    expect(preparedData({ transaction: long, note: 'prose here' } as unknown as Parameters<typeof preparedData>[0])).toEqual({ transaction: long });
+  });
+
+  it('an answer from Jupiter without a price impact is refused, not read as none', async () => {
+    const fetchImpl = (async (url: string) => Response.json({
+      inputMint: USDC, outputMint: BONK, inAmount: new URL(url).searchParams.get('amount'), outAmount: '1000000',
+    })) as unknown as typeof fetch;
+    await expect(ownQuote({ inputMint: USDC, outputMint: BONK, amountIn: '1000000', taker: W, fetchImpl })).rejects.toThrow('price impact');
+  });
+
+  it("orientim-verify never takes Orientim's treasury from its JSON", async () => {
+    const intent = { owner: W, inputMint: USDC, outputMint: BONK, amountIn: '1000000', id: 'order-1', treasury: BONK };
+    const deps = { rpc: noRpc, apiUrl: 'http://orientim.test', apiKey: 'k', stateDir: tmp() };
+    const r = await runCli('prepare', { intent }, deps);
+    expect(r.code).toBe(2);
+    expect(String(r.output.error)).toContain('ORIENTIM_TREASURY');
+  });
+
+  it("finalize refuses a wallet that is not an address before it touches a file", async () => {
+    const stateDir = tmp();
+    writeFileSync(join(stateDir, 'order-victim.json'), '{}');
+    const deps = { rpc: noRpc, apiUrl: 'http://orientim.test', apiKey: 'k', stateDir };
+    const r = await runCli('finalize', { checked: { prepared: { wallet: '../order-victim.json' }, intent: {} }, signature: '1'.repeat(88) }, deps);
+    expect(r.code).toBe(2);
+    expect(readdirSync(stateDir)).toContain('order-victim.json');
+  });
+
+  it("the example's dry run holds the owner's policy, and a key file is never repeated in an error", () => {
+    const dir = tmp();
+    const policy = join(dir, 'policy.json');
+    writeFileSync(policy, JSON.stringify({ maxAmountIn: { [BONK]: '1000' } }));
+    const key = join(dir, 'key');
+    writeFileSync(key, 'Nx8TkWq3JfSecretKeyInBase58');
+    const env = { ...process.env, ORIENTIM_API_URL: 'http://127.0.0.1:1', ORIENTIM_API_KEY: 'k', SOLANA_RPC_URL: 'http://127.0.0.1:1', ORIENTIM_WALLET_KEYPAIR: key, JUPITER_API_KEY: 'j' };
+    const example = join(SKILL, 'examples/swap.ts');
+    const dry = spawnSync(process.execPath, [example, '--in', USDC, '--out', BONK, '--amount', '1000000', '--owner', W, '--dry-run'], {
+      encoding: 'utf8', env: { ...env, ORIENTIM_POLICY: policy },
+    });
+    expect(dry.status).toBe(1);
+    expect(dry.stderr).toContain('mint-not-allowed');
+    const run = spawnSync(process.execPath, [example, '--in', USDC, '--out', BONK, '--amount', '1000000', '--id', 'k'], {
+      encoding: 'utf8', env: { ...env, ORIENTIM_STATE_DIR: join(dir, 'state') },
+    });
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('not a solana-keygen file');
+    expect(run.stderr).not.toContain('Nx8Tk');
   });
 });
 

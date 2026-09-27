@@ -92,7 +92,8 @@ treasury account for the input) pays it in SOL from your wallet, before the swap
 swap is worth in SOL, as Jupiter prices it when prepare builds it. `amounts.feeMint` is then SOL,
 `policy.feeSide` is `sol` and `certificate.solFee` states it. The rules cannot see a price, so the
 skill's check requires a limit of your own for it (`maxSolFeeLamports`; `ownSolFeeLimit` asks Jupiter
-for one, and the example does this itself). When the treasury's wallet cannot receive the fee yet, or
+for one). The example and `orientim-verify` always ask Jupiter themselves and hold the fee to that
+limit, or to `maxSolFeeLamports` when it is lower: a limit in the intent can only lower it. When the treasury's wallet cannot receive the fee yet, or
 the swap cannot be priced in SOL, the swap is refused with `503 fee-unavailable` and nothing is built:
 Orientim never builds a swap free instead. Only a test deployment, without a treasury, is fee-free.
 
