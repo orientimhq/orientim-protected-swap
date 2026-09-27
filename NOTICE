@@ -1,0 +1,11 @@
+Orientim protected swap skill
+Copyright 2026 the operator of Orientim, named at https://orientim.com/terms
+
+This product is licensed under the Apache License, Version 2.0 (LICENSE).
+
+"Orientim" and the Orientim logo are names of the Orientim service. The licence grants no right to
+use them (Apache License 2.0, section 6), except to say truthfully where this software comes from.
+
+The bundled file skills/orientim-protected-swap/lib/orientim-verify.mjs (and the command built from
+it) includes code from @solana-program/token (https://github.com/solana-program/token),
+by the Solana Program contributors, licensed under the Apache License, Version 2.0.

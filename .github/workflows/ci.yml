@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      # The bundles and SHA256SUMS must be exactly what the source builds.
+      - run: npm run check
+      - name: The shipped files match SHA256SUMS
+        working-directory: skills/orientim-protected-swap
+        run: sha256sum -c SHA256SUMS
+      - name: The skill installs on its own
+        run: |
+          cp -r skills/orientim-protected-swap "$RUNNER_TEMP/skill"
+          cd "$RUNNER_TEMP/skill"
+          npm ci
+          status=0; node bin/orientim-verify.mjs > /dev/null || status=$?
+          test "$status" -eq 2
+
+  reproducible:
+    # The same source must give the same bytes on another runner image.
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build
+      - run: shasum -a 256 dist/orientim-protected-swap.zip skills/orientim-protected-swap/SHA256SUMS

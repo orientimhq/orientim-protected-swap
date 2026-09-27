@@ -1,0 +1,3 @@
+# The command a bot runs directly (#!/usr/bin/env node) must keep LF line ends on every checkout, and
+# every file the skill ships keeps them too, so that SHA256SUMS matches a copy from any checkout.
+skills/orientim-protected-swap/** text eol=lf

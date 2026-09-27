@@ -1,0 +1,428 @@
+/**
+ * The agent's own check of a prepared swap, before its wallet signs.
+ *
+ * Orientim's server built the transaction; the agent must not take its word for what it does. This
+ * runs Orientim's full verifier (`@orientim/verifier`, the same rules the page applies, R1–R7) on the exact
+ * bytes, against chain state the agent reads from ITS OWN RPC, and against a policy the agent holds
+ * to its own intent and limits. A compromised server, relay, DNS or impostor URL can then refuse or
+ * delay a swap, never make the agent sign one that moves anything but the approved amount.
+ *
+ * Two things the rules alone cannot settle are settled here too. The price: the
+ * agent must bring a floor of its own (`minOut`, from `ownMinimum` or its own source), or a server
+ * could sell the amount for almost nothing through a pool it controls. And the one-time key:
+ * the swap is simulated on the agent's RPC and must leave nothing under it, in its own account or
+ * in an account a Pump.fun market opens in its name, so no lamports stay where a server that
+ * derives the key could collect them. Rent a route keeps is a cost
+ * that does not come back, accepted only up to the agent's own limit (0.001 SOL by default).
+ *
+ * Bundled into ../lib/orientim-verify.mjs by tools/build-skill.ts (only @solana/kit stays external), so
+ * the skill works on its own; CI rebuilds it and fails if the committed file differs.
+ */
+import { fetchAddressesForLookupTables, getCompiledTransactionMessageDecoder, getTransactionDecoder } from '@solana/kit';
+import type { Address, Rpc, SolanaRpcApi } from '@solana/kit';
+import { findAssociatedTokenPda } from '@solana-program/token';
+import { JUPITER_PROGRAM, PUMP_AMM_PROGRAM, PUMP_CURVE_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, USDC_MINT, WSOL_MINT } from '@orientim/core/constants';
+import type { ChainSnapshot, Policy } from '@orientim/core/types';
+import { readAccounts } from '@orientim/solana';
+import { hasTransferFee, routeAccountFor, transferFeeOf, transferFeeOn, verify } from '@orientim/verifier';
+import type { TransferFee } from '@orientim/verifier';
+
+/** When "no record" proves a transaction never landed; `confirm` in the example uses them. */
+export { pastProof, provesNeverLanded, STATUS_CACHE_BLOCKS } from '@orientim/solana';
+
+/**
+ * Orientim's treasury wallet, pinned like the fee: unless the agent names another, Orientim's fee may go
+ * here or nowhere, whatever the server says.
+ */
+export const ORIENTIM_TREASURY = 'ARzSA3sZGhf5t4UnYrmB3TWyZ5m3Wo1nA9zWBcoiTqLE';
+
+/** What the agent asked for, and the most it accepts. */
+/**
+ * The tolerance an agent may choose for its route, as a person may on the page: 0.1% to 15%. Without
+ * a choice Orientim builds at 0.5%, or 3% on a Pump.fun bonding curve.
+ */
+export const MIN_SLIPPAGE_BPS = 10;
+export const MAX_SLIPPAGE_BPS = 1_500;
+/** Above this price impact an agent refuses unless its owner allows more: the page asks a person there. */
+export const DEFAULT_MAX_PRICE_IMPACT_BPS = 500;
+/**
+ * Hard limits no intent, flag or JSON field can raise. An agent sets its own
+ * limits, and an agent can be misled: a page, an issue or a token name that tells it to "set the
+ * minimum to 1" must not be able to sell the amount for nothing. Its floor never sits more than
+ * `MAX_BELOW_BPS` below Jupiter's own price, the price impact it accepts never exceeds
+ * `MAX_PRICE_IMPACT_BPS`, and Orientim's fee is never accepted above `MAX_FEE_BPS`. An owner who
+ * needs more changes these constants in their own copy, knowingly.
+ */
+export const MAX_BELOW_BPS = 2_000;
+export const MAX_PRICE_IMPACT_BPS = 2_000;
+export const MAX_FEE_BPS = 30;
+/** The fee limit the check applies: the agent's own, never above Orientim's pinned fee. */
+export const feeLimitBps = (maxFeeBps?: number) =>
+  Number.isInteger(maxFeeBps) && (maxFeeBps as number) >= 0 ? Math.min(maxFeeBps as number, MAX_FEE_BPS) : MAX_FEE_BPS;
+export const isSlippageBps = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= MIN_SLIPPAGE_BPS && v <= MAX_SLIPPAGE_BPS;
+
+export type AgentLimits = {
+  /** The agent's wallet, which signs first and pays. */
+  owner: string;
+  inputMint: string;
+  outputMint: string;
+  /** Base units, as a string: everything that leaves the wallet in the input token, fee included. */
+  amountIn: string;
+  /**
+   * The least the agent accepts, in base units of the output. Required, and from a price the agent
+   * got itself (`ownMinimum` asks Jupiter), never from Orientim's answer. Orientim's floor may be stricter.
+   */
+  minOut: string;
+  /** The highest Orientim fee accepted, in bps (Orientim's is 30: anything above is refused by default). */
+  maxFeeBps?: number;
+  /** The most the transaction may cost in network fees, in lamports (default 0.001 SOL). */
+  maxNetworkFeeLamports?: number;
+  /**
+   * The only wallet the fee may go to (or nowhere). Orientim's own (`ORIENTIM_TREASURY`) unless set; set it
+   * only to use another Orientim deployment.
+   */
+  treasury?: string;
+  /**
+   * The tolerance the agent chose for its route, in bps (`MIN_SLIPPAGE_BPS` to `MAX_SLIPPAGE_BPS`):
+   * the route may carry that much and no more. Unset: 0.5%, or 3% on a Pump.fun bonding curve. It
+   * comes from the agent's own intent, never from Orientim's answer.
+   */
+  slippageBps?: number;
+  /**
+   * The most rent the route may keep, in lamports: what the wallet sends for a market's account,
+   * less what closing it returns in the same transaction (default 0.001 SOL). A Pump.fun bonding
+   * curve keeps about 0.00013 SOL of every buy for growing its own account.
+   */
+  maxRouteCostLamports?: number;
+  /**
+   * The most Orientim's fee may be in lamports when it is paid in SOL from the wallet: a swap between
+   * two tokens neither of which can carry it pays `feeBps` of its value in SOL, at a price the rules
+   * cannot see. Required for such a swap; `ownSolFeeLimit` asks Jupiter for it.
+   */
+  maxSolFeeLamports?: number;
+  /**
+   * One ceiling for all the SOL the swap may cost and not return, in lamports: the network fee the transaction can pay (its compute budget, as the verifier
+   * reads it), rent the route keeps, and Orientim's fee when paid in SOL. A new output account's rent
+   * is not in it: that account stays the wallet's own.
+   */
+  maxSolCostLamports?: number;
+};
+
+/** The parts of a /api/v1/prepare answer the check reads. */
+export type PreparedSwap = {
+  transaction: string;
+  messageSha256: string;
+  temporaryAuthority: string;
+  policy: Record<string, unknown>;
+};
+
+const BIGINT_FIELDS = ['minOut', 'takerRent', 'routeRefund', 'amountIn', 'feeBps', 'fee', 'swapAmount', 'maxNetworkFeeLamports'] as const;
+
+function policyOf(json: Record<string, unknown>): Policy | null {
+  try {
+    const p: Record<string, unknown> = { ...json, accounts: { ...(json.accounts as object) } };
+    for (const k of BIGINT_FIELDS) {
+      if (typeof json[k] !== 'string' || !/^\d{1,20}$/.test(json[k] as string)) return null;
+      p[k] = BigInt(json[k] as string);
+    }
+    return p as unknown as Policy;
+  } catch {
+    return null;
+  }
+}
+
+/** A value from the server, shown in a problem only as an address; anything else is not repeated. */
+const shown = (v: unknown) => (typeof v === 'string' && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(v) ? v : '(not an address)');
+const hex = (b: ArrayBuffer) => Array.from(new Uint8Array(b), x => x.toString(16).padStart(2, '0')).join('');
+
+/**
+ * The problems found, or an empty list. Sign only when it is empty. `rpc` must be the agent's own
+ * RPC, not one Orientim provides: the check is worth what the chain state it reads is worth.
+ */
+export async function verifyPrepared(
+  prepared: PreparedSwap, limits: AgentLimits, rpc: Rpc<SolanaRpcApi>, opts: { requestTimeoutMs?: number } = {},
+): Promise<string[]> {
+  // Every read on your RPC ends in time: one that never answers is a problem, not a wait.
+  const timeoutMs = opts.requestTimeoutMs ?? 10_000;
+  const problems: string[] = [];
+  let transaction;
+  try {
+    transaction = getTransactionDecoder().decode(Buffer.from(prepared.transaction, 'base64'));
+  } catch {
+    return ['the transaction cannot be decoded'];
+  }
+  const digest = hex(await crypto.subtle.digest('SHA-256', new Uint8Array(transaction.messageBytes)));
+  if (digest !== prepared.messageSha256) problems.push('the message does not hash to messageSha256');
+
+  // The policy comes from the server too, so every part of it that matters is held to the agent's
+  // own intent and limits before the verifier uses it.
+  const p = policyOf(prepared.policy);
+  if (!p) return [...problems, 'the policy is malformed'];
+  if (p.owner !== limits.owner) problems.push(`the policy is for wallet ${shown(p.owner)}, not yours`);
+  if (p.inputMint !== limits.inputMint || p.outputMint !== limits.outputMint) problems.push('the policy is for other tokens');
+  if (p.amountIn !== BigInt(limits.amountIn)) problems.push(`the policy debits ${p.amountIn}, not ${limits.amountIn}`);
+  if (p.jupiterProgram !== JUPITER_PROGRAM) problems.push(`the swap program is ${shown(p.jupiterProgram)}, not Jupiter`);
+  if (p.ephemeral !== prepared.temporaryAuthority) problems.push('the one-time key differs from the one stated');
+  if (p.feeBps > BigInt(feeLimitBps(limits.maxFeeBps))) problems.push(`the fee of ${p.feeBps} bps is above your limit`);
+  if (p.treasury !== null && p.treasury !== (limits.treasury || ORIENTIM_TREASURY)) problems.push(`the fee goes to ${shown(p.treasury)}, not Orientim's treasury`);
+  if (p.maxNetworkFeeLamports > BigInt(limits.maxNetworkFeeLamports ?? 1_000_000)) {
+    problems.push(`the network fee may reach ${p.maxNetworkFeeLamports} lamports, above your limit`);
+  }
+  // A fee in SOL from the wallet is priced by the server; the agent holds it to a price of its own.
+  if (p.feeSide === 'sol') {
+    if (limits.maxSolFeeLamports === undefined) {
+      problems.push('the Orientim fee is paid in SOL at a price the check cannot see: set maxSolFeeLamports from a price you got yourself (ownSolFeeLimit asks Jupiter)');
+    } else if (p.fee > BigInt(limits.maxSolFeeLamports)) {
+      problems.push(`the Orientim fee in SOL is ${p.fee} lamports, above your limit of ${limits.maxSolFeeLamports}`);
+    }
+  }
+  // Rent that does not come back is a cost of its own, apart from the network fee.
+  const routeCost = p.takerRent - p.routeRefund;
+  const maxRouteCost = BigInt(limits.maxRouteCostLamports ?? 1_000_000);
+  if (routeCost > maxRouteCost) {
+    problems.push(`the route keeps ${routeCost} lamports of rent that do not come back, above your limit of ${maxRouteCost} (maxRouteCostLamports)`);
+  }
+  // What the wallet keeps: the enforced minimum, less a fee taken from the output (like Jupiter's,
+  // Orientim takes its fee in SOL first, then USDC or USDT, on whichever side of the swap they are).
+  const keeps = p.feeSide === 'output' ? p.minOut - p.fee : p.minOut;
+  if (!/^\d{1,20}$/.test(limits.minOut ?? '') || BigInt(limits.minOut) === 0n) {
+    problems.push('no minimum of your own: set minOut from a price you got yourself (ownMinimum asks Jupiter for one)');
+  } else if (keeps < BigInt(limits.minOut)) {
+    problems.push(`the minimum ${keeps} is below yours, ${limits.minOut}`);
+  }
+
+  // Chain state from the agent's own RPC: every account the message names, resolved through its
+  // lookup tables, and the accounts the policy derives.
+  let snapshot: ChainSnapshot;
+  let snapshotAddresses: Address[] = [];
+  try {
+    const compiled = getCompiledTransactionMessageDecoder().decode(transaction.messageBytes) as unknown as {
+      staticAccounts: Address[];
+      addressTableLookups?: { lookupTableAddress: Address; writableIndexes: number[]; readonlyIndexes: number[] }[];
+    };
+    const lookups = compiled.addressTableLookups ?? [];
+    const lookupTables: Record<string, readonly Address[]> = lookups.length
+      ? await fetchAddressesForLookupTables(lookups.map(l => l.lookupTableAddress), rpc as never, { abortSignal: AbortSignal.timeout(timeoutMs) })
+      : {};
+    const resolved = lookups.flatMap(l =>
+      [...l.writableIndexes, ...l.readonlyIndexes].map(i => lookupTables[l.lookupTableAddress]?.[i]).filter((a): a is Address => !!a));
+    const derived = Object.values(p.accounts).filter((a): a is Address => !!a);
+    const addresses = [
+      ...compiled.staticAccounts, ...resolved, ...derived, p.inputMint, p.outputMint, p.ephemeral,
+      ...(p.treasury ? [p.treasury] : []),
+    ];
+    const { accounts, slot } = await readAccounts(rpc as never, addresses, { timeoutMs });
+    snapshot = { accounts, lookupTables, slot };
+    snapshotAddresses = [...compiled.staticAccounts, ...resolved];
+  } catch (e) {
+    return [...problems, `the chain state could not be read from your RPC: ${(e as Error).message}`];
+  }
+
+  if (limits.slippageBps !== undefined && !isSlippageBps(limits.slippageBps)) {
+    return [...problems, `slippageBps must be a whole number of bps from ${MIN_SLIPPAGE_BPS} to ${MAX_SLIPPAGE_BPS}`];
+  }
+  // The route's tolerance is the agent's own choice, or the verifier's defaults: never the server's.
+  const verdict = await verify(transaction, p, snapshot, limits.slippageBps !== undefined ? { maxSlippageBps: limits.slippageBps } : {});
+  for (const v of verdict.violations) problems.push(`${v.rule}: ${v.detail}`);
+  if (limits.maxSolCostLamports !== undefined && verdict.networkFeeLamports !== undefined) {
+    const solCost = verdict.networkFeeLamports + routeCost + (p.feeSide === 'sol' ? p.fee : 0n);
+    if (solCost > BigInt(limits.maxSolCostLamports)) {
+      problems.push(`the swap may cost ${solCost} lamports of SOL that do not come back, above your limit of ${limits.maxSolCostLamports} (maxSolCostLamports)`);
+    }
+  }
+  // Every account the transaction names that did not exist before it: what the route opens, besides
+  // the wallet's own output account (and the treasury, which receives but is never created here).
+  const exists = (a: Address) => { const s = snapshot.accounts.get(a); return !!s && (s.lamports > 0n || s.data.length > 0); };
+  const keep = new Set<string>([p.accounts.wOut, p.treasury].filter((a): a is Address => !!a));
+  const fresh = [...new Set(snapshotAddresses)].filter(a => !exists(a) && !keep.has(a));
+  // Simulated on state not older than the snapshot just read.
+  problems.push(...await leftUnderKey(prepared.transaction, p.ephemeral, rpc, snapshot.slot, timeoutMs, fresh));
+  return problems;
+}
+
+/**
+ * What stays behind after the swap, simulated on the agent's own RPC: under the one-time key, in the
+ * account each Pump.fun market opens in its name, and in any other account the route opens. Every
+ * lamport the wallet sends E (a market's account rent) must be spent by the route or come back in the
+ * same transaction; a server that stated more than the route needs, a smaller refund, or a market
+ * account left open would otherwise leave lamports under a key it can derive. An account the route opens and leaves open may hold a claim tied to E
+ * whatever market it belongs to, so none may stay. An account that does not exist
+ * afterwards holds nothing; an answer that does not report the accounts proves nothing, and is refused.
+ */
+async function leftUnderKey(
+  transaction: string, key: Address, rpc: Rpc<SolanaRpcApi>, minContextSlot = 0n, timeoutMs = 10_000, fresh: readonly Address[] = [],
+): Promise<string[]> {
+  // E, each Pump market's account in E's name, and the token accounts those hold cashback in (WSOL,
+  // or USDC on a USDC-quoted market): a claim E could make later is value under E too.
+  const markets = await Promise.all([PUMP_CURVE_PROGRAM, PUMP_AMM_PROGRAM].map(program => routeAccountFor(program, key)));
+  const cashback = await Promise.all(markets.flatMap(owner => [WSOL_MINT, USDC_MINT].map(async mint =>
+    (await findAssociatedTokenPda({ owner, mint, tokenProgram: TOKEN_PROGRAM }))[0])));
+  const underKey = [key, ...markets, ...cashback];
+  const opened = fresh.filter(a => !underKey.includes(a));
+  const watched = [...underKey, ...opened];
+  try {
+    const { value } = await rpc
+      .simulateTransaction(transaction as never, {
+        encoding: 'base64', sigVerify: false, replaceRecentBlockhash: true, commitment: 'confirmed',
+        accounts: { addresses: watched, encoding: 'base64' },
+        ...(minContextSlot > 0n ? { minContextSlot } : {}),
+      })
+      .send({ abortSignal: AbortSignal.timeout(timeoutMs) });
+    if (value.err) return [`the swap fails in simulation on your RPC: ${JSON.stringify(value.err, (_, v) => (typeof v === 'bigint' ? v.toString() : v))}`];
+    const after = (value as { accounts?: readonly ({ lamports: bigint | number } | null)[] | null }).accounts;
+    if (!Array.isArray(after) || after.length !== watched.length) {
+      return ['the simulation on your RPC did not report what the one-time key holds after the swap'];
+    }
+    const held = after.map(a => BigInt(a?.lamports ?? 0));
+    const problems: string[] = [];
+    if (held[0] !== 0n) problems.push(`the one-time key would keep ${held[0]} lamports after the swap`);
+    const inMarkets = held.slice(1, underKey.length).reduce((sum, x) => sum + x, 0n);
+    if (inMarkets !== 0n) problems.push(`a market account under the one-time key would keep ${inMarkets} lamports after the swap`);
+    const left = opened.filter((_, i) => held[underKey.length + i] !== 0n);
+    if (left.length) problems.push(`the route would leave open ${left.length} account(s) it creates (${left.join(', ')}), holding lamports no one returns`);
+    return problems;
+  } catch (e) {
+    return [`the swap could not be simulated on your RPC: ${(e as Error).message}`];
+  }
+}
+
+/**
+ * A floor of the agent's own, from a price it asks Jupiter for itself: the
+ * output for the amount Orientim will route (after its fee), less `maxBelowBps`. By default 2%, or 5%
+ * when the route trades on a Pump.fun bonding curve, which Orientim quotes at 3%: enough for Orientim's
+ * tolerance, its narrower routes and a few seconds of movement, and far from "almost nothing". With
+ * `slippageBps`, the tolerance the agent chose and 1.5% more (2% on a curve).
+ * Without `apiKey`, Jupiter allows a request every two seconds.
+ */
+export type OwnQuoteArgs = {
+  inputMint: string; outputMint: string; amountIn: string; taker: string;
+  maxFeeBps?: number; maxBelowBps?: number; jupiterUrl?: string; apiKey?: string; fetchImpl?: typeof fetch;
+  /**
+   * The tolerance the agent chose for its route (`AgentLimits.slippageBps`). Without `maxBelowBps`,
+   * the floor then sits that far below Jupiter's price, and 1.5% more (2% on a Pump.fun curve) for
+   * the quote to differ between two asks.
+   */
+  slippageBps?: number;
+  /**
+   * The transfer fee the input token charges now (`inputTransferFee`), if any: such a token keeps a
+   * cut of the transfer into the temporary account, so the route is priced for what arrives there.
+   * Without it, the floor of a taxing token would sit above what any honest route can deliver.
+   */
+  inputTax?: TransferFee | null;
+};
+
+/** A floor of the agent's own (`ownQuote`). */
+export async function ownMinimum(args: OwnQuoteArgs): Promise<string> {
+  return (await ownQuote(args)).minOut;
+}
+
+/**
+ * Jupiter's price for the amount Orientim will route, asked for directly: the agent's own floor
+ * (`minOut`, base units), how far this amount moves the market (`priceImpactBps`), and whether the
+ * route trades on a Pump.fun bonding curve. A large price impact is the mark of thin liquidity, as
+ * when a token's pool is drained: the check refuses it (`DEFAULT_MAX_PRICE_IMPACT_BPS`).
+ */
+export async function ownQuote(args: OwnQuoteArgs): Promise<{ minOut: string; outAmount: string; priceImpactBps: number; curve: boolean }> {
+  if (args.maxBelowBps !== undefined && !(Number.isInteger(args.maxBelowBps) && args.maxBelowBps >= 0 && args.maxBelowBps <= MAX_BELOW_BPS)) {
+    throw new Error(`maxBelowBps must be a whole number of bps from 0 to ${MAX_BELOW_BPS}: a floor further below the market is not accepted. Nothing was prepared.`);
+  }
+  const amount = BigInt(args.amountIn);
+  const afterFee = amount - (amount * BigInt(feeLimitBps(args.maxFeeBps))) / 10_000n;
+  const routed = args.inputTax ? afterFee - transferFeeOn(afterFee, args.inputTax) : afterFee;
+  const url = new URL(args.jupiterUrl ?? 'https://api.jup.ag/swap/v2/build');
+  const query = {
+    inputMint: args.inputMint, outputMint: args.outputMint, amount: routed.toString(), taker: args.taker, slippageBps: '50', maxAccounts: '64',
+  };
+  for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
+  const res = await (args.fetchImpl ?? fetch)(url.toString(), {
+    headers: args.apiKey ? { 'x-api-key': args.apiKey } : {}, signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) throw new Error(`Jupiter answered ${res.status} when asked for your own price`);
+  const r = (await res.json()) as {
+    inputMint?: string; outputMint?: string; inAmount?: string; outAmount?: string; priceImpactPct?: string | number;
+    swapInstruction?: { accounts?: { pubkey: string }[] };
+  };
+  if (r.inputMint !== args.inputMint || r.outputMint !== args.outputMint || r.inAmount !== routed.toString() || !/^\d{1,20}$/.test(r.outAmount ?? '')) {
+    throw new Error('Jupiter answered for another trade when asked for your own price');
+  }
+  const curve = r.swapInstruction?.accounts?.some(a => a.pubkey === PUMP_CURVE_PROGRAM) ?? false;
+  const below = BigInt(args.maxBelowBps ?? (args.slippageBps !== undefined ? args.slippageBps + (curve ? 200 : 150) : (curve ? 500 : 200)));
+  const impact = Number(r.priceImpactPct);
+  return {
+    minOut: ((BigInt(r.outAmount!) * (10_000n - below)) / 10_000n).toString(),
+    outAmount: r.outAmount!,
+    priceImpactBps: Number.isFinite(impact) && impact > 0 ? Math.round(impact * 10_000) : 0,
+    curve,
+  };
+}
+
+/** Stablecoins and SOL keep authorities by design; a note on every swap of them would teach agents to skip notes. */
+const QUIET_MINTS = new Set<string>([WSOL_MINT, USDC_MINT, 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB']);
+
+/**
+ * What the agent should know about the tokens themselves, read from the mint accounts on its own RPC:
+ * an issuer that can freeze balances, or mint more. The same notes the page shows people. Orientim
+ * protects the wallet, not the value of what is bought. Never fails: an unreadable mint gives no note.
+ */
+export async function tokenNotices(rpc: Rpc<SolanaRpcApi>, mints: readonly string[], timeoutMs = 10_000): Promise<string[]> {
+  const asked = [...new Set(mints)].filter(m => !QUIET_MINTS.has(m));
+  if (!asked.length) return [];
+  try {
+    const { accounts } = await readAccounts(rpc as never, asked as Address[], { timeoutMs });
+    const notes: string[] = [];
+    for (const m of asked) {
+      const s = accounts.get(m);
+      if (!s || s.data.length < 82 || (s.owner !== TOKEN_PROGRAM && s.owner !== TOKEN_2022_PROGRAM)) continue;
+      const view = new DataView(s.data.buffer, s.data.byteOffset, s.data.byteLength);
+      const name = `${m.slice(0, 4)}…${m.slice(-4)}`;
+      if (view.getUint32(46, true) === 1) notes.push(`${name} has a freeze authority: its issuer can freeze your balance`);
+      if (view.getUint32(0, true) === 1) notes.push(`${name} can still be minted by its issuer`);
+    }
+    return notes;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The transfer fee a Token-2022 input token charges in the current epoch, read on your RPC; null
+ * when it charges none (a classic token, or no TransferFeeConfig). For `ownMinimum`'s `inputTax`.
+ */
+export async function inputTransferFee(rpc: Rpc<SolanaRpcApi>, mint: string, timeoutMs = 10_000): Promise<TransferFee | null> {
+  const state = (await readAccounts(rpc as never, [mint as Address], { timeoutMs })).accounts.get(mint);
+  if (!state || state.owner !== TOKEN_2022_PROGRAM || !hasTransferFee(state.data)) return null;
+  // Which of the two fee settings applies depends on the epoch, as the token program decides it.
+  const { epoch } = await rpc.getEpochInfo({ commitment: 'confirmed' }).send({ abortSignal: AbortSignal.timeout(timeoutMs) });
+  return transferFeeOf(state.data, BigInt(epoch));
+}
+
+/**
+ * The most Orientim's fee in SOL may be for a swap that neither token can carry the fee for, from a
+ * price the agent asks Jupiter for itself: `maxFeeBps` (default 30) of what `amountIn` of the input
+ * is worth in SOL, plus 2% for the price moving between the server's quote and this one. In
+ * lamports.
+ */
+export async function ownSolFeeLimit(args: {
+  inputMint: string; amountIn: string; taker: string;
+  maxFeeBps?: number; jupiterUrl?: string; apiKey?: string; fetchImpl?: typeof fetch;
+}): Promise<number> {
+  const url = new URL(args.jupiterUrl ?? 'https://api.jup.ag/swap/v2/build');
+  const query = {
+    inputMint: args.inputMint, outputMint: 'So11111111111111111111111111111111111111112', amount: args.amountIn,
+    taker: args.taker, slippageBps: '50', maxAccounts: '64',
+  };
+  for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
+  const res = await (args.fetchImpl ?? fetch)(url.toString(), {
+    headers: args.apiKey ? { 'x-api-key': args.apiKey } : {}, signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) throw new Error(`Jupiter answered ${res.status} when asked for the value of your swap in SOL`);
+  const r = (await res.json()) as { inputMint?: string; outputMint?: string; inAmount?: string; outAmount?: string };
+  if (r.inputMint !== args.inputMint || r.outputMint !== query.outputMint || r.inAmount !== args.amountIn || !/^\d{1,20}$/.test(r.outAmount ?? '')) {
+    throw new Error('Jupiter answered for another trade when asked for the value of your swap in SOL');
+  }
+  const fee = (BigInt(r.outAmount!) * BigInt(feeLimitBps(args.maxFeeBps))) / 10_000n;
+  const limit = fee + fee / 50n;
+  // A limit beyond what a Number holds exactly is refused rather than rounded.
+  if (limit > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('the fee in SOL for this amount is beyond an exact limit; set maxSolFeeLamports yourself');
+  return Number(limit);
+}

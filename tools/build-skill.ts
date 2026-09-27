@@ -1,0 +1,143 @@
+/**
+ * Builds what the skill ships beside its sources, so that the skill folder is the whole package an
+ * agent or a bot downloads, and needs nothing from this repository:
+ *
+ *   lib/orientim-verify.mjs       the agent's verifier (src/verify.ts, with @orientim/verifier and friends)
+ *   bin/orientim-verify.mjs       the command for bots in other languages (src/cli.ts and the example)
+ *   SHA256SUMS                    the hash of every file the skill ships (`sha256sum -c SHA256SUMS`)
+ *
+ * and dist/orientim-protected-swap.zip, the skill folder as one download (the same file Orientim
+ * serves at /skill/orientim-protected-swap.zip). The zip is stored without compression and with
+ * fixed dates, so that it is byte for byte the same from every machine.
+ *
+ * Only @solana/kit stays external, pinned to one version with a lockfile of hashes (package.json,
+ * package-lock.json). Hashes are of the files with LF line ends, which .gitattributes keeps on
+ * every checkout.
+ *
+ *   node tools/build-skill.ts           write them
+ *   node tools/build-skill.ts --check   fail if a committed file differs from a fresh build (CI)
+ */
+import { createHash } from 'node:crypto';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { crc32 } from 'node:zlib';
+import { rolldown } from 'rolldown';
+
+const SKILL = 'skills/orientim-protected-swap';
+/** What the skill ships, besides SHA256SUMS itself, in the order the sums list them. */
+const SHIPPED = [
+  'SKILL.md', 'README.md', 'LICENSE', 'package.json', 'package-lock.json', 'examples/swap.ts', 'lib/orientim-verify.mjs',
+  'lib/orientim-verify.d.mts', 'bin/orientim-verify.mjs', 'src/verify.ts', 'src/cli.ts', 'src/cli-entry.ts', 'reference/AGENT-API.md',
+];
+
+async function bundle(input: string, banner: string): Promise<string> {
+  const b = await rolldown({
+    input,
+    external: id => id === '@solana/kit' || id.startsWith('@solana/kit/'),
+    platform: 'node',
+    logLevel: 'warn',
+  });
+  const { output } = await b.generate({ format: 'esm', banner });
+  await b.close();
+  return output[0].code;
+}
+
+const lf = (s: string) => s.replace(/\r\n/g, '\n');
+const sums = () => SHIPPED.map(file =>
+  `${createHash('sha256').update(lf(readFileSync(`${SKILL}/${file}`, 'utf8'))).digest('hex')}  ${file}`).join('\n') + '\n';
+
+/**
+ * A zip of the skill, every file under one folder: stored (no compression, so no dependence on a
+ * zlib version), dated 1980-01-01, the command marked executable, names in UTF-8.
+ */
+function zip(entries: { name: string; data: Buffer; mode: number }[]): Buffer {
+  const local: Buffer[] = [];
+  const central: Buffer[] = [];
+  let offset = 0;
+  for (const { name, data, mode } of entries) {
+    const n = Buffer.from(name, 'utf8');
+    const crc = crc32(data);
+    const head = Buffer.alloc(30);
+    head.writeUInt32LE(0x04034b50, 0);
+    head.writeUInt16LE(20, 4); // version needed: 2.0
+    head.writeUInt16LE(0x0800, 6); // names in UTF-8
+    head.writeUInt16LE(0, 8); // stored
+    head.writeUInt16LE(0, 10); // 00:00
+    head.writeUInt16LE(0x21, 12); // 1980-01-01
+    head.writeUInt32LE(crc, 14);
+    head.writeUInt32LE(data.length, 18);
+    head.writeUInt32LE(data.length, 22);
+    head.writeUInt16LE(n.length, 26);
+    local.push(head, n, data);
+    const dir = Buffer.alloc(46);
+    dir.writeUInt32LE(0x02014b50, 0);
+    dir.writeUInt16LE((3 << 8) | 20, 4); // made on Unix, so that the mode below is read
+    dir.writeUInt16LE(20, 6);
+    dir.writeUInt16LE(0x0800, 8);
+    dir.writeUInt16LE(0x21, 14);
+    dir.writeUInt32LE(crc, 16);
+    dir.writeUInt32LE(data.length, 20);
+    dir.writeUInt32LE(data.length, 24);
+    dir.writeUInt16LE(n.length, 28);
+    dir.writeUInt32LE((mode << 16) >>> 0, 38);
+    dir.writeUInt32LE(offset, 42);
+    central.push(dir, n);
+    offset += head.length + n.length + data.length;
+  }
+  const directory = Buffer.concat(central);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(directory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...local, directory, end]);
+}
+const archive = () => zip([...SHIPPED, 'SHA256SUMS'].map(file => ({
+  name: `orientim-protected-swap/${file}`,
+  data: Buffer.from(lf(readFileSync(`${SKILL}/${file}`, 'utf8')), 'utf8'),
+  mode: file.startsWith('bin/') ? 0o100755 : 0o100644,
+})));
+
+// In order, each written before the next is built: the command bundles the example, which imports
+// lib/orientim-verify.mjs from disk, so the verifier must be current before the command is bundled, and
+// the sums are taken of the files as they are once everything before them is written.
+const outputs: [path: string, make: () => Promise<string | Buffer>][] = [
+  [`${SKILL}/lib/orientim-verify.mjs`, () => bundle(
+    `${SKILL}/src/verify.ts`,
+    '// Generated by tools/build-skill.ts from skills/orientim-protected-swap/src/verify.ts and @orientim/verifier. Do not edit.',
+  )],
+  [`${SKILL}/bin/orientim-verify.mjs`, () => bundle(
+    `${SKILL}/src/cli-entry.ts`,
+    '#!/usr/bin/env node\n// Generated by tools/build-skill.ts from skills/orientim-protected-swap/src/cli.ts and examples/swap.ts. Do not edit.',
+  )],
+  [`${SKILL}/SHA256SUMS`, async () => sums()],
+];
+
+const check = process.argv.includes('--check');
+// The zip is a release asset, not committed: written on a build, never compared on a check.
+if (!check) outputs.push(['dist/orientim-protected-swap.zip', async () => archive()]);
+let stale = 0;
+for (const [path, make] of outputs) {
+  const content = await make();
+  if (check) {
+    let committed: Buffer | null = null;
+    try {
+      committed = readFileSync(path);
+    } catch {
+      // missing
+    }
+    const same = committed !== null && (typeof content === 'string'
+      ? lf(committed.toString('utf8')) === lf(content)
+      : committed.equals(content));
+    if (!same) {
+      console.error(`${path} differs from a fresh build. Run: node tools/build-skill.ts`);
+      stale++;
+    } else console.log(`${path} matches its source`);
+  } else {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, content);
+    console.log(`${path}: ${content.length} bytes`);
+  }
+}
+if (stale) process.exit(1);
