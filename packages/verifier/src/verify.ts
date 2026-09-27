@@ -746,7 +746,7 @@ export async function verify(transaction: Transaction, policy: Policy, snapshot:
       if (a.address === W) { fail('R1', 'the wallet is passed to the external program'); continue; }
       if (a.address === wIn) { fail('R1', "the wallet's input token account is passed to the external program"); continue; }
       if (a.address === feeDestination || a.address === p.treasury) {
-        fail('R1', "Orientim's fee account is passed to the external program"); // B-11
+        fail('R1', "Orientim's fee account is passed to the external program");
         continue;
       }
       if (a.address === wOut) continue;

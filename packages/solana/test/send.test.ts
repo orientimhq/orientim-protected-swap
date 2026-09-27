@@ -87,7 +87,7 @@ const httpError = (statusCode: number, stoppedByOrientim = false) => {
   return new SolanaError(SOLANA_ERROR__RPC__TRANSPORT_HTTP_ERROR, { headers, message: 'error', statusCode } as never);
 };
 
-describe('C-03: the outcome of a send', () => {
+describe('the outcome of a send', () => {
   it('reports the signature before the first request', async () => {
     const { result, events } = await run({ statuses: [confirmed] });
     expect(events[0]).toBe('sending');

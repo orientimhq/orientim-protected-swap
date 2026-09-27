@@ -1,7 +1,6 @@
 /**
- * Regression tests for attacks found by earlier security reviews. They replace the reviewers'
- * proof-of-concept scripts: every attack those reviews showed was ACCEPTED must now be rejected,
- * and every control they ran must keep holding.
+ * Regression tests for known attacks on the verifier: every attack here must be rejected, and every
+ * control check must keep holding.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -35,7 +34,7 @@ const withSwapAccount = (s: Scenario, address: Address, role = AccountRole.WRITA
   return ixs;
 };
 
-describe('B-01: the Orientim fee is bounded by the verifier, not by the configuration', () => {
+describe('the Orientim fee is bounded by the verifier, not by the configuration', () => {
   for (const bps of [5_000n, 9_999n, MAX_FEE_BPS + 1n]) {
     it(`a ${bps} bps fee is rejected even though the policy is self-consistent`, async () => {
       const s = await scenario();
@@ -53,7 +52,7 @@ describe('B-01: the Orientim fee is bounded by the verifier, not by the configur
   }
 });
 
-describe('B-02: F_max is bounded by the verifier, not by the configuration', () => {
+describe('F_max is bounded by the verifier, not by the configuration', () => {
   it('a 710,000 lamport fee is rejected even when the policy allows 1 SOL', async () => {
     const s = await scenario();
     const tx = compileRaw(s.W, [...cuIxs(1_400_000, 500_000n), ...honest(s)], 0, s.lookupTables);
@@ -68,7 +67,7 @@ describe('B-02: F_max is bounded by the verifier, not by the configuration', () 
   });
 });
 
-describe('B-03: W_out authorities', () => {
+describe('W_out authorities', () => {
   const OFF = { amount: 64, delegateTag: 72, delegate: 76, delegatedAmount: 121, closeTag: 129, close: 133 };
 
   it('a delegate on W_out is neutralised by a trusted Revoke before the swap', async () => {
@@ -115,7 +114,7 @@ describe('B-03: W_out authorities', () => {
   });
 });
 
-describe('B-04: Orientim enforces the minimum output itself', () => {
+describe('Orientim enforces the minimum output itself', () => {
   for (const [name, opts] of [
     ['A: USDC → SOL (check on E_out)', {}],
     ['B: SOL → USDC (check on W_out)', { input: WSOL_MINT, output: USDC }],
@@ -187,7 +186,7 @@ describe('Token-2022 MemoTransfer account state', () => {
   });
 });
 
-describe('B-07: the v1 message config is an allowlist', () => {
+describe('the v1 message config is an allowlist', () => {
   it('a heap size in the v1 config is rejected', async () => {
     const s = await scenario();
     expect((await verify(compileRaw(s.W, honest(s), 1), s.policy, s.snapshot)).ok).toBe(true);
@@ -195,7 +194,7 @@ describe('B-07: the v1 message config is an allowlist', () => {
   });
 });
 
-describe("B-09: the user never pays rent for Orientim's fee account", () => {
+describe("the user never pays rent for Orientim's fee account", () => {
   for (const version of [0, 1] as const) {
     it(`without a fee account the swap is fee-free and creates nothing for the treasury, v${version}`, async () => {
       // Neither side is SOL, USDC or USDT and the treasury has no account for the input token.
@@ -225,7 +224,7 @@ describe("B-09: the user never pays rent for Orientim's fee account", () => {
   });
 });
 
-describe('B-10: Token-2022 intermediate hops', () => {
+describe('Token-2022 intermediate hops', () => {
   const HOOK = 14;
   const PERMANENT_DELEGATE = 12;
   const METADATA_POINTER = 18;
@@ -315,7 +314,7 @@ describe('B-10: Token-2022 intermediate hops', () => {
   });
 });
 
-describe('B-11: Orientim fee accounts are kept away from the external program', () => {
+describe('Orientim fee accounts are kept away from the external program', () => {
   it("the treasury's fee ATA inside the swap is rejected", async () => {
     const s = await scenario();
     const feeDest = s.policy.accounts.feeDestination!;
@@ -325,7 +324,7 @@ describe('B-11: Orientim fee accounts are kept away from the external program', 
   });
 });
 
-describe('controls the reviews ran', () => {
+describe('accounts outside the policy, and the real wire size', () => {
   it('an unrelated W token account in the swap is rejected with R1', async () => {
     const s = await scenario();
     const tx = compileRaw(s.W, [...cuIxs(), ...withSwapAccount(s, s.wOther)], 0, s.lookupTables);
