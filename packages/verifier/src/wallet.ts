@@ -1,5 +1,6 @@
 import { getCompiledTransactionMessageDecoder, getPublicKeyFromAddress, getTransactionDecoder, verifySignature } from '@solana/kit';
 import type { Address, Transaction } from '@solana/kit';
+import { ABSOLUTE_MAX_NETWORK_FEE_LAMPORTS, LAMPORTS_PER_SIGNATURE } from '@orientim/core/constants';
 import type { Verdict, Violation } from '@orientim/core/types';
 
 const sameBytes = (a: ArrayLike<number>, b: ArrayLike<number>) => {
@@ -20,7 +21,14 @@ const ASSERTION_FIRST = 2;
 const ASSERTION_LAST = 15;
 /** SetComputeUnitLimit (2, u32) may rise by this much, for the assertions' own compute. */
 const SET_CU_LIMIT = 2;
-const MAX_ADDED_COMPUTE_UNITS = 50_000;
+const SET_CU_PRICE = 3;
+/** How far a wallet may raise the compute limit for the assertions it adds (a builder leaves room for it). */
+export const MAX_ADDED_COMPUTE_UNITS = 50_000;
+
+/** A Lighthouse instruction that only asserts (kinds 2 to 15), by its data. */
+export function isLighthouseAssertion(data: ArrayLike<number>): boolean {
+  return data.length > 0 && data[0]! >= ASSERTION_FIRST && data[0]! <= ASSERTION_LAST;
+}
 
 type Compiled = {
   version: 'legacy' | 0 | 1;
@@ -48,15 +56,28 @@ function staticRole(m: Compiled, i: number): string {
 
 const u32At = (data: ArrayLike<number>, at: number) =>
   (data[at]! | (data[at + 1]! << 8) | (data[at + 2]! << 16) | (data[at + 3]! << 24)) >>> 0;
+const u64At = (data: ArrayLike<number>, at: number) => BigInt(u32At(data, at)) | (BigInt(u32At(data, at + 4)) << 32n);
+
+type Resolved = { program: string | undefined; accounts: (string | undefined)[]; data: number[] };
+
+/** The most a v0 message can pay in network fees, read as R4 reads it: signatures and priority. */
+function networkFee(signers: number, instructions: Resolved[]): bigint {
+  const budget = (kind: number, length: number) =>
+    instructions.find(ix => ix.program === COMPUTE_BUDGET && ix.data[0] === kind && ix.data.length === length);
+  const limit = budget(SET_CU_LIMIT, 5);
+  const price = budget(SET_CU_PRICE, 9);
+  const priority = limit && price ? (BigInt(u32At(limit.data, 1)) * u64At(price.data, 1) + 999_999n) / 1_000_000n : 0n;
+  return LAMPORTS_PER_SIGNATURE * BigInt(signers) + priority;
+}
 
 /**
  * Whether `returned` is `original` with only Lighthouse assertions added, as Phantom may do: the
  * same signers in the same order, the same fee payer, lifetime and lookup tables, every original
  * account in the same role, new accounts read-only, the original instructions unchanged and in
- * order, and a compute limit raised by at most MAX_ADDED_COMPUTE_UNITS. Returns what differs, or
- * nothing when the change is only that.
+ * order, and a compute limit raised by at most MAX_ADDED_COMPUTE_UNITS while the network fee stays
+ * within `maxFee`. Returns what differs, or nothing when the change is only that.
  */
-function onlyAssertionsAdded(original: Compiled, returned: Compiled): string | null {
+function onlyAssertionsAdded(original: Compiled, returned: Compiled, maxFee: bigint): string | null {
   if (original.version !== returned.version || original.version === 1) return 'the message version or format changed';
   if (original.lifetimeToken !== returned.lifetimeToken) return 'the blockhash changed';
   const { header: a } = original;
@@ -79,7 +100,7 @@ function onlyAssertionsAdded(original: Compiled, returned: Compiled): string | n
 
   const namesA = accountNames(original);
   const namesB = accountNames(returned);
-  const resolve = (names: string[], ix: Compiled['instructions'][number]) => ({
+  const resolve = (names: string[], ix: Compiled['instructions'][number]): Resolved => ({
     program: names[ix.programAddressIndex],
     accounts: (ix.accountIndices ?? []).map(k => names[k]),
     data: Array.from(ix.data ?? []),
@@ -88,7 +109,7 @@ function onlyAssertionsAdded(original: Compiled, returned: Compiled): string | n
   const added = kept.filter(ix => ix.program === LIGHTHOUSE_PROGRAM);
   if (!added.length) return 'the wallet changed an instruction';
   for (const ix of added) {
-    if (ix.data.length === 0 || ix.data[0]! < ASSERTION_FIRST || ix.data[0]! > ASSERTION_LAST) return 'the wallet added a Lighthouse instruction that is not an assertion';
+    if (!isLighthouseAssertion(ix.data)) return 'the wallet added a Lighthouse instruction that is not an assertion';
     if (ix.accounts.some(k => k === undefined)) return 'an added instruction names an account the message does not have';
   }
   const rest = kept.filter(ix => ix.program !== LIGHTHOUSE_PROGRAM);
@@ -103,6 +124,9 @@ function onlyAssertionsAdded(original: Compiled, returned: Compiled): string | n
     const [from, to] = [u32At(x.data, 1), u32At(y.data, 1)];
     if (to < from || to - from > MAX_ADDED_COMPUTE_UNITS) return 'the wallet changed the compute limit';
   }
+  // A higher compute limit at the same price costs more: the fee is held to the same limit as before.
+  const fee = networkFee(b.numSignerAccounts, rest);
+  if (fee > maxFee) return `the network fee would be up to ${fee} lamports, above ${maxFee}`;
   return null;
 }
 
@@ -113,13 +137,15 @@ function onlyAssertionsAdded(original: Compiled, returned: Compiled): string | n
  * With `acceptAssertions`, a message that differs only by Lighthouse assertions the wallet added
  * (onlyAssertionsAdded) is accepted too, and its signature is checked over that message. Every
  * assertion can only make the transaction fail; the verified instructions are left as they were.
+ * `maxNetworkFeeLamports` is the policy's F_max, which a raised compute limit must stay within
+ * (never above ABSOLUTE_MAX_NETWORK_FEE_LAMPORTS).
  */
 export async function verifyWalletReturn(
   original: Transaction,
   returnedBytes: Uint8Array,
   owner: Address,
   ephemeral: Address,
-  options: { acceptAssertions?: boolean } = {},
+  options: { acceptAssertions?: boolean; maxNetworkFeeLamports?: bigint } = {},
 ): Promise<Verdict & { transaction: Transaction | null }> {
   const violations: Violation[] = [];
   const fail = (detail: string) => void violations.push({ rule: 'R6', detail });
@@ -138,7 +164,9 @@ export async function verifyWalletReturn(
     if (options.acceptAssertions) {
       try {
         const decode = getCompiledTransactionMessageDecoder();
-        why = onlyAssertionsAdded(decode.decode(original.messageBytes) as Compiled, decode.decode(returned.messageBytes) as Compiled);
+        const asked = options.maxNetworkFeeLamports ?? ABSOLUTE_MAX_NETWORK_FEE_LAMPORTS;
+        const maxFee = asked < ABSOLUTE_MAX_NETWORK_FEE_LAMPORTS ? asked : ABSOLUTE_MAX_NETWORK_FEE_LAMPORTS;
+        why = onlyAssertionsAdded(decode.decode(original.messageBytes) as Compiled, decode.decode(returned.messageBytes) as Compiled, maxFee);
       } catch {
         why = 'the wallet returned a message that cannot be decoded';
       }

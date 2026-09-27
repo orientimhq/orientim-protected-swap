@@ -4,7 +4,8 @@
  * acceptAssertions must accept it exactly when the edits are only what Phantom may do:
  * - Lighthouse assertions (kinds 2 to 15) added anywhere, on any account the message has or on new
  *   read-only ones;
- * - the compute limit raised by at most 50,000 units;
+ * - the compute limit raised by at most 50,000 units, while the network fee stays within the limit
+ *   the caller gives (F_max);
  * - accounts reordered within their own non-signer group.
  * Anything else (another Lighthouse kind, a new writable account, a changed price, blockhash,
  * instruction or order, a dropped instruction, a role changed, signers reordered) is refused, and
@@ -303,11 +304,24 @@ function apply(base: Base, edits: Edit[]): { m: Compiled; allowed: boolean; asse
   return { m, allowed, assertions };
 }
 
+/** The most a v0 message can pay in network fees, as R4 reads it: 5,000 per signer plus priority. */
+function networkFee(m: Compiled): bigint {
+  const budget = (kind: number) => m.instructions.find(ix => isBudget(m, ix, kind));
+  const [limit, price] = [budget(2), budget(3)];
+  if (!limit || !price) return 5_000n * BigInt(m.header.numSignerAccounts);
+  const units = BigInt(new DataView(Uint8Array.from(limit.data!).buffer).getUint32(1, true));
+  const micro = new DataView(Uint8Array.from(price.data!).buffer).getBigUint64(1, true);
+  return 5_000n * BigInt(m.header.numSignerAccounts) + (units * micro + 999_999n) / 1_000_000n;
+}
+
+/** A fee limit around what the honest messages pay (30,000 lamports), so a raised limit can cross it. */
+const feeLimit = fc.option(fc.bigInt({ min: 25_000n, max: 40_000n }), { nil: undefined });
+
 describe('what a wallet may add before it signs (Lighthouse), fuzzed', () => {
   it('is accepted exactly when every change is one Phantom may make, and at least one assertion was added', async () => {
     const all = await bases();
-    const seen = { acceptedChanged: 0, refused: 0 };
-    await fc.assert(fc.asyncProperty(fc.nat({ max: all.length - 1 }), fc.array(edit, { minLength: 1, maxLength: 5 }), async (b, edits) => {
+    const seen = { acceptedChanged: 0, refused: 0, overFee: 0 };
+    await fc.assert(fc.asyncProperty(fc.nat({ max: all.length - 1 }), fc.array(edit, { minLength: 1, maxLength: 5 }), feeLimit, async (b, edits, maxFee) => {
       const base = all[b]!;
       const { m, allowed, assertions } = apply(base, edits);
       let messageBytes: Uint8Array;
@@ -321,9 +335,10 @@ describe('what a wallet may add before it signs (Lighthouse), fuzzed', () => {
       const changed = { ...base.tx, messageBytes } as unknown as Transaction;
       const signed = await partiallySignTransaction([base.owner.keyPair], changed);
 
-      const lenient = await verifyWalletReturn(base.tx, wire(signed), base.owner.address, base.E, { acceptAssertions: true });
+      const lenient = await verifyWalletReturn(base.tx, wire(signed), base.owner.address, base.E, { acceptAssertions: true, maxNetworkFeeLamports: maxFee });
       const strict = await verifyWalletReturn(base.tx, wire(signed), base.owner.address, base.E);
-      const expected = same || (allowed && assertions > 0);
+      const withinFee = networkFee(m) <= (maxFee ?? 1_000_000n);
+      const expected = same || (allowed && assertions > 0 && withinFee);
       if (lenient.ok !== expected) {
         throw new Error(`accepted=${lenient.ok}, expected ${expected} for ${JSON.stringify(edits)}: ${JSON.stringify(lenient.violations)}`);
       }
@@ -334,10 +349,12 @@ describe('what a wallet may add before it signs (Lighthouse), fuzzed', () => {
         if (!same) seen.acceptedChanged++;
       } else {
         seen.refused++;
+        if (allowed && assertions > 0 && !withinFee) seen.overFee++;
       }
     }), PARAMS);
     // Both sides of the rule were reached, so neither is passing vacuously.
     expect(seen.acceptedChanged).toBeGreaterThan(0);
     expect(seen.refused).toBeGreaterThan(0);
+    expect(seen.overFee).toBeGreaterThan(0);
   }, TIMEOUT);
 });

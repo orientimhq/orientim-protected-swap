@@ -3,7 +3,7 @@ export {
   unsupportedExtension, verify,
 } from './verify.ts';
 export type { JupiterRouteArgs, TransferFee, VerifyOptions } from './verify.ts';
-export { LIGHTHOUSE_PROGRAM, verifyWalletReturn } from './wallet.ts';
+export { isLighthouseAssertion, LIGHTHOUSE_PROGRAM, MAX_ADDED_COMPUTE_UNITS, verifyWalletReturn } from './wallet.ts';
 export { parseInstruction } from './parse.ts';
 export type { Parsed } from './parse.ts';
 export { certificateJson, certify, VERIFIER_VERSION } from './certificate.ts';
