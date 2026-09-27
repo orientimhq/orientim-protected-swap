@@ -38,17 +38,27 @@ type Transport = ReturnType<typeof createDefaultRpcTransport>;
 export function retryingTransport(transport: Transport, maxRetries = 5, baseMs = 500, timeoutMs = 20_000): Transport {
   return (async (config: Parameters<Transport>[0]) => {
     const method = (config as { payload?: { method?: unknown } }).payload?.method;
+    const own = (config as { signal?: AbortSignal }).signal;
     for (let attempt = 0; ; attempt++) {
       try {
         // Every request ends within `timeoutMs`, besides any signal of the caller's own: one that never
         // answers is an error, not a wait without end.
-        const own = (config as { signal?: AbortSignal }).signal;
         const limit = AbortSignal.timeout(timeoutMs);
         const signal = own && typeof AbortSignal.any === 'function' ? AbortSignal.any([own, limit]) : own ?? limit;
         return await transport({ ...config, signal } as Parameters<Transport>[0]);
       } catch (e) {
         if (attempt >= maxRetries || httpStatusOf(e) !== 429 || method === 'sendTransaction') throw e;
-        await new Promise(r => setTimeout(r, baseMs * 2 ** attempt * (0.5 + Math.random())));
+        // The caller's signal also ends the wait: a caller out of time gets the 429 now, not after it.
+        await new Promise<void>(resolve => {
+          const done = () => {
+            clearTimeout(timer);
+            own?.removeEventListener('abort', done);
+            resolve();
+          };
+          const timer = setTimeout(done, baseMs * 2 ** attempt * (0.5 + Math.random()));
+          own?.addEventListener('abort', done, { once: true });
+        });
+        if (own?.aborted) throw e;
       }
     }
   }) as Transport;
