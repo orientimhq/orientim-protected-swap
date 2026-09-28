@@ -10,7 +10,7 @@ import {
   SOLANA_ERROR__JSON_RPC__SERVER_ERROR_SEND_TRANSACTION_PREFLIGHT_FAILURE, SOLANA_ERROR__RPC__TRANSPORT_HTTP_ERROR,
 } from '@solana/kit';
 import type { Address, Blockhash } from '@solana/kit';
-import { httpStatusOf, readAccounts, retryingTransport, sendAndConfirm, sendOnce } from '../src/index.ts';
+import { httpStatusOf, preflightError, readAccounts, retryingTransport, sendAndConfirm, sendOnce } from '../src/index.ts';
 import type { SendStatus, SolanaRpc } from '../src/index.ts';
 
 const LAST_VALID = 100n;
@@ -165,6 +165,25 @@ describe('who refused a send that was never broadcast', () => {
   it("the RPC's preflight is the network's refusal", async () => {
     const preflight = new SolanaError(SOLANA_ERROR__JSON_RPC__SERVER_ERROR_SEND_TRANSACTION_PREFLIGHT_FAILURE, {} as never);
     expect((await run({ firstSend: preflight })).result.refusal).toBe('network');
+  });
+
+  it("keeps why the preflight refused, as a confirmed transaction's error reads", async () => {
+    // As the RPC answers: the simulation's err in the error's data, which kit turns into its cause.
+    const slippage = getSolanaErrorFromJsonRpcError({
+      code: SOLANA_ERROR__JSON_RPC__SERVER_ERROR_SEND_TRANSACTION_PREFLIGHT_FAILURE,
+      message: 'Transaction simulation failed',
+      data: { err: { InstructionError: [3, { Custom: 6001 }] }, logs: [] },
+    });
+    const { result } = await run({ firstSend: slippage });
+    expect(result.status).toBe('rejected');
+    expect(JSON.parse(result.transactionError!)).toEqual({ InstructionError: [3, { Custom: 6001 }] });
+    expect(preflightError(slippage)).toEqual({ InstructionError: [3, { Custom: 6001 }] });
+  });
+
+  it('says nothing about why when the preflight gave no program error', async () => {
+    const bare = new SolanaError(SOLANA_ERROR__JSON_RPC__SERVER_ERROR_SEND_TRANSACTION_PREFLIGHT_FAILURE, {} as never);
+    expect((await run({ firstSend: bare })).result.transactionError).toBeUndefined();
+    expect(preflightError(new Error('Transaction simulation failed'))).toBeNull();
   });
 });
 

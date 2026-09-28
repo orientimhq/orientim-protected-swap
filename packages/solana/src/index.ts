@@ -7,6 +7,7 @@ import {
   getSignatureFromTransaction,
   isSolanaError,
   SOLANA_ERROR__JSON_RPC__SERVER_ERROR_MIN_CONTEXT_SLOT_NOT_REACHED,
+  SOLANA_ERROR__INSTRUCTION_ERROR__CUSTOM,
   SOLANA_ERROR__JSON_RPC__SERVER_ERROR_SEND_TRANSACTION_PREFLIGHT_FAILURE,
   SOLANA_ERROR__TRANSACTION_ERROR__ALREADY_PROCESSED,
   SOLANA_ERROR__RPC__TRANSPORT_HTTP_ERROR,
@@ -268,7 +269,12 @@ export type SendStatus = 'sending' | 'sent' | SendOutcome;
  * switch, the send limit); `network` is the RPC's preflight, which usually means the price moved.
  */
 export type SendRefusal = 'paused' | 'busy' | 'network';
-export type SendResult = { signature: string; status: SendOutcome; error: string | null; refusal?: SendRefusal };
+/**
+ * `transactionError`, for a refusal by the RPC's preflight only: the simulation's error, as JSON in
+ * the shape a confirmed transaction's `err` has, when it was one program's custom error. It says
+ * why the network refused (the price moved, most often), which the message alone does not.
+ */
+export type SendResult = { signature: string; status: SendOutcome; error: string | null; refusal?: SendRefusal; transactionError?: string };
 
 export type SendTiming = { pollMs: number; rebroadcastMs: number; giveUpMs: number; settleTries: number; settleMs: number; requestMs: number };
 // Settling waits up to 30 s: expiry is proven against the finalized height, which trails the
@@ -296,6 +302,22 @@ export function refusedBeforeBroadcast(e: unknown): boolean {
     return status >= 400 && status < 500 && headers?.get('x-orientim-not-forwarded') === '1';
   }
   return false;
+}
+
+/**
+ * The error of the simulation behind a preflight refusal, in the shape a confirmed transaction's
+ * `err` has, or null. Kit keeps it as the refusal's cause, which a production build still carries
+ * when it drops the words.
+ */
+export function preflightError(e: unknown): unknown {
+  if (!isSolanaError(e, SOLANA_ERROR__JSON_RPC__SERVER_ERROR_SEND_TRANSACTION_PREFLIGHT_FAILURE)) return null;
+  const kept = (e.context as { err?: unknown }).err;
+  if (kept !== undefined && kept !== null) return kept;
+  const cause = (e as Error).cause;
+  if (isSolanaError(cause, SOLANA_ERROR__INSTRUCTION_ERROR__CUSTOM)) {
+    return { InstructionError: [cause.context.index, { Custom: cause.context.code }] };
+  }
+  return null;
 }
 
 /**
@@ -440,7 +462,9 @@ export async function sendAndConfirm(args: {
   } catch (e) {
     if (refusedBeforeBroadcast(e)) {
       const http = httpStatusOf(e);
-      return done('rejected', String((e as Error)?.message ?? e), http === 403 ? 'paused' : http === 429 ? 'busy' : 'network');
+      const result = done('rejected', String((e as Error)?.message ?? e), http === 403 ? 'paused' : http === 429 ? 'busy' : 'network');
+      const simulated = preflightError(e);
+      return simulated === null ? result : { ...result, transactionError: stringify(simulated) };
     }
     // It may have been forwarded before the connection failed: keep watching. The re-broadcasts
     // send the same bytes, which can land at most once.
