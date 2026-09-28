@@ -230,7 +230,7 @@ export async function runCli(command: string, input: unknown, deps: CliDeps): Pr
       // The owner's limits hold here too, counted against the swaps this state directory kept.
       if (deps.policy) await checkPolicy(deps.policy, intent, spendsOf(store));
       // The same floor as prepare: Jupiter's own price, whatever the intent says.
-      const own = await ownFloor(intent, { rpc: deps.rpc, fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey, requestTimeoutMs: deps.requestTimeoutMs });
+      const own = await ownFloor(intent, { rpc: deps.rpc, fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey, requestTimeoutMs: deps.requestTimeoutMs, policy: deps.policy });
       intent.minOut = own.minOut;
       const priceImpactBps = own.priceImpactBps;
       // A fee in SOL: never above the skill's own limit, whatever the intent says.
@@ -351,7 +351,7 @@ export async function runCli(command: string, input: unknown, deps: CliDeps): Pr
       if (deps.policy) await checkPolicy(deps.policy, own, spendsOf(store));
       const checked = await prepareChecked({
         ...api, rpc: deps.rpc, owner, intent: rest,
-        fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey, requestTimeoutMs: deps.requestTimeoutMs,
+        fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey, requestTimeoutMs: deps.requestTimeoutMs, policy: deps.policy,
       });
       const tx = getTransactionDecoder().decode(Buffer.from(checked.prepared.transaction, 'base64'));
       return {
@@ -359,7 +359,7 @@ export async function runCli(command: string, input: unknown, deps: CliDeps): Pr
         output: {
           ok: true, checked, message: Buffer.from(tx.messageBytes).toString('base64'),
           amounts: checked.prepared.amounts, costs: checked.prepared.costs, lastValidBlockHeight: checked.prepared.lastValidBlockHeight,
-          notices: checked.notices ?? [],
+          notices: checked.notices ?? [], ...(checked.tokenRisk ? { tokenRisk: checked.tokenRisk } : {}),
         },
       };
     } catch (e) {
@@ -491,7 +491,7 @@ export async function runCli(command: string, input: unknown, deps: CliDeps): Pr
       // Checked again here, on your RPC, as for a first check: finalize takes nothing on trust, not
       // even prepare's output. The floor is held to Jupiter's own price and the hard limits again,
       // and a fee in SOL to the skill's own limit.
-      const own = await ownFloor(intent, { rpc: deps.rpc, fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey, requestTimeoutMs: deps.requestTimeoutMs });
+      const own = await ownFloor(intent, { rpc: deps.rpc, fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey, requestTimeoutMs: deps.requestTimeoutMs, policy: deps.policy });
       intent.minOut = own.minOut;
       await holdSolFee(intent, prepared, { fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey });
       const problems = await checkPrepared(prepared, intent, deps.rpc, { requestTimeoutMs: deps.requestTimeoutMs });

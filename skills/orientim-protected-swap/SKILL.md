@@ -88,12 +88,18 @@ The user provides these; never ask for them in chat, and never print or log them
     "maxAmountInPerDay": { "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "200000000" } }
   ```
 
+  `allowUnknownPriceImpact` (optional, `true` or `false`) lets a swap go on when Jupiter does not state
+  its price impact; without it, such a swap is refused.
   `stateDir` (optional) is the absolute path of the state directory every swap of this wallet uses;
   with it, any other directory is refused. With a daily limit, the state directory must be an absolute
   path (the policy's `stateDir` or `ORIENTIM_STATE_DIR`): the limit counts only the swaps kept there.
 
   A swap outside it is refused before anything is prepared, and again before finalize (`mint-not-allowed`,
-  `amount-over-limit`, `daily-limit`); the dry run checks the per-swap limits too. The limits live in the file, not in the conversation, so an agent
+  `amount-over-limit`, `daily-limit`); the dry run checks the per-swap limits too. In your own code the
+  file does nothing by itself: pass `policy: loadPolicy(path)` and `spends: store` to `protectedSwap`,
+  hold `acquireLock` for the wallet and run `recoverPending` first, as the example's command does. The
+  lock serializes one wallet's swaps on one machine; workers on several machines need a shared store
+  that reserves the day's budget atomically, or a signing service that holds the limits. The limits live in the file, not in the conversation, so an agent
   that restarts and loses its context still meets them. Like the key, they hold against a misled agent
   that follows this skill, not against one that rewrites its own environment.
 - Orientim's treasury is pinned in the skill: `ARzSA3sZGhf5t4UnYrmB3TWyZ5m3Wo1nA9zWBcoiTqLE`. The fee goes there or
@@ -131,7 +137,9 @@ Run or adapt `examples/swap.ts`. Do not write the flow from scratch, and never d
    Set `slippageBps` (10 to 1500) for the route's tolerance, as a person does on the page; without it,
    0.5%, or 3% on a Pump.fun curve. The price impact of your own quote is held to `maxPriceImpactBps`
    (default 500): above it the swap is refused before anything is prepared (`PriceImpactError`), and
-   only the user or the agent's owner may raise it.
+   only the user or the agent's owner may raise it. A quote from Jupiter without a price impact is
+   refused too: unknown is not none. Only the owner's policy (`allowUnknownPriceImpact: true`) lets
+   such a swap go on, and then `priceImpactBps` is `null`.
 3. **Verify before signing** with `checkPrepared(prepared, intent, rpc)`. Refuse to sign if it
    returns any problem. It checks:
    - that every number in the answer is a whole number, including those only shown after the swap:
@@ -152,8 +160,11 @@ Run or adapt `examples/swap.ts`. Do not write the flow from scratch, and never d
      up to your `maxRouteCostLamports`, 0.001 SOL unless you set it (the example's
      `--max-route-cost-lamports`). A Pump.fun bonding curve keeps about 0.00013 SOL of every buy.
    - optionally, one ceiling for all the SOL the swap costs and does not return
-     (`maxSolCostLamports`): the network fee, rent the route keeps, and Orientim's fee when paid in SOL.
-     Prepare's `costs.keptSolLamports` states the same sum.
+     (`maxSolCostLamports`): the network fee, rent the route keeps, and Orientim's fee whenever it is
+     in SOL, whether taken from SOL sold, from SOL bought or from the wallet (`solFeeOf`). The SOL the
+     swap itself sells is not a cost. Prepare's `costs.keptSolLamports` states the same sum, and
+     `costs.breakdown` each part apart: the amount swapped, Orientim's fee in its own token, the
+     network fee, rent that comes back and rent that stays a cost.
 4. **Sign as the wallet only**: `signAsWallet(wallet, prepared.transaction)` in the example, which
    uses the wallet's signature only once it verifies. Do not modify the transaction; a changed message, including a removed fee, is refused at finalize. The
    transaction's id is now known: it is the wallet's signature (`getSignatureFromTransaction`).
@@ -218,6 +229,12 @@ names the transaction (`signature`, `lastValidBlockHeight`); follow step 7 befor
   one prepared, or the wallet's signature is missing. Sign exactly what prepare returned.
 - `422` (`unsupported-token`, `no-route`, `insufficient-sol`, `insufficient-balance`,
   `simulation-failed`, ...): this swap cannot be built safely now.
+
+`tokenRisk` in the example's and `orientim-verify`'s answers says what each token's issuer can do,
+read on your RPC: `permanentDelegate` (it can move or burn your balance at any time),
+`freezeAuthority`, `mintAuthority`; `wellKnown` marks SOL, USDC and USDT, which keep these by design.
+When the mints cannot be read it is `{"status": "unavailable"}`, never "no risk", and `notices` says so.
+This makes an issuer's power visible; it does not remove it. The swap itself is protected either way.
 
 `notices.networkBusy` in a prepared swap means the network fee is at its limit: the swap may land
 late or expire (an expired swap costs nothing).

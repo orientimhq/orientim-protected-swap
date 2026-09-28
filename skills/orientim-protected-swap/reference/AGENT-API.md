@@ -138,9 +138,13 @@ Authorization: Bearer ori_...
                "feeBps": "30", "swapAmount": "5000000", "quotedOut": "42780667", "minOut": "42439063",
                "priceImpactPct": 0.0001 },
   "costs": { "networkFeeLamports": "124480", "outputAccountRentLamports": "0", "routeRentLamports": "0", "routeRefundLamports": "0",
-             "keptSolLamports": "124480", "tokenTax": null },
+             "routeKeptLamports": "0", "orientimFeeSolLamports": "127700", "keptSolLamports": "252180", "tokenTax": null,
+             "breakdown": { "principal": { "mint": "<inputMint>", "amount": "5000000" },
+                            "orientimFee": { "mint": "So11111111111111111111111111111111111111112", "amount": "127700" },
+                            "networkFeeLamports": "124480", "rentReturnedLamports": "0", "rentKeptLamports": "0" } },
   "notices": { "removesDelegate": false, "networkBusy": false },
-  "tokens": { "input": { "freezeAuthority": true, "mintAuthority": true }, "output": { "freezeAuthority": false, "mintAuthority": false } },
+  "tokens": { "input": { "freezeAuthority": true, "mintAuthority": true, "permanentDelegate": false },
+              "output": { "freezeAuthority": false, "mintAuthority": false, "permanentDelegate": false } },
   "route": ["Kipseli", "AlphaQ"],
   "certificate": { "...": "what this exact transaction does, bound to messageSha256" },
   "policy": { "...": "the rules the transaction was verified against" }
@@ -162,15 +166,21 @@ whatever market it belongs to. Rent the route keeps (`costs.routeRentLamports` l
 `costs.routeRefundLamports`) is accepted only up to your `maxRouteCostLamports`, 0.001 SOL unless you
 set it (a Pump.fun bonding curve keeps about 0.00013 SOL of every buy). `costs.keptSolLamports` is
 all the SOL the swap costs and does not return, in one number: the network fee, rent the route keeps,
-and Orientim's fee when it is paid in SOL (a new output account's rent is apart: that account stays
-yours). To hold it to one ceiling of your own, set `maxSolCostLamports`; the check computes it from
+and Orientim's fee whenever it is in SOL (`costs.orientimFeeSolLamports`: taken from SOL sold, from
+SOL bought, or from the wallet). The SOL the swap itself sells is not a cost, and a new output
+account's rent is apart: that account stays yours. `costs.breakdown` gives each part apart: the
+amount swapped (`principal`), Orientim's fee in its own token, the network fee, and rent that comes
+back or stays a cost. To hold it to one ceiling of your own, set `maxSolCostLamports`; the check computes it from
 the bytes, not from this statement. The `certificate` and `amounts` are Orientim's statements; the check is what makes them
 evidence, and holds the amounts stated to the policy the bytes are checked against.
 
 `notices.networkBusy` means the network fee is at its limit, so the swap may land late or expire.
-`amounts.feeBps` is 0 when the swap is fee-free. `tokens` says what each mint allows its issuer:
-to freeze balances, or to mint more. The page warns people about both, and the skill reads the same
-from your RPC (`tokenNotices`), leaving out SOL, USDC and USDT, which keep them by design.
+`amounts.feeBps` is 0 when the swap is fee-free. `amounts.priceImpactPct` is `null` when Jupiter
+did not state it: unknown, never none (the skill refuses such a swap unless the owner's policy says
+`allowUnknownPriceImpact`). `tokens` says what each mint allows its issuer: to freeze balances, to
+mint more, or to move and burn them from any wallet (`permanentDelegate`, a Token-2022 extension). The page warns people about each, and the skill reads the same
+from your RPC (`tokenRisk`, and `tokenNotices` in words, which leave out SOL, USDC and USDT: they keep
+these powers by design). A read that fails is `unavailable`, never "no risk".
 
 ### The same protection as the page
 

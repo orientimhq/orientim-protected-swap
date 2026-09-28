@@ -92,6 +92,8 @@ export type OwnQuoteArgs = {
   slippageBps?: number;
   /** The input token's transfer fee now (`inputTransferFee`): the route is priced for what arrives. */
   inputTax?: { bps: number; maximum: bigint } | null;
+  /** Only the owner's word: accept an answer without a price impact (then `priceImpactBps` is null). Otherwise it is refused. */
+  allowUnknownImpact?: boolean;
 };
 
 /**
@@ -101,14 +103,29 @@ export type OwnQuoteArgs = {
  */
 export function ownMinimum(args: OwnQuoteArgs): Promise<string>;
 
-/** Jupiter's price, asked for directly: the agent's own floor, the price impact in bps, and whether the route is a Pump.fun curve. */
-export function ownQuote(args: OwnQuoteArgs): Promise<{ minOut: string; outAmount: string; priceImpactBps: number; curve: boolean }>;
+/** Jupiter's price, asked for directly: the agent's own floor, the price impact in bps (null only when allowed and unknown), and whether the route is a Pump.fun curve. */
+export function ownQuote(args: OwnQuoteArgs): Promise<{ minOut: string; outAmount: string; priceImpactBps: number | null; curve: boolean }>;
+
+/** What a mint lets its issuer do, read on your RPC. `wellKnown`: SOL, USDC or USDT, which keep these powers by design. */
+export type TokenPowers = { freezeAuthority: boolean; mintAuthority: boolean; permanentDelegate: boolean; wellKnown: boolean };
+/** The issuer's powers over each token, or `unavailable` when the mints could not be read: never reported as no risk. */
+export type TokenRisk =
+  | { status: 'known'; tokens: Record<string, TokenPowers | { exists: false }> }
+  | { status: 'unavailable'; reason: string };
+/** Reads `TokenRisk` for these mints on the agent's RPC. Never fails: a failed read is `unavailable`. */
+export function tokenRisk(rpc: Rpc<SolanaRpcApi>, mints: readonly string[], timeoutMs?: number): Promise<TokenRisk>;
+/** `tokenNotices` from a `TokenRisk` already read; one note when it is `unavailable`. */
+export function noticesOf(risk: TokenRisk): string[];
 
 /**
  * Notes about the tokens themselves, read from the mint accounts on the agent's RPC: an issuer that
- * can freeze balances, or mint more (none for SOL, USDC and USDT). Never fails.
+ * can move or burn your balance (a permanent delegate), freeze it, or mint more (none for SOL, USDC
+ * and USDT). Never fails; when the mints cannot be read, one note says so.
  */
 export function tokenNotices(rpc: Rpc<SolanaRpcApi>, mints: readonly string[], timeoutMs?: number): Promise<string[]>;
+
+/** Orientim's fee in lamports when it is in SOL, whichever side it is taken from; 0 in another token. */
+export function solFeeOf(p: { feeSide: string | null; inputMint: string; outputMint: string; fee: bigint }): bigint;
 
 /**
  * The transfer fee a Token-2022 input token charges in the current epoch, read on your RPC; null

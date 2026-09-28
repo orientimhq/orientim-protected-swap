@@ -3,6 +3,20 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.5.0 (2026-09-28)
+
+Fixes from an external audit:
+
+- `maxSolCostLamports` counts Orientim's fee whenever it is in SOL, whether taken from SOL sold, from
+  SOL bought or from the wallet (`solFeeOf`). The API's `costs.keptSolLamports` states the same sum,
+  and `costs.breakdown` each part apart.
+- A quote without a price impact is unknown, not zero: the skill refuses it unless the owner's policy
+  says `allowUnknownPriceImpact: true`; the API answers `priceImpactPct: null`.
+- `tokenRisk`: what each token's issuer can do, a permanent delegate included, or `unavailable` when
+  the mints cannot be read; `tokenNotices` now names a permanent delegate and says when it could not read.
+- The JavaScript quickstart loads the owner's policy, passes `policy` and `spends`, holds the wallet's
+  lock and recovers first.
+
 ## 1.4.0 (2026-09-27)
 
 Fixes from a review of the skill and of `orientim-verify`:

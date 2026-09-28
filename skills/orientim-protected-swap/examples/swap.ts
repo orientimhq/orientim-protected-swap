@@ -48,8 +48,9 @@ import type { Address, Rpc, SignatureBytes, SignatureDictionary, SolanaRpcApi, T
 import {
   DEFAULT_MAX_PRICE_IMPACT_BPS, feeLimitBps, inputTransferFee, isSlippageBps, MAX_BELOW_BPS, MAX_PRICE_IMPACT_BPS, MAX_SLIPPAGE_BPS, MIN_SLIPPAGE_BPS,
   ownQuote, ownSolFeeLimit, pastProof,
-  provesNeverLanded, tokenNotices, verifyPrepared,
+  noticesOf, provesNeverLanded, tokenRisk, verifyPrepared,
 } from '../lib/orientim-verify.mjs';
+import type { TokenRisk } from '../lib/orientim-verify.mjs';
 
 export type Intent = {
   owner: string;
@@ -82,7 +83,8 @@ export type Intent = {
   maxSolFeeLamports?: number;
   /**
    * One ceiling for all the SOL the swap may cost and not return, in lamports: the network fee up to
-   * its enforced cap, rent the route keeps, and Orientim's fee when paid in SOL (optional).
+   * its enforced cap, rent the route keeps, and Orientim's fee whenever it is in SOL, from SOL sold,
+   * SOL bought or the wallet's own (optional). The SOL the swap itself sells is not a cost.
    */
   maxSolCostLamports?: number;
   /** A gap to the open market the user already accepted, from a `costs-more` answer (bps, as a string). */
@@ -123,12 +125,12 @@ export type Prepared = {
    * `fee` is in `feeMint`: SOL first, then USDC or USDT, on whichever side; otherwise the input token.
    * `minOut` is what the wallet keeps at least, after a fee taken from the output.
    */
-  amounts: { amountIn: string; fee: string; feeMint?: string; feeBps: string; swapAmount: string; quotedOut: string; minOut: string; priceImpactPct?: number };
+  amounts: { amountIn: string; fee: string; feeMint?: string; feeBps: string; swapAmount: string; quotedOut: string; minOut: string; priceImpactPct?: number | null };
   /**
    * `keptSolLamports`: the SOL the swap costs and does not return (the network fee, rent the route
    * keeps, Orientim's fee when paid in SOL). A new output account's rent is apart: it stays the wallet's.
    */
-  costs: { networkFeeLamports: string; outputAccountRentLamports: string; routeRentLamports: string; routeRefundLamports: string; keptSolLamports?: string };
+  costs: { networkFeeLamports: string; outputAccountRentLamports: string; routeRentLamports: string; routeRefundLamports: string; keptSolLamports?: string; routeKeptLamports?: string; orientimFeeSolLamports?: string };
   certificate: {
     messageSha256: string; wallet: string; temporaryAuthority: string;
     input: { mint: string; totalDebit: string; orientimFee: string };
@@ -280,7 +282,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.4.0';
+export const SKILL_VERSION = '1.5.0';
 
 /** Each call to Orientim ends within `timeoutMs`: an answer that never comes is no answer. */
 async function call<T>(fetchImpl: Fetch, url: string, key: string, body: unknown, timeoutMs = 30_000): Promise<T> {
@@ -380,9 +382,11 @@ export async function checkPrepared(p: Prepared, intent: Intent, rpc: Rpc<Solana
     ...(['amountIn', 'fee', 'feeBps', 'swapAmount', 'quotedOut', 'minOut'] as const).filter(k => !digits(p.amounts?.[k])).map(k => `amounts.${k}`),
     ...(['networkFeeLamports', 'outputAccountRentLamports', 'routeRentLamports', 'routeRefundLamports'] as const)
       .filter(k => !digits(p.costs?.[k])).map(k => `costs.${k}`),
-    ...(p.costs?.keptSolLamports !== undefined && !digits(p.costs.keptSolLamports) ? ['costs.keptSolLamports'] : []),
+    ...(['keptSolLamports', 'routeKeptLamports', 'orientimFeeSolLamports'] as const)
+      .filter(k => p.costs?.[k] !== undefined && !digits(p.costs[k])).map(k => `costs.${k}`),
     ...(p.amounts?.feeMint !== undefined && !(typeof p.amounts.feeMint === 'string' && BASE58.test(p.amounts.feeMint)) ? ['amounts.feeMint'] : []),
-    ...(p.amounts?.priceImpactPct !== undefined && !Number.isFinite(Number(p.amounts.priceImpactPct)) ? ['amounts.priceImpactPct'] : []),
+    // null: Jupiter did not state it (unknown, not none).
+    ...(p.amounts?.priceImpactPct != null && !(typeof p.amounts.priceImpactPct === 'number' && Number.isFinite(p.amounts.priceImpactPct)) ? ['amounts.priceImpactPct'] : []),
     ...(!digits(p.lastValidBlockHeight) ? ['lastValidBlockHeight'] : []),
     ...(p.blocksLeft !== undefined && !digits(p.blocksLeft) ? ['blocksLeft'] : []),
     ...(['totalDebit', 'orientimFee'] as const).filter(k => !digits(p.certificate?.input?.[k])).map(k => `certificate.input.${k}`),
@@ -745,6 +749,11 @@ export type OwnerPolicy = {
    * and no `stateDir` needs `ORIENTIM_STATE_DIR` as an absolute path.
    */
   stateDir?: string;
+  /**
+   * Go on when Jupiter does not state a price impact (`priceImpactBps` null). Without it such a
+   * swap is refused: an unknown impact is not a small one. Only the owner may set it.
+   */
+  allowUnknownPriceImpact?: boolean;
 };
 
 const DAY_MS = 24 * 60 * 60_000;
@@ -759,7 +768,7 @@ export function loadPolicy(path: string): OwnerPolicy {
   }
   const bad = (why: string) => new Error(`The owner's policy ${path} ${why}. Nothing was prepared.`);
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw bad('is not a JSON object');
-  const known = ['maxAmountIn', 'maxAmountInPerDay', 'stateDir'];
+  const known = ['maxAmountIn', 'maxAmountInPerDay', 'stateDir', 'allowUnknownPriceImpact'];
   const unknown = Object.keys(raw).filter(k => !known.includes(k));
   if (unknown.length) throw bad(`has fields it does not know: ${unknown.join(', ')}`);
   const limits = (name: string, value: unknown): Record<string, string> => {
@@ -774,10 +783,14 @@ export function loadPolicy(path: string): OwnerPolicy {
   if (policy.stateDir !== undefined && !(typeof policy.stateDir === 'string' && isAbsolute(policy.stateDir))) {
     throw bad('needs stateDir as an absolute path');
   }
+  if (policy.allowUnknownPriceImpact !== undefined && typeof policy.allowUnknownPriceImpact !== 'boolean') {
+    throw bad('needs allowUnknownPriceImpact as true or false');
+  }
   return {
     maxAmountIn: limits('maxAmountIn', policy.maxAmountIn),
     ...(policy.maxAmountInPerDay !== undefined ? { maxAmountInPerDay: limits('maxAmountInPerDay', policy.maxAmountInPerDay) } : {}),
     ...(policy.stateDir !== undefined ? { stateDir: policy.stateDir as string } : {}),
+    ...(policy.allowUnknownPriceImpact === true ? { allowUnknownPriceImpact: true } : {}),
   };
 }
 
@@ -1218,8 +1231,9 @@ export class FloorError extends Error {
  * the market. The price impact is held to `maxPriceImpactBps`, itself at most `MAX_PRICE_IMPACT_BPS`.
  */
 export async function ownFloor(
-  intent: Intent, deps: { rpc: Rpc<SolanaRpcApi>; fetchImpl?: Fetch; jupiterApiKey?: string; requestTimeoutMs?: number },
-): Promise<{ minOut: string; priceImpactBps: number }> {
+  intent: Intent,
+  deps: { rpc: Rpc<SolanaRpcApi>; fetchImpl?: Fetch; jupiterApiKey?: string; requestTimeoutMs?: number; policy?: Pick<OwnerPolicy, 'allowUnknownPriceImpact'> },
+): Promise<{ minOut: string; priceImpactBps: number | null }> {
   const maxImpact = intent.maxPriceImpactBps ?? DEFAULT_MAX_PRICE_IMPACT_BPS;
   if (!(Number.isInteger(maxImpact) && maxImpact >= 0 && maxImpact <= MAX_PRICE_IMPACT_BPS)) {
     throw new Error(`maxPriceImpactBps must be a whole number of bps from 0 to ${MAX_PRICE_IMPACT_BPS}. Nothing was prepared.`);
@@ -1232,8 +1246,9 @@ export async function ownFloor(
     inputMint: intent.inputMint, outputMint: intent.outputMint, amountIn: intent.amountIn, taker: intent.owner,
     maxFeeBps: intent.maxFeeBps, maxBelowBps: intent.maxBelowBps, slippageBps: intent.slippageBps, apiKey: deps.jupiterApiKey, fetchImpl: deps.fetchImpl,
     inputTax: await inputTransferFee(deps.rpc, intent.inputMint, deps.requestTimeoutMs),
+    allowUnknownImpact: deps.policy?.allowUnknownPriceImpact === true,
   });
-  if (own.priceImpactBps > maxImpact) throw new PriceImpactError(own.priceImpactBps, maxImpact);
+  if (own.priceImpactBps !== null && own.priceImpactBps > maxImpact) throw new PriceImpactError(own.priceImpactBps, maxImpact);
   if (intent.minOut === undefined) return { minOut: own.minOut, priceImpactBps: own.priceImpactBps };
   const lowest = (BigInt(own.outAmount) * BigInt(10_000 - MAX_BELOW_BPS)) / 10_000n;
   if (BigInt(intent.minOut) < lowest) throw new FloorError(intent.minOut, lowest.toString());
@@ -1241,8 +1256,11 @@ export async function ownFloor(
 }
 
 /** A prepared swap that passed the check, with the intent and limits it was checked against. */
-/** `notices`: what to know about the tokens themselves (`tokenNotices`): an issuer that can freeze or mint. */
-export type Checked = { prepared: Prepared; intent: Intent; notices?: string[] };
+/**
+ * `tokenRisk`: what each token's issuer can do (a permanent delegate, a freeze or mint authority), or
+ * `unavailable` when it could not be read; `notices` says the same in words (`tokenNotices`).
+ */
+export type Checked = { prepared: Prepared; intent: Intent; notices?: string[]; tokenRisk?: TokenRisk };
 
 /**
  * Prepare and check: your own floor (asked of Jupiter when you set none), Orientim's answer, and the
@@ -1253,6 +1271,8 @@ export type Checked = { prepared: Prepared; intent: Intent; notices?: string[] }
 export async function prepareChecked(args: {
   apiUrl: string; apiKey: string; rpc: Rpc<SolanaRpcApi>; owner: string; intent: Omit<Intent, 'owner'>;
   fetchImpl?: Fetch; jupiterApiKey?: string; requestTimeoutMs?: number;
+  /** The owner's limits: here, whether a swap may go on without a price impact from Jupiter. */
+  policy?: Pick<OwnerPolicy, 'allowUnknownPriceImpact'>;
 }): Promise<Checked> {
   const fetchImpl = args.fetchImpl ?? fetch;
   const owner = args.owner;
@@ -1260,7 +1280,9 @@ export async function prepareChecked(args: {
   if (slippageBps !== undefined && !isSlippageBps(slippageBps)) {
     throw new Error(`slippageBps must be a whole number of bps from ${MIN_SLIPPAGE_BPS} to ${MAX_SLIPPAGE_BPS}. Nothing was prepared.`);
   }
-  const own = await ownFloor({ ...args.intent, owner }, { rpc: args.rpc, fetchImpl, jupiterApiKey: args.jupiterApiKey, requestTimeoutMs: args.requestTimeoutMs });
+  const own = await ownFloor({ ...args.intent, owner }, {
+    rpc: args.rpc, fetchImpl, jupiterApiKey: args.jupiterApiKey, requestTimeoutMs: args.requestTimeoutMs, policy: args.policy,
+  });
   const minOut = own.minOut;
   const intent: Intent = { ...args.intent, owner, minOut };
   const prepared = await call<Prepared>(fetchImpl, `${args.apiUrl}/api/v1/prepare`, args.apiKey, {
@@ -1274,7 +1296,8 @@ export async function prepareChecked(args: {
   await holdSolFee(intent, prepared, { fetchImpl, jupiterApiKey: args.jupiterApiKey });
   const problems = await checkPrepared(prepared, intent, args.rpc, { requestTimeoutMs: args.requestTimeoutMs });
   if (problems.length) throw new Error(`Not signing: ${problems.join('; ')}`);
-  return { prepared: preparedData(prepared), intent, notices: await tokenNotices(args.rpc, [intent.inputMint, intent.outputMint], args.requestTimeoutMs ?? 10_000) };
+  const risk = await tokenRisk(args.rpc, [intent.inputMint, intent.outputMint], args.requestTimeoutMs ?? 10_000);
+  return { prepared: preparedData(prepared), intent, notices: noticesOf(risk), tokenRisk: risk };
 }
 
 /**
@@ -1510,6 +1533,8 @@ export async function protectedSwap(args: {
   signature: string; outcome: Outcome | 'rejected'; prepared: Prepared; refusal?: string; bookkeepingError?: string;
   /** Notes about the tokens (`tokenNotices`), for whoever decides what to buy. */
   notices: string[];
+  /** What each token's issuer can do, or `unavailable` (`tokenRisk`). */
+  tokenRisk?: TokenRisk;
   /** Base units of the output that arrived, read from the confirmed transaction; absent when unreadable. */
   received?: string;
 }> {
@@ -1526,7 +1551,7 @@ export async function protectedSwap(args: {
   // The owner's limits, from their own file: nothing the intent says can raise them.
   const spend = { owner, inputMint: args.intent.inputMint, amountIn: args.intent.amountIn };
   if (args.policy) await checkPolicy(args.policy, spend, args.spends);
-  const { prepared, notices = [] } = await prepareChecked({ ...args, owner });
+  const { prepared, notices = [], tokenRisk: risk } = await prepareChecked({ ...args, owner });
   const signedTransaction = await signAsWallet(args.wallet, prepared.transaction);
   const result = await finalizeSigned({
     ...args, prepared, signedTransaction,
@@ -1573,7 +1598,7 @@ export async function protectedSwap(args: {
   const got = result.outcome === 'confirmed'
     ? await receivedFor(args.rpc, result.signature, prepared, { requestTimeoutMs: args.requestTimeoutMs, pollMs: args.pollMs })
     : null;
-  const told = { ...result, notices, ...(got !== null ? { received: got.toString() } : {}) };
+  const told = { ...result, notices, ...(risk ? { tokenRisk: risk } : {}), ...(got !== null ? { received: got.toString() } : {}) };
   // What happened on the chain is the answer; a record that could not be updated is said beside it,
   // never in its place.
   try {
@@ -1623,7 +1648,7 @@ async function main() {
     // A swap the owner's policy refuses is refused here too, before anything is prepared: its mint
     // and its amount. The daily limit is counted by the swap itself, against what the day spent.
     if (policy) await checkPolicy({ maxAmountIn: policy.maxAmountIn }, { owner, inputMint, amountIn });
-    const own = await ownFloor({ ...intent, owner }, { rpc, jupiterApiKey });
+    const own = await ownFloor({ ...intent, owner }, { rpc, jupiterApiKey, policy });
     const minOut = own.minOut;
     const prepared = await call<Prepared>(fetch, `${apiUrl}/api/v1/prepare`, apiKey, {
       owner, inputMint, outputMint, amountIn, minOut,
@@ -1633,9 +1658,10 @@ async function main() {
     const checked: Intent = { ...intent, owner, minOut };
     await holdSolFee(checked, prepared, { jupiterApiKey });
     const problems = await checkPrepared(prepared, checked, rpc);
+    const risk = await tokenRisk(rpc, [inputMint, outputMint]);
     console.log(JSON.stringify({
       yourFloor: minOut, priceImpactBps: own.priceImpactBps, amounts: prepared.amounts, costs: prepared.costs, blocksLeft: prepared.blocksLeft, problems,
-      notices: await tokenNotices(rpc, [inputMint, outputMint]),
+      notices: noticesOf(risk), tokenRisk: risk,
     }, null, 2));
     process.exitCode = problems.length ? 1 : 0;
     return;
@@ -1685,6 +1711,7 @@ async function main() {
     console.log(JSON.stringify({
       signature: result.signature, outcome: result.outcome, refusal: result.refusal, amounts: result.prepared.amounts,
       ...(result.received ? { received: result.received } : {}), ...(result.notices.length ? { notices: result.notices } : {}),
+      ...(result.tokenRisk ? { tokenRisk: result.tokenRisk } : {}),
       ...(result.bookkeepingError ? { bookkeepingError: result.bookkeepingError } : {}),
     }, null, 2));
     process.exitCode = exitCodeOf(result);

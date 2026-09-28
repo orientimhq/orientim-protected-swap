@@ -16,7 +16,7 @@ import {
 } from '../skills/orientim-protected-swap/examples/swap.ts';
 import { runCli } from '../skills/orientim-protected-swap/src/cli.ts';
 import {
-  feeLimitBps, isSlippageBps, MAX_BELOW_BPS, MAX_FEE_BPS, MAX_PRICE_IMPACT_BPS, ORIENTIM_TREASURY, ownQuote,
+  feeLimitBps, isSlippageBps, MAX_BELOW_BPS, MAX_FEE_BPS, MAX_PRICE_IMPACT_BPS, noticesOf, ORIENTIM_TREASURY, ownQuote, solFeeOf, tokenRisk,
 } from '../skills/orientim-protected-swap/lib/orientim-verify.mjs';
 
 const ROOT = join(import.meta.dirname, '..');
@@ -262,6 +262,26 @@ describe('the skill holds its own state and limits against what it is handed', (
       inputMint: USDC, outputMint: BONK, inAmount: new URL(url).searchParams.get('amount'), outAmount: '1000000',
     })) as unknown as typeof fetch;
     await expect(ownQuote({ inputMint: USDC, outputMint: BONK, amountIn: '1000000', taker: W, fetchImpl })).rejects.toThrow('price impact');
+    const own = await ownQuote({ inputMint: USDC, outputMint: BONK, amountIn: '1000000', taker: W, fetchImpl, allowUnknownImpact: true });
+    expect(own.priceImpactBps).toBeNull();
+    const file = join(tmp(), 'policy.json');
+    writeFileSync(file, JSON.stringify({ maxAmountIn: { [USDC]: '1' }, allowUnknownPriceImpact: 'yes' }));
+    expect(() => loadPolicy(file)).toThrow('allowUnknownPriceImpact');
+  });
+
+  it("Orientim's fee counts as SOL whenever it is in SOL, from whichever side it is taken", () => {
+    const SOL = 'So11111111111111111111111111111111111111112';
+    expect(solFeeOf({ feeSide: 'input', inputMint: SOL, outputMint: USDC, fee: 5n })).toBe(5n);
+    expect(solFeeOf({ feeSide: 'output', inputMint: USDC, outputMint: SOL, fee: 5n })).toBe(5n);
+    expect(solFeeOf({ feeSide: 'sol', inputMint: USDC, outputMint: BONK, fee: 5n })).toBe(5n);
+    expect(solFeeOf({ feeSide: 'input', inputMint: USDC, outputMint: SOL, fee: 5n })).toBe(0n);
+  });
+
+  it('what a token\'s issuer can do is unavailable when it cannot be read, never "no risk"', async () => {
+    const failing = { getMultipleAccounts: () => ({ send: async () => { throw new Error('down'); } }) } as unknown as Rpc<SolanaRpcApi>;
+    const risk = await tokenRisk(failing, [BONK]);
+    expect(risk).toEqual({ status: 'unavailable', reason: 'read-failed' });
+    expect(noticesOf(risk).join()).toContain('could not be read');
   });
 
   it("orientim-verify never takes Orientim's treasury from its JSON", async () => {

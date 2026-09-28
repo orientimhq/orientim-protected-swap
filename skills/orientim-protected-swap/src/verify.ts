@@ -24,7 +24,7 @@ import { findAssociatedTokenPda } from '@solana-program/token';
 import { JUPITER_PROGRAM, PUMP_AMM_PROGRAM, PUMP_CURVE_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, USDC_MINT, WSOL_MINT } from '@orientim/core/constants';
 import type { ChainSnapshot, Policy } from '@orientim/core/types';
 import { readAccounts } from '@orientim/solana';
-import { hasTransferFee, routeAccountFor, transferFeeOf, transferFeeOn, verify } from '@orientim/verifier';
+import { hasPermanentDelegate, hasTransferFee, routeAccountFor, transferFeeOf, transferFeeOn, verify } from '@orientim/verifier';
 import type { TransferFee } from '@orientim/verifier';
 
 /** When "no record" proves a transaction never landed; `confirm` in the example uses them. */
@@ -102,8 +102,9 @@ export type AgentLimits = {
   maxSolFeeLamports?: number;
   /**
    * One ceiling for all the SOL the swap may cost and not return, in lamports: the network fee the transaction can pay (its compute budget, as the verifier
-   * reads it), rent the route keeps, and Orientim's fee when paid in SOL. A new output account's rent
-   * is not in it: that account stays the wallet's own.
+   * reads it), rent the route keeps, and Orientim's fee whenever it is in SOL (`solFeeOf`: taken from
+   * SOL sold, from SOL bought, or paid from the wallet). A new output account's rent is not in it:
+   * that account stays the wallet's own; nor is the SOL the swap itself sells.
    */
   maxSolCostLamports?: number;
 };
@@ -115,6 +116,18 @@ export type PreparedSwap = {
   temporaryAuthority: string;
   policy: Record<string, unknown>;
 };
+
+/**
+ * Orientim's fee in lamports when it is in SOL, whichever side it is taken from: from SOL the swap
+ * sells (`feeSide` input), from SOL it buys (output), or from the wallet for a pair that cannot carry
+ * it (sol). 0 when the fee is in another token.
+ */
+export function solFeeOf(p: { feeSide: string | null; inputMint: string; outputMint: string; fee: bigint }): bigint {
+  const inSol = p.feeSide === 'sol'
+    || (p.feeSide === 'input' && p.inputMint === WSOL_MINT)
+    || (p.feeSide === 'output' && p.outputMint === WSOL_MINT);
+  return inSol ? p.fee : 0n;
+}
 
 const BIGINT_FIELDS = ['minOut', 'takerRent', 'routeRefund', 'amountIn', 'feeBps', 'fee', 'swapAmount', 'maxNetworkFeeLamports'] as const;
 const ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
@@ -251,7 +264,7 @@ export async function verifyPrepared(
   const verdict = await verify(transaction, p, snapshot, limits.slippageBps !== undefined ? { maxSlippageBps: limits.slippageBps } : {});
   for (const v of verdict.violations) problems.push(`${v.rule}: ${v.detail}`);
   if (limits.maxSolCostLamports !== undefined && verdict.networkFeeLamports !== undefined) {
-    const solCost = verdict.networkFeeLamports + routeCost + (p.feeSide === 'sol' ? p.fee : 0n);
+    const solCost = verdict.networkFeeLamports + routeCost + solFeeOf(p);
     if (solCost > BigInt(limits.maxSolCostLamports)) {
       problems.push(`the swap may cost ${solCost} lamports of SOL that do not come back, above your limit of ${limits.maxSolCostLamports} (maxSolCostLamports)`);
     }
@@ -335,6 +348,11 @@ export type OwnQuoteArgs = {
    * Without it, the floor of a taxing token would sit above what any honest route can deliver.
    */
   inputTax?: TransferFee | null;
+  /**
+   * Only the owner's word (`OwnerPolicy.allowUnknownPriceImpact`): an answer without a price impact
+   * is then accepted, with `priceImpactBps` null. Otherwise it is refused, never read as none.
+   */
+  allowUnknownImpact?: boolean;
 };
 
 /** A floor of the agent's own (`ownQuote`). */
@@ -348,7 +366,7 @@ export async function ownMinimum(args: OwnQuoteArgs): Promise<string> {
  * route trades on a Pump.fun bonding curve. A large price impact is the mark of thin liquidity, as
  * when a token's pool is drained: the check refuses it (`DEFAULT_MAX_PRICE_IMPACT_BPS`).
  */
-export async function ownQuote(args: OwnQuoteArgs): Promise<{ minOut: string; outAmount: string; priceImpactBps: number; curve: boolean }> {
+export async function ownQuote(args: OwnQuoteArgs): Promise<{ minOut: string; outAmount: string; priceImpactBps: number | null; curve: boolean }> {
   if (args.maxBelowBps !== undefined && !(Number.isInteger(args.maxBelowBps) && args.maxBelowBps >= 0 && args.maxBelowBps <= MAX_BELOW_BPS)) {
     throw new Error(`maxBelowBps must be a whole number of bps from 0 to ${MAX_BELOW_BPS}: a floor further below the market is not accepted. Nothing was prepared.`);
   }
@@ -374,14 +392,16 @@ export async function ownQuote(args: OwnQuoteArgs): Promise<{ minOut: string; ou
   const curve = r.swapInstruction?.accounts?.some(a => a.pubkey === PUMP_CURVE_PROGRAM) ?? false;
   const below = BigInt(args.maxBelowBps ?? (args.slippageBps !== undefined ? args.slippageBps + (curve ? 200 : 150) : (curve ? 500 : 200)));
   // The price impact is a hard limit: an answer without it, or with one that is not a number, is
-  // refused rather than read as none.
+  // refused rather than read as none, unless the owner said to go on without it.
   const impact = typeof r.priceImpactPct === 'number' || (typeof r.priceImpactPct === 'string' && r.priceImpactPct.trim() !== '')
     ? Number(r.priceImpactPct) : NaN;
-  if (!Number.isFinite(impact)) throw new Error('Jupiter answered without a price impact when asked for your own price');
+  if (!Number.isFinite(impact) && !args.allowUnknownImpact) {
+    throw new Error('Jupiter answered without a price impact when asked for your own price: how much this amount moves the market is unknown');
+  }
   return {
     minOut: ((BigInt(r.outAmount!) * (10_000n - below)) / 10_000n).toString(),
     outAmount: r.outAmount!,
-    priceImpactBps: Number.isFinite(impact) && impact > 0 ? Math.round(impact * 10_000) : 0,
+    priceImpactBps: !Number.isFinite(impact) ? null : impact > 0 ? Math.round(impact * 10_000) : 0,
     curve,
   };
 }
@@ -394,24 +414,63 @@ const QUIET_MINTS = new Set<string>([WSOL_MINT, USDC_MINT, 'Es9vMFrzaCERmJfrF4H2
  * an issuer that can freeze balances, or mint more. The same notes the page shows people. Orientim
  * protects the wallet, not the value of what is bought. Never fails: an unreadable mint gives no note.
  */
-export async function tokenNotices(rpc: Rpc<SolanaRpcApi>, mints: readonly string[], timeoutMs = 10_000): Promise<string[]> {
-  const asked = [...new Set(mints)].filter(m => !QUIET_MINTS.has(m));
-  if (!asked.length) return [];
+/** What a mint lets its issuer do, read on your RPC. `wellKnown`: SOL, USDC or USDT, which keep these powers by design. */
+export type TokenPowers = { freezeAuthority: boolean; mintAuthority: boolean; permanentDelegate: boolean; wellKnown: boolean };
+/**
+ * The issuer's powers over each token, or `unavailable` when the mint accounts could not be read:
+ * a failed read is never reported as no risk. A Token-2022 permanent delegate can move or burn any
+ * holder's balance; a freeze authority can freeze it; a mint authority can mint more.
+ */
+export type TokenRisk =
+  | { status: 'known'; tokens: Record<string, TokenPowers | { exists: false }> }
+  | { status: 'unavailable'; reason: string };
+
+export async function tokenRisk(rpc: Rpc<SolanaRpcApi>, mints: readonly string[], timeoutMs = 10_000): Promise<TokenRisk> {
+  const asked = [...new Set(mints)];
   try {
     const { accounts } = await readAccounts(rpc as never, asked as Address[], { timeoutMs });
-    const notes: string[] = [];
+    const tokens: Record<string, TokenPowers | { exists: false }> = {};
     for (const m of asked) {
       const s = accounts.get(m);
-      if (!s || s.data.length < 82 || (s.owner !== TOKEN_PROGRAM && s.owner !== TOKEN_2022_PROGRAM)) continue;
+      if (!s || s.data.length < 82 || (s.owner !== TOKEN_PROGRAM && s.owner !== TOKEN_2022_PROGRAM)) {
+        tokens[m] = { exists: false };
+        continue;
+      }
       const view = new DataView(s.data.buffer, s.data.byteOffset, s.data.byteLength);
-      const name = `${m.slice(0, 4)}…${m.slice(-4)}`;
-      if (view.getUint32(46, true) === 1) notes.push(`${name} has a freeze authority: its issuer can freeze your balance`);
-      if (view.getUint32(0, true) === 1) notes.push(`${name} can still be minted by its issuer`);
+      tokens[m] = {
+        freezeAuthority: view.getUint32(46, true) === 1,
+        mintAuthority: view.getUint32(0, true) === 1,
+        permanentDelegate: s.owner === TOKEN_2022_PROGRAM && hasPermanentDelegate(s.data),
+        wellKnown: QUIET_MINTS.has(m),
+      };
     }
-    return notes;
-  } catch {
-    return [];
+    return { status: 'known', tokens };
+  } catch (e) {
+    return { status: 'unavailable', reason: e instanceof Error && e.name === 'TimeoutError' ? 'timeout' : 'read-failed' };
   }
+}
+
+/**
+ * Notes about the tokens themselves, from `tokenRisk`: an issuer that can move or burn your balance,
+ * freeze it, or mint more (none for SOL, USDC and USDT, which keep them by design). When the mints
+ * could not be read, one note says so: unknown is never reported as nothing to note.
+ */
+export async function tokenNotices(rpc: Rpc<SolanaRpcApi>, mints: readonly string[], timeoutMs = 10_000): Promise<string[]> {
+  return noticesOf(await tokenRisk(rpc, mints, timeoutMs));
+}
+
+/** `tokenNotices` from a `tokenRisk` already read. */
+export function noticesOf(risk: TokenRisk): string[] {
+  if (risk.status === 'unavailable') return ["the tokens' mint accounts could not be read on your RPC: what their issuers can do is unknown"];
+  const notes: string[] = [];
+  for (const [m, t] of Object.entries(risk.tokens)) {
+    if (!('wellKnown' in t) || t.wellKnown) continue;
+    const name = `${m.slice(0, 4)}…${m.slice(-4)}`;
+    if (t.permanentDelegate) notes.push(`${name} has a permanent delegate: its issuer can move or burn your balance at any time`);
+    if (t.freezeAuthority) notes.push(`${name} has a freeze authority: its issuer can freeze your balance`);
+    if (t.mintAuthority) notes.push(`${name} can still be minted by its issuer`);
+  }
+  return notes;
 }
 
 /**

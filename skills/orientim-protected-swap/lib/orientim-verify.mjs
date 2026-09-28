@@ -412,6 +412,24 @@ function hasTransferFee(data) {
 	}
 	return false;
 }
+/**
+* `allowTransferFee` is set for swap and intermediate mints whose temporary accounts are harvested
+* before they are closed. Output accounts belong to the user and do not need to be closed.
+*/
+/** Does this mint have an issuer that can move or burn its balance anywhere (extension 12, set)? */
+function hasPermanentDelegate(data) {
+	if (data.length <= 165 || data[165] !== 1) return false;
+	const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+	for (let at = 166; at + 4 <= data.length;) {
+		const type = view.getUint16(at, true);
+		const length = view.getUint16(at + 2, true);
+		const value = at + 4;
+		if (type === 0) break;
+		if (type === 12) return value + 32 <= data.length && data.subarray(value, value + 32).some((b) => b !== 0);
+		at = value + length;
+	}
+	return false;
+}
 const addressDecoder = getAddressDecoder();
 function unsupportedExtension(data, options = {}) {
 	if (data.length === 82) return null;
@@ -980,6 +998,14 @@ const MAX_FEE_BPS = 30;
 /** The fee limit the check applies: the agent's own, never above Orientim's pinned fee. */
 const feeLimitBps = (maxFeeBps) => Number.isInteger(maxFeeBps) && maxFeeBps >= 0 ? Math.min(maxFeeBps, 30) : 30;
 const isSlippageBps = (v) => typeof v === "number" && Number.isInteger(v) && v >= 10 && v <= 1500;
+/**
+* Orientim's fee in lamports when it is in SOL, whichever side it is taken from: from SOL the swap
+* sells (`feeSide` input), from SOL it buys (output), or from the wallet for a pair that cannot carry
+* it (sol). 0 when the fee is in another token.
+*/
+function solFeeOf(p) {
+	return p.feeSide === "sol" || p.feeSide === "input" && p.inputMint === WSOL_MINT || p.feeSide === "output" && p.outputMint === WSOL_MINT ? p.fee : 0n;
+}
 const BIGINT_FIELDS = [
 	"minOut",
 	"takerRent",
@@ -1107,7 +1133,7 @@ async function verifyPrepared(prepared, limits, rpc, opts = {}) {
 	const verdict = await verify(transaction, p, snapshot, limits.slippageBps !== void 0 ? { maxSlippageBps: limits.slippageBps } : {});
 	for (const v of verdict.violations) problems.push(`${v.rule}: ${v.detail}`);
 	if (limits.maxSolCostLamports !== void 0 && verdict.networkFeeLamports !== void 0) {
-		const solCost = verdict.networkFeeLamports + routeCost + (p.feeSide === "sol" ? p.fee : 0n);
+		const solCost = verdict.networkFeeLamports + routeCost + solFeeOf(p);
 		if (solCost > BigInt(limits.maxSolCostLamports)) problems.push(`the swap may cost ${solCost} lamports of SOL that do not come back, above your limit of ${limits.maxSolCostLamports} (maxSolCostLamports)`);
 	}
 	const exists = (a) => {
@@ -1204,11 +1230,11 @@ async function ownQuote(args) {
 	const curve = r.swapInstruction?.accounts?.some((a) => a.pubkey === PUMP_CURVE_PROGRAM) ?? false;
 	const below = BigInt(args.maxBelowBps ?? (args.slippageBps !== void 0 ? args.slippageBps + (curve ? 200 : 150) : curve ? 500 : 200));
 	const impact = typeof r.priceImpactPct === "number" || typeof r.priceImpactPct === "string" && r.priceImpactPct.trim() !== "" ? Number(r.priceImpactPct) : NaN;
-	if (!Number.isFinite(impact)) throw new Error("Jupiter answered without a price impact when asked for your own price");
+	if (!Number.isFinite(impact) && !args.allowUnknownImpact) throw new Error("Jupiter answered without a price impact when asked for your own price: how much this amount moves the market is unknown");
 	return {
 		minOut: (BigInt(r.outAmount) * (10000n - below) / 10000n).toString(),
 		outAmount: r.outAmount,
-		priceImpactBps: Number.isFinite(impact) && impact > 0 ? Math.round(impact * 1e4) : 0,
+		priceImpactBps: !Number.isFinite(impact) ? null : impact > 0 ? Math.round(impact * 1e4) : 0,
 		curve
 	};
 }
@@ -1218,29 +1244,56 @@ const QUIET_MINTS = /* @__PURE__ */ new Set([
 	USDC_MINT,
 	"Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
 ]);
-/**
-* What the agent should know about the tokens themselves, read from the mint accounts on its own RPC:
-* an issuer that can freeze balances, or mint more. The same notes the page shows people. Orientim
-* protects the wallet, not the value of what is bought. Never fails: an unreadable mint gives no note.
-*/
-async function tokenNotices(rpc, mints, timeoutMs = 1e4) {
-	const asked = [...new Set(mints)].filter((m) => !QUIET_MINTS.has(m));
-	if (!asked.length) return [];
+async function tokenRisk(rpc, mints, timeoutMs = 1e4) {
+	const asked = [...new Set(mints)];
 	try {
 		const { accounts } = await readAccounts(rpc, asked, { timeoutMs });
-		const notes = [];
+		const tokens = {};
 		for (const m of asked) {
 			const s = accounts.get(m);
-			if (!s || s.data.length < 82 || s.owner !== TOKEN_PROGRAM && s.owner !== TOKEN_2022_PROGRAM) continue;
+			if (!s || s.data.length < 82 || s.owner !== TOKEN_PROGRAM && s.owner !== TOKEN_2022_PROGRAM) {
+				tokens[m] = { exists: false };
+				continue;
+			}
 			const view = new DataView(s.data.buffer, s.data.byteOffset, s.data.byteLength);
-			const name = `${m.slice(0, 4)}…${m.slice(-4)}`;
-			if (view.getUint32(46, true) === 1) notes.push(`${name} has a freeze authority: its issuer can freeze your balance`);
-			if (view.getUint32(0, true) === 1) notes.push(`${name} can still be minted by its issuer`);
+			tokens[m] = {
+				freezeAuthority: view.getUint32(46, true) === 1,
+				mintAuthority: view.getUint32(0, true) === 1,
+				permanentDelegate: s.owner === TOKEN_2022_PROGRAM && hasPermanentDelegate(s.data),
+				wellKnown: QUIET_MINTS.has(m)
+			};
 		}
-		return notes;
-	} catch {
-		return [];
+		return {
+			status: "known",
+			tokens
+		};
+	} catch (e) {
+		return {
+			status: "unavailable",
+			reason: e instanceof Error && e.name === "TimeoutError" ? "timeout" : "read-failed"
+		};
 	}
+}
+/**
+* Notes about the tokens themselves, from `tokenRisk`: an issuer that can move or burn your balance,
+* freeze it, or mint more (none for SOL, USDC and USDT, which keep them by design). When the mints
+* could not be read, one note says so: unknown is never reported as nothing to note.
+*/
+async function tokenNotices(rpc, mints, timeoutMs = 1e4) {
+	return noticesOf(await tokenRisk(rpc, mints, timeoutMs));
+}
+/** `tokenNotices` from a `tokenRisk` already read. */
+function noticesOf(risk) {
+	if (risk.status === "unavailable") return ["the tokens' mint accounts could not be read on your RPC: what their issuers can do is unknown"];
+	const notes = [];
+	for (const [m, t] of Object.entries(risk.tokens)) {
+		if (!("wellKnown" in t) || t.wellKnown) continue;
+		const name = `${m.slice(0, 4)}…${m.slice(-4)}`;
+		if (t.permanentDelegate) notes.push(`${name} has a permanent delegate: its issuer can move or burn your balance at any time`);
+		if (t.freezeAuthority) notes.push(`${name} has a freeze authority: its issuer can freeze your balance`);
+		if (t.mintAuthority) notes.push(`${name} can still be minted by its issuer`);
+	}
+	return notes;
 }
 /**
 * The transfer fee a Token-2022 input token charges in the current epoch, read on your RPC; null
@@ -1282,4 +1335,4 @@ async function ownSolFeeLimit(args) {
 	return Number(limit);
 }
 //#endregion
-export { DEFAULT_MAX_PRICE_IMPACT_BPS, MAX_BELOW_BPS, MAX_FEE_BPS, MAX_PRICE_IMPACT_BPS, MAX_SLIPPAGE_BPS, MIN_SLIPPAGE_BPS, ORIENTIM_TREASURY, STATUS_CACHE_BLOCKS, feeLimitBps, inputTransferFee, isSlippageBps, ownMinimum, ownQuote, ownSolFeeLimit, pastProof, provesNeverLanded, tokenNotices, verifyPrepared };
+export { DEFAULT_MAX_PRICE_IMPACT_BPS, MAX_BELOW_BPS, MAX_FEE_BPS, MAX_PRICE_IMPACT_BPS, MAX_SLIPPAGE_BPS, MIN_SLIPPAGE_BPS, ORIENTIM_TREASURY, STATUS_CACHE_BLOCKS, feeLimitBps, inputTransferFee, isSlippageBps, noticesOf, ownMinimum, ownQuote, ownSolFeeLimit, pastProof, provesNeverLanded, solFeeOf, tokenNotices, tokenRisk, verifyPrepared };
