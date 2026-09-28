@@ -11,8 +11,9 @@ import { join } from 'node:path';
 import type { Rpc, SolanaRpcApi } from '@solana/kit';
 import { describe, expect, it } from 'vitest';
 import {
-  acquireLock, checkPolicy, createFileStore, dataOnly, exitCodeOf, fillAgainstQuote, isApiKeyMessage, loadPolicy, LockBusyError,
-  OrientimApiError, PolicyError, preparedData, releaseHeldLocks, safeCode, SKILL_VERSION, stateDirFor, untrustedLine,
+  acquireLock, checkPolicy, createFileStore, dataOnly, errorExitCode, errorLine, exitCodeOf, fillAgainstQuote, IntentError, isApiKeyMessage,
+  loadPolicy, LockBusyError, OrientimApiError, OrientimOrderError, PendingSwapError, PolicyError, preparedData, releaseHeldLocks, safeCode,
+  SKILL_VERSION, stateDirFor, untrustedLine,
 } from '../skills/orientim-protected-swap/examples/swap.ts';
 import { runCli } from '../skills/orientim-protected-swap/src/cli.ts';
 import {
@@ -244,6 +245,29 @@ describe('the skill holds its own state and limits against what it is handed', (
     expect(exitCodeOf({ outcome: 'confirmed', bookkeepingError: 'disk full' })).toBe(3);
   });
 
+  it('an intent outside the allowed range exits 2; an order that already swapped exits 5, as orientim-verify does', async () => {
+    const deps = { rpc: noRpc, apiUrl: 'http://orientim.test', apiKey: 'k', stateDir: tmp() };
+    for (const bad of [{ slippageBps: 5 }, { slippageBps: 1_501 }, { maxPriceImpactBps: 2_001 }, { maxFeeBps: 31 }, { minOut: '1.5' }]) {
+      const r = await runCli('prepare', { intent: { owner: W, inputMint: USDC, outputMint: BONK, amountIn: '1000000', id: 'order-1', ...bad } }, deps);
+      expect(r.code, JSON.stringify(bad)).toBe(2);
+    }
+    expect(errorExitCode(new IntentError('slippageBps must be ...'))).toBe(2);
+    expect(errorExitCode(new PendingSwapError(['s']))).toBe(3);
+    expect(errorExitCode(new OrientimOrderError('order-1', { signature: 's', state: 'confirmed' }))).toBe(5);
+    expect(errorExitCode(new OrientimOrderError('order-1', { signature: 's', state: 'pending' }))).toBe(5);
+    expect(errorExitCode(new PolicyError('daily-limit', 'over'))).toBe(1);
+    expect(errorExitCode(new Error('refused'))).toBe(1);
+  });
+
+  it("price-moved names newMinOut, and wallet-empty says what the wallet needs", () => {
+    const moved = new OrientimApiError({ status: 409, code: 'price-moved', message: 'x', body: { newMinOut: '476545', requiresApproval: true } });
+    expect(errorLine(moved)).toContain('price-moved: ');
+    expect(errorLine(moved)).toContain('{"newMinOut":"476545","requiresApproval":true}');
+    const empty = new OrientimApiError({ status: 403, code: 'wallet-empty', message: 'x', body: {} });
+    expect(empty.message).toContain('less than 0.01 SOL');
+    expect(errorLine(empty)).not.toContain('{');
+  });
+
   it('error details from the server pass only as the data they name', () => {
     const err = new OrientimApiError({
       status: 409, code: 'price-moved', message: 'x',
@@ -314,6 +338,12 @@ describe('the skill holds its own state and limits against what it is handed', (
     });
     expect(dry.status).toBe(1);
     expect(dry.stderr).toContain('mint-not-allowed');
+    // A tolerance outside 10 to 1500 bps is a usage error, before anything is asked of anyone.
+    const narrow = spawnSync(process.execPath, [example, '--in', USDC, '--out', BONK, '--amount', '1000000', '--owner', W, '--dry-run', '--slippage-bps', '5'], {
+      encoding: 'utf8', env,
+    });
+    expect(narrow.status).toBe(2);
+    expect(narrow.stderr).toContain('slippageBps must be a whole number of bps from 10 to 1500');
     const run = spawnSync(process.execPath, [example, '--in', USDC, '--out', BONK, '--amount', '1000000', '--id', 'k'], {
       encoding: 'utf8', env: { ...env, ORIENTIM_STATE_DIR: join(dir, 'state') },
     });

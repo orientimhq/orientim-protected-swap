@@ -1313,7 +1313,8 @@ async function ownSolFeeLimit(args) {
 * ORIENTIM_STATE_DIR or --state, default ./.orientim-state; absolute with a daily limit) before
 * finalize, settles what a stopped run left there before it starts another, and holds a lock per
 * wallet so that two workers never swap from it at once. It exits 0 only for a confirmed swap, 1 when
-* nothing was swapped, 2 on a usage error, and 3 when something must be settled first.
+* nothing was swapped, 2 on a usage error (a slippage or limit outside the allowed range included), 3
+* when something must be settled first, and 5 when this order (--id) already swapped or may still land.
 */
 /**
 * What each error code means, in the skill's own words. An agent reads an error to
@@ -1339,6 +1340,7 @@ const ERROR_MEANINGS = {
 	"unsupported-token": "This token cannot be swapped safely now.",
 	"no-route": "No protected route was found for this swap now.",
 	"insufficient-sol": "The wallet does not hold enough SOL for this swap.",
+	"wallet-empty": "The wallet holds less than 0.01 SOL, the least a wallet needs for an API key. Fund it, then ask again.",
 	"insufficient-balance": "The wallet does not hold enough of the input token.",
 	"simulation-failed": "The swap failed in simulation, so nothing was built.",
 	"bad-request": "Orientim could not read the request.",
@@ -1448,7 +1450,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.5.0";
+const SKILL_VERSION = "1.5.1";
 /** Each call to Orientim ends within `timeoutMs`: an answer that never comes is no answer. */
 async function call(fetchImpl, url, key, body, timeoutMs = 3e4) {
 	const res = await fetchImpl(url, {
@@ -1738,6 +1740,12 @@ var PriceImpactError = class extends Error {
 		this.limitBps = limitBps;
 	}
 };
+/**
+* The intent itself cannot be used: a figure outside what the skill allows (a slippage tolerance, a
+* price impact limit, a fee limit or a minimum). A usage error, not a refusal of this swap: the
+* example and `orientim-verify` exit 2. Nothing was prepared.
+*/
+var IntentError = class extends Error {};
 /** This order already confirmed, or its last transaction may still land: it is not swapped again. */
 var OrientimOrderError = class extends Error {
 	id;
@@ -2232,10 +2240,11 @@ var FloorError = class extends Error {
 * the market. The price impact is held to `maxPriceImpactBps`, itself at most `MAX_PRICE_IMPACT_BPS`.
 */
 async function ownFloor(intent, deps) {
+	if (intent.slippageBps !== void 0 && !isSlippageBps(intent.slippageBps)) throw new IntentError(`slippageBps must be a whole number of bps from 10 to ${MAX_SLIPPAGE_BPS}. Nothing was prepared.`);
 	const maxImpact = intent.maxPriceImpactBps ?? 500;
-	if (!(Number.isInteger(maxImpact) && maxImpact >= 0 && maxImpact <= 2e3)) throw new Error(`maxPriceImpactBps must be a whole number of bps from 0 to ${MAX_PRICE_IMPACT_BPS}. Nothing was prepared.`);
-	if (intent.maxFeeBps !== void 0 && feeLimitBps(intent.maxFeeBps) !== intent.maxFeeBps) throw new Error(`maxFeeBps may be at most ${feeLimitBps()}, Orientim's pinned fee. Nothing was prepared.`);
-	if (intent.minOut !== void 0 && !/^\d{1,20}$/.test(intent.minOut)) throw new Error("minOut must be a whole number of base units, as a string. Nothing was prepared.");
+	if (!(Number.isInteger(maxImpact) && maxImpact >= 0 && maxImpact <= 2e3)) throw new IntentError(`maxPriceImpactBps must be a whole number of bps from 0 to ${MAX_PRICE_IMPACT_BPS}. Nothing was prepared.`);
+	if (intent.maxFeeBps !== void 0 && feeLimitBps(intent.maxFeeBps) !== intent.maxFeeBps) throw new IntentError(`maxFeeBps may be at most ${feeLimitBps()}, Orientim's pinned fee. Nothing was prepared.`);
+	if (intent.minOut !== void 0 && !/^\d{1,20}$/.test(intent.minOut)) throw new IntentError("minOut must be a whole number of base units, as a string. Nothing was prepared.");
 	const own = await ownQuote({
 		inputMint: intent.inputMint,
 		outputMint: intent.outputMint,
@@ -2271,7 +2280,6 @@ async function prepareChecked(args) {
 	const fetchImpl = args.fetchImpl ?? fetch;
 	const owner = args.owner;
 	const { slippageBps } = args.intent;
-	if (slippageBps !== void 0 && !isSlippageBps(slippageBps)) throw new Error(`slippageBps must be a whole number of bps from 10 to ${MAX_SLIPPAGE_BPS}. Nothing was prepared.`);
 	const minOut = (await ownFloor({
 		...args.intent,
 		owner
@@ -2502,16 +2510,16 @@ async function protectedSwap(args) {
 				...id ? { intentId: id } : {}
 			};
 			let counted = false;
-			if (args.policy) {
-				await checkPolicy(args.policy, spend, args.spends, signed.signature);
-				await args.spends?.recordSpend({
+			if (args.policy) await checkPolicy(args.policy, spend, args.spends, signed.signature);
+			if (args.spends) {
+				await args.spends.recordSpend({
 					signature: signed.signature,
 					owner,
 					mint: spend.inputMint,
 					amountIn: spend.amountIn,
 					at: Date.now()
 				});
-				counted = !!args.spends;
+				counted = true;
 			}
 			try {
 				if (args.pending) {
@@ -2711,6 +2719,28 @@ function exitCodeOf(result) {
 	if (result.bookkeepingError || result.outcome === "unknown") return 3;
 	return result.outcome === "confirmed" ? 0 : 1;
 }
+/**
+* The command's line for an error: its code, the skill's words and, for Orientim's errors, their data
+* fields as JSON (`{"newMinOut":"476545",...}`), since the next step needs them.
+*/
+function errorLine(e) {
+	if (e instanceof OrientimApiError) {
+		const details = Object.keys(e.body).length ? ` ${JSON.stringify(e.body)}` : "";
+		return `${e.code}: ${e.message}${details}${e.serverMessage ? ` (Orientim's words, untrusted: "${e.serverMessage}")` : ""}`;
+	}
+	return e instanceof PriceImpactError ? `price-impact-high: ${e.message}` : e instanceof FloorError ? `floor-too-low: ${e.message}` : e instanceof PolicyError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e);
+}
+/**
+* The command's exit code for an error, as `orientim-verify` answers: 2 an intent it cannot use; 3
+* another swap from this wallet may still land; 5 this order already swapped, or may still land (never
+* retry it under a new id); 1 anything else: nothing was swapped.
+*/
+function errorExitCode(e) {
+	if (e instanceof IntentError) return 2;
+	if (e instanceof PendingSwapError) return 3;
+	if (e instanceof OrientimOrderError) return 5;
+	return 1;
+}
 /** A solana-keygen file's 64 bytes. Its contents never appear in an error: it is a secret key. */
 function readKeypair(path) {
 	let text;
@@ -2734,8 +2764,8 @@ if (process.argv[1] && /swap\.ts$/.test(process.argv[1]) && fileURLToPath(import
 		process.exit(signal === "SIGTERM" ? 143 : 130);
 	});
 	main$1().catch((e) => {
-		console.error(e instanceof OrientimApiError ? `${e.code}: ${e.message}${e.serverMessage ? ` (Orientim's words, untrusted: "${e.serverMessage}")` : ""}` : e instanceof PriceImpactError ? `price-impact-high: ${e.message}` : e instanceof FloorError ? `floor-too-low: ${e.message}` : e instanceof PolicyError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e));
-		process.exitCode = 1;
+		console.error(errorLine(e));
+		process.exitCode = errorExitCode(e);
 	});
 }
 //#endregion
@@ -2757,7 +2787,7 @@ if (process.argv[1] && /swap\.ts$/.test(process.argv[1]) && fileURLToPath(import
 *   orientim-verify check      {"prepared": ..., "intent": {...}}      0 safe to sign   1 refused   (for bots that call the API themselves)
 *   orientim-verify key-challenge  {"wallet": "<address>"}             0 sign `message` (checked: Orientim's key message for this wallet, nothing else)
 *   orientim-verify key        {"message", "challenge", "signature"}   0 `key`, bound to that wallet   4 Orientim said no
-*   2 on any usage or configuration error; 5 when `intent.id` names an order that already swapped or
+*   2 on any usage or configuration error (a slippageBps, maxPriceImpactBps, maxFeeBps or minOut it cannot use included); 5 when `intent.id` names an order that already swapped or
 *   whose transaction may still land (the same order is never swapped twice).
 *
 * Finalize asked again for a swap it already kept (the same signature) is not a new send: it asks
@@ -2825,10 +2855,19 @@ const policyRefusal = (e, sent) => ({
 /**
 * Why a swap is refused before anything was sent, as a bot reads it: exit 1, with `error.code` for the
 * refusals it can act on (the floor, the price impact, the owner's policy, a service that did not
-* answer) and the reason in `problems` for the rest.
+* answer) and the reason in `problems` for the rest. An intent it cannot use (a slippage or a limit
+* outside the allowed range) is a usage error: exit 2.
 */
 function refusal(e, sent) {
 	const s = sent === false ? { sent } : {};
+	if (e instanceof IntentError) return {
+		code: 2,
+		output: {
+			ok: false,
+			...s,
+			error: e.message
+		}
+	};
 	if (e instanceof FloorError) return {
 		code: 1,
 		output: {
@@ -3491,21 +3530,19 @@ async function runCli(command, input, deps) {
 				onSigned: async (s) => {
 					const others = await pendingFor(store, prepared.wallet, s.signature);
 					if (others.length) throw new PendingSwapError(others);
-					const spends = deps.policy ? spendsOf(store) : void 0;
-					if (deps.policy) {
-						await checkPolicy(deps.policy, {
-							owner: prepared.wallet,
-							inputMint: intent.inputMint,
-							amountIn: intent.amountIn
-						}, spends, s.signature);
-						await spends?.recordSpend({
-							signature: s.signature,
-							owner: prepared.wallet,
-							mint: intent.inputMint,
-							amountIn: intent.amountIn,
-							at: Date.now()
-						});
-					}
+					const spends = spendsOf(store);
+					if (deps.policy) await checkPolicy(deps.policy, {
+						owner: prepared.wallet,
+						inputMint: intent.inputMint,
+						amountIn: intent.amountIn
+					}, spends, s.signature);
+					await spends?.recordSpend({
+						signature: s.signature,
+						owner: prepared.wallet,
+						mint: intent.inputMint,
+						amountIn: intent.amountIn,
+						at: Date.now()
+					});
 					try {
 						const orderId = intent.id;
 						await store.put({
@@ -3562,7 +3599,7 @@ async function runCli(command, input, deps) {
 					error: e.record.state === "confirmed" ? `Order ${e.id} already swapped (${e.record.signature}). This run sent nothing.` : e.record.state === "pending" ? `Order ${e.id} has a transaction that may still land (${e.record.signature}): run \`orientim-verify recover\`. This run sent nothing.` : `Order ${e.id} was taken by another run, or this order book cannot retry it safely. This run sent nothing.`
 				}
 			};
-			if (e instanceof FloorError || e instanceof PriceImpactError || e instanceof PolicyError || unavailable(e)) return refusal(e, false);
+			if (e instanceof FloorError || e instanceof PriceImpactError || e instanceof PolicyError || e instanceof IntentError || unavailable(e)) return refusal(e, false);
 			return {
 				code: 1,
 				output: {

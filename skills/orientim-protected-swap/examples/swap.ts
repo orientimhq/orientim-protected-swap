@@ -33,7 +33,8 @@
  * ORIENTIM_STATE_DIR or --state, default ./.orientim-state; absolute with a daily limit) before
  * finalize, settles what a stopped run left there before it starts another, and holds a lock per
  * wallet so that two workers never swap from it at once. It exits 0 only for a confirmed swap, 1 when
- * nothing was swapped, 2 on a usage error, and 3 when something must be settled first.
+ * nothing was swapped, 2 on a usage error (a slippage or limit outside the allowed range included), 3
+ * when something must be settled first, and 5 when this order (--id) already swapped or may still land.
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync } from 'node:fs';
@@ -177,6 +178,7 @@ export const ERROR_MEANINGS: Readonly<Record<string, string>> = {
   'unsupported-token': 'This token cannot be swapped safely now.',
   'no-route': 'No protected route was found for this swap now.',
   'insufficient-sol': 'The wallet does not hold enough SOL for this swap.',
+  'wallet-empty': 'The wallet holds less than 0.01 SOL, the least a wallet needs for an API key. Fund it, then ask again.',
   'insufficient-balance': 'The wallet does not hold enough of the input token.',
   'simulation-failed': 'The swap failed in simulation, so nothing was built.',
   'bad-request': 'Orientim could not read the request.',
@@ -282,7 +284,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.5.0';
+export const SKILL_VERSION = '1.5.1';
 
 /** Each call to Orientim ends within `timeoutMs`: an answer that never comes is no answer. */
 async function call<T>(fetchImpl: Fetch, url: string, key: string, body: unknown, timeoutMs = 30_000): Promise<T> {
@@ -675,6 +677,13 @@ export class PriceImpactError extends Error {
     this.limitBps = limitBps;
   }
 }
+
+/**
+ * The intent itself cannot be used: a figure outside what the skill allows (a slippage tolerance, a
+ * price impact limit, a fee limit or a minimum). A usage error, not a refusal of this swap: the
+ * example and `orientim-verify` exit 2. Nothing was prepared.
+ */
+export class IntentError extends Error {}
 
 /** This order already confirmed, or its last transaction may still land: it is not swapped again. */
 export class OrientimOrderError extends Error {
@@ -1234,14 +1243,17 @@ export async function ownFloor(
   intent: Intent,
   deps: { rpc: Rpc<SolanaRpcApi>; fetchImpl?: Fetch; jupiterApiKey?: string; requestTimeoutMs?: number; policy?: Pick<OwnerPolicy, 'allowUnknownPriceImpact'> },
 ): Promise<{ minOut: string; priceImpactBps: number | null }> {
+  if (intent.slippageBps !== undefined && !isSlippageBps(intent.slippageBps)) {
+    throw new IntentError(`slippageBps must be a whole number of bps from ${MIN_SLIPPAGE_BPS} to ${MAX_SLIPPAGE_BPS}. Nothing was prepared.`);
+  }
   const maxImpact = intent.maxPriceImpactBps ?? DEFAULT_MAX_PRICE_IMPACT_BPS;
   if (!(Number.isInteger(maxImpact) && maxImpact >= 0 && maxImpact <= MAX_PRICE_IMPACT_BPS)) {
-    throw new Error(`maxPriceImpactBps must be a whole number of bps from 0 to ${MAX_PRICE_IMPACT_BPS}. Nothing was prepared.`);
+    throw new IntentError(`maxPriceImpactBps must be a whole number of bps from 0 to ${MAX_PRICE_IMPACT_BPS}. Nothing was prepared.`);
   }
   if (intent.maxFeeBps !== undefined && feeLimitBps(intent.maxFeeBps) !== intent.maxFeeBps) {
-    throw new Error(`maxFeeBps may be at most ${feeLimitBps()}, Orientim's pinned fee. Nothing was prepared.`);
+    throw new IntentError(`maxFeeBps may be at most ${feeLimitBps()}, Orientim's pinned fee. Nothing was prepared.`);
   }
-  if (intent.minOut !== undefined && !/^\d{1,20}$/.test(intent.minOut)) throw new Error('minOut must be a whole number of base units, as a string. Nothing was prepared.');
+  if (intent.minOut !== undefined && !/^\d{1,20}$/.test(intent.minOut)) throw new IntentError('minOut must be a whole number of base units, as a string. Nothing was prepared.');
   const own = await ownQuote({
     inputMint: intent.inputMint, outputMint: intent.outputMint, amountIn: intent.amountIn, taker: intent.owner,
     maxFeeBps: intent.maxFeeBps, maxBelowBps: intent.maxBelowBps, slippageBps: intent.slippageBps, apiKey: deps.jupiterApiKey, fetchImpl: deps.fetchImpl,
@@ -1277,9 +1289,6 @@ export async function prepareChecked(args: {
   const fetchImpl = args.fetchImpl ?? fetch;
   const owner = args.owner;
   const { slippageBps } = args.intent;
-  if (slippageBps !== undefined && !isSlippageBps(slippageBps)) {
-    throw new Error(`slippageBps must be a whole number of bps from ${MIN_SLIPPAGE_BPS} to ${MAX_SLIPPAGE_BPS}. Nothing was prepared.`);
-  }
   const own = await ownFloor({ ...args.intent, owner }, {
     rpc: args.rpc, fetchImpl, jupiterApiKey: args.jupiterApiKey, requestTimeoutMs: args.requestTimeoutMs, policy: args.policy,
   });
@@ -1528,6 +1537,7 @@ export async function protectedSwap(args: {
    * last 24 hours spent, just before finalize. A daily limit needs `spends` (`createFileStore`).
    */
   policy?: OwnerPolicy;
+  /** Where every swap is recorded before it is kept, policy or not, for a daily limit to count. */
   spends?: SpendLog;
 }): Promise<{
   signature: string; outcome: Outcome | 'rejected'; prepared: Prepared; refusal?: string; bookkeepingError?: string;
@@ -1561,12 +1571,13 @@ export async function protectedSwap(args: {
     onSigned: async signed => {
       const kept: Signed = { ...signed, ...(id ? { intentId: id } : {}) };
       // Counted again with what the last 24 hours spent, and recorded before the swap is kept: once
-      // kept it may be sent, so it counts whatever its outcome.
+      // kept it may be sent, so it counts whatever its outcome. Every swap is recorded, with a policy
+      // or without: a daily limit set later counts the wallet's swaps of the last 24 hours, all of them.
       let counted = false;
-      if (args.policy) {
-        await checkPolicy(args.policy, spend, args.spends, signed.signature);
-        await args.spends?.recordSpend({ signature: signed.signature, owner, mint: spend.inputMint, amountIn: spend.amountIn, at: Date.now() });
-        counted = !!args.spends;
+      if (args.policy) await checkPolicy(args.policy, spend, args.spends, signed.signature);
+      if (args.spends) {
+        await args.spends.recordSpend({ signature: signed.signature, owner, mint: spend.inputMint, amountIn: spend.amountIn, at: Date.now() });
+        counted = true;
       }
       try {
         if (args.pending) {
@@ -1730,6 +1741,31 @@ export function exitCodeOf(result: { outcome: Outcome | 'rejected'; bookkeepingE
   return result.outcome === 'confirmed' ? 0 : 1;
 }
 
+/**
+ * The command's line for an error: its code, the skill's words and, for Orientim's errors, their data
+ * fields as JSON (`{"newMinOut":"476545",...}`), since the next step needs them.
+ */
+export function errorLine(e: unknown): string {
+  if (e instanceof OrientimApiError) {
+    const details = Object.keys(e.body).length ? ` ${JSON.stringify(e.body)}` : '';
+    return `${e.code}: ${e.message}${details}${e.serverMessage ? ` (Orientim's words, untrusted: "${e.serverMessage}")` : ''}`;
+  }
+  return e instanceof PriceImpactError ? `price-impact-high: ${e.message}` : e instanceof FloorError ? `floor-too-low: ${e.message}`
+    : e instanceof PolicyError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * The command's exit code for an error, as `orientim-verify` answers: 2 an intent it cannot use; 3
+ * another swap from this wallet may still land; 5 this order already swapped, or may still land (never
+ * retry it under a new id); 1 anything else: nothing was swapped.
+ */
+export function errorExitCode(e: unknown): number {
+  if (e instanceof IntentError) return 2;
+  if (e instanceof PendingSwapError) return 3;
+  if (e instanceof OrientimOrderError) return 5;
+  return 1;
+}
+
 /** A solana-keygen file's 64 bytes. Its contents never appear in an error: it is a secret key. */
 function readKeypair(path: string): Uint8Array {
   let text: string;
@@ -1761,9 +1797,7 @@ if (process.argv[1] && /swap\.ts$/.test(process.argv[1]) && fileURLToPath(import
     });
   }
   main().catch(e => {
-    console.error(e instanceof OrientimApiError ? `${e.code}: ${e.message}${e.serverMessage ? ` (Orientim's words, untrusted: "${e.serverMessage}")` : ''}`
-      : e instanceof PriceImpactError ? `price-impact-high: ${e.message}` : e instanceof FloorError ? `floor-too-low: ${e.message}`
-      : e instanceof PolicyError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e));
-    process.exitCode = 1;
+    console.error(errorLine(e));
+    process.exitCode = errorExitCode(e);
   });
 }

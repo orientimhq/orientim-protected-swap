@@ -3,6 +3,23 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.5.1 (2026-09-28)
+
+Fixes from a live test with a real wallet:
+
+- A daily limit counts every swap of the wallet in the last 24 hours, those made while no policy was
+  set included: the example and `orientim-verify finalize` record every swap in the state directory,
+  with a policy or without. Before, a swap counted only when a policy was active when it was made.
+- `price-moved` from the example prints the error's data as JSON after its code
+  (`{"newMinOut":"476545",...}`), so the value to ask the user about is there.
+- The example exits 5 for an order that already swapped, or whose transaction may still land, as
+  `orientim-verify` does, and 3 while another swap from the wallet may still land. A `slippageBps`
+  outside 10 to 1500, or a `maxPriceImpactBps`, `maxFeeBps` or `minOut` the skill cannot use, is a
+  usage error: exit 2 from the example and from `orientim-verify` (`IntentError`).
+- `wallet-empty` (an API key needs at least 0.01 SOL in the wallet) has the skill's own words.
+- `SKILL.md` says that `insufficient-sol` is an upper estimate that includes deposits returned in the
+  same transaction, and that the network fee follows the network's load but never goes above the cap.
+
 ## 1.5.0 (2026-09-28)
 
 Fixes from an external audit:

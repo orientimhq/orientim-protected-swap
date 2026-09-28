@@ -81,7 +81,8 @@ The user provides these; never ask for them in chat, and never print or log them
   a JSON file the owner writes and keeps where the agent cannot edit it. `maxAmountIn` is the most one
   swap may spend of each input mint; a mint it does not list is not swapped from at all.
   `maxAmountInPerDay` is the most all swaps from one wallet signed in the last 24 hours may spend
-  together (a swap counts once signed, whether it lands or not). Base units, as strings:
+  together (a swap counts once signed, whether it lands or not, and whether or not a policy was set
+  when it was made: every swap kept in the state directory counts). Base units, as strings:
 
   ```json
   { "maxAmountIn": { "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "50000000" },
@@ -205,8 +206,9 @@ Every error says what that request did: it signed and sent nothing. An error fro
 names the transaction (`signature`, `lastValidBlockHeight`); follow step 7 before preparing again.
 
 - `409 price-moved` (`requiresApproval: true`): the market no longer meets `minOut`. `newMinOut` is
-  what it supports now. Ask the user before preparing again with `minOut: newMinOut`; never lower a
-  minimum on your own.
+  what it supports now (the example prints it as JSON after the code, e.g. `{"newMinOut":"476545",...}`).
+  Ask the user before preparing again with `minOut: newMinOut` (`--min-out`); never lower a minimum
+  on your own.
 - `409 costs-more` (`requiresApproval: true`): the protected route is `gapBps` below the open market.
   Ask the user; to accept, prepare again with `acceptCostBps: gapBps` (the example's `--accept-cost-bps`).
 - `409 output-balance-changed`: your balance of the output token changed between prepare and
@@ -228,7 +230,12 @@ names the transaction (`signature`, `lastValidBlockHeight`); follow step 7 befor
 - `400 transaction-changed` / `wallet-changed-transaction`: the signed transaction differs from the
   one prepared, or the wallet's signature is missing. Sign exactly what prepare returned.
 - `422` (`unsupported-token`, `no-route`, `insufficient-sol`, `insufficient-balance`,
-  `simulation-failed`, ...): this swap cannot be built safely now.
+  `simulation-failed`, ...): this swap cannot be built safely now. `insufficient-sol` is an upper
+  estimate of the SOL the transaction needs while it runs: the deposits for the temporary accounts it
+  opens and closes (they come back in the same transaction), the most the network fee may be, and a
+  new account's rent. A wallet can be refused while holding more SOL than the swap finally costs.
+- `403 wallet-empty` (from the API-key endpoints): the wallet holds less than 0.01 SOL, the least a
+  wallet needs for an API key. Fund it, then ask again.
 
 `tokenRisk` in the example's and `orientim-verify`'s answers says what each token's issuer can do,
 read on your RPC: `permanentDelegate` (it can move or burn your balance at any time),
@@ -236,6 +243,8 @@ read on your RPC: `permanentDelegate` (it can move or burn your balance at any t
 When the mints cannot be read it is `{"status": "unavailable"}`, never "no risk", and `notices` says so.
 This makes an issuer's power visible; it does not remove it. The swap itself is protected either way.
 
+The network fee follows the network's load, so it differs from one swap to the next; the check never
+lets it go above your cap (`maxNetworkFeeLamports`, 0.001 SOL unless you set it).
 `notices.networkBusy` in a prepared swap means the network fee is at its limit: the swap may land
 late or expire (an expired swap costs nothing).
 
@@ -307,8 +316,8 @@ It needs Node 22.18 or later and `npm ci` in this folder, and reads `SOLANA_RPC_
 | --- | --- | --- |
 | `recover` | none | 0 all settled; 3 an earlier outcome is still unknown, or its record could not be updated (`bookkeepingErrors`): start nothing new |
 | `resolve` | `{"signature": "<a kept swap>", "outcome": "confirmed" \| "failed" \| "expired"}` | 0 settled (the chain's answer is used when your RPC has one); 1 refused: it could still land, or no swap with that signature is kept; 3 the state directory cannot be made or read. Only after you looked the signature up in a full history (an explorer), for a swap `recover` can no longer prove |
-| `prepare` | `{"intent": {"owner", "inputMint", "outputMint", "amountIn", "id", "slippageBps", "maxPriceImpactBps", ...}}` | 0 sign `message` (the answer also carries `notices` about the tokens); 1 refused, including `error.code` `price-impact-high`, `floor-too-low`, `unavailable` (try again after `retryAfter`) and the owner's policy (`mint-not-allowed`, `amount-over-limit`, `daily-limit`); 2 no `id`, or an `intent.treasury` (the treasury comes only from `ORIENTIM_TREASURY`); 3 settle first; 4 Orientim said no (`error.code`, as below); 5 this order (`id`) already swapped or may still land |
-| `finalize` | `{"checked": <prepare's checked, unchanged>, "signature": "<base58>"}` | 0 confirmed, with `received`: what the wallet's output balance gained when it was read, in base units; 1 not swapped (the same refusals as `prepare`: `checked` is checked again, the floor included); 3 unknown: run `recover` before anything new (also `busy`: another run from this wallet holds its lock, and may have sent it; and a state directory that cannot be read, with `outcome` `unknown`); 5 this order already swapped, or may still land, under another transaction (`order`). Asked again for a swap it kept, it answers with that swap's signature and outcome (`resumed`) |
+| `prepare` | `{"intent": {"owner", "inputMint", "outputMint", "amountIn", "id", "slippageBps", "maxPriceImpactBps", ...}}` | 0 sign `message` (the answer also carries `notices` about the tokens); 1 refused, including `error.code` `price-impact-high`, `floor-too-low`, `unavailable` (try again after `retryAfter`) and the owner's policy (`mint-not-allowed`, `amount-over-limit`, `daily-limit`); 2 no `id`, an `intent.treasury` (the treasury comes only from `ORIENTIM_TREASURY`), or a `slippageBps` (10 to 1500), `maxPriceImpactBps`, `maxFeeBps` or `minOut` outside what the skill allows; 3 settle first; 4 Orientim said no (`error.code`, as below); 5 this order (`id`) already swapped or may still land |
+| `finalize` | `{"checked": <prepare's checked, unchanged>, "signature": "<base58>"}` | 0 confirmed, with `received`: what the wallet's output balance gained when it was read, in base units; 1 not swapped (the same refusals as `prepare`: `checked` is checked again, the floor included); 2 an intent it cannot use, as for `prepare`; 3 unknown: run `recover` before anything new (also `busy`: another run from this wallet holds its lock, and may have sent it; and a state directory that cannot be read, with `outcome` `unknown`); 5 this order already swapped, or may still land, under another transaction (`order`). Asked again for a swap it kept, it answers with that swap's signature and outcome (`resumed`) |
 | `check` | `{"prepared": <prepare answer>, "intent": {...}}` | 0 safe to sign; 1 refused (for bots that call the API themselves). A daily limit counts only the swaps this state directory kept |
 
 `slippageBps` and `maxPriceImpactBps` are optional, and the same as on the page: without them the
@@ -343,10 +352,12 @@ In Rust, `keypair.sign_message(&message).to_string()` gives the same base58 sign
 ## The example's exit codes
 
 `node examples/swap.ts` exits 0 only for a confirmed swap; 1 when nothing was swapped (refused,
-failed or expired); 2 on a usage or configuration error; 3 when an outcome is unknown, a record
+failed or expired); 2 on a usage or configuration error, a `--slippage-bps` outside 10 to 1500 or a
+`--max-price-impact-bps` outside 0 to 2000 included; 3 when an outcome is unknown, a record
 could not be written, or another run from this wallet holds its lock: settle first (run it again
-with the same `--id`), never start another way. Stopped by a signal, it gives up its lock and exits
-130 or 143.
+with the same `--id`), never start another way; 5 when this order (`--id`) already swapped, or its
+transaction may still land, as `orientim-verify` answers: never retry it under a new id. Stopped by
+a signal, it gives up its lock and exits 130 or 143.
 
 ## Dry run
 

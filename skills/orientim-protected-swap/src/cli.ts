@@ -15,7 +15,7 @@
  *   orientim-verify check      {"prepared": ..., "intent": {...}}      0 safe to sign   1 refused   (for bots that call the API themselves)
  *   orientim-verify key-challenge  {"wallet": "<address>"}             0 sign `message` (checked: Orientim's key message for this wallet, nothing else)
  *   orientim-verify key        {"message", "challenge", "signature"}   0 `key`, bound to that wallet   4 Orientim said no
- *   2 on any usage or configuration error; 5 when `intent.id` names an order that already swapped or
+ *   2 on any usage or configuration error (a slippageBps, maxPriceImpactBps, maxFeeBps or minOut it cannot use included); 5 when `intent.id` names an order that already swapped or
  *   whose transaction may still land (the same order is never swapped twice).
  *
  * Finalize asked again for a swap it already kept (the same signature) is not a new send: it asks
@@ -52,7 +52,7 @@ import type { Address, Rpc, SignatureBytes, SolanaRpcApi } from '@solana/kit';
 import {
   acquireLock, apiKeyChallenge, OrientimApiError, checkPrepared, createFileStore, finalizeSigned, isApiKeyMessage, pendingFor, PendingSwapError,
   prepareChecked, PriceImpactError, FloorError, ownFloor, receivedFor, recoverPending, redeemApiKey, resolvePending, resumeSigned, takeOrder,
-  checkPolicy, loadPolicy, PolicyError, LockBusyError, OrientimOrderError, holdSolFee, releaseHeldLocks, stateDirFor, DEFAULT_STATE_DIR,
+  checkPolicy, loadPolicy, PolicyError, LockBusyError, OrientimOrderError, holdSolFee, releaseHeldLocks, stateDirFor, DEFAULT_STATE_DIR, IntentError,
 } from '../examples/swap.ts';
 import type { Checked, FoundOrder, Intent, OrderBook, OrderRecord, OwnerPolicy, PendingStore, Prepared, SpendLog } from '../examples/swap.ts';
 import { ORIENTIM_TREASURY } from '../lib/orientim-verify.mjs';
@@ -89,10 +89,12 @@ const policyRefusal = (e: PolicyError, sent?: false): CliResult => ({
 /**
  * Why a swap is refused before anything was sent, as a bot reads it: exit 1, with `error.code` for the
  * refusals it can act on (the floor, the price impact, the owner's policy, a service that did not
- * answer) and the reason in `problems` for the rest.
+ * answer) and the reason in `problems` for the rest. An intent it cannot use (a slippage or a limit
+ * outside the allowed range) is a usage error: exit 2.
  */
 function refusal(e: unknown, sent?: false): CliResult {
   const s = sent === false ? { sent } : {};
+  if (e instanceof IntentError) return { code: 2, output: { ok: false, ...s, error: e.message } };
   if (e instanceof FloorError) {
     return { code: 1, output: { ok: false, ...s, problems: [e.message], error: { code: 'floor-too-low', message: e.message, minOut: e.minOut, lowest: e.lowest } } };
   }
@@ -521,13 +523,12 @@ export async function runCli(command: string, input: unknown, deps: CliDeps): Pr
           const others = await pendingFor(store, prepared.wallet, s.signature);
           if (others.length) throw new PendingSwapError(others);
           // The owner's limits again, under the wallet's lock, with what the last 24 hours spent; the
-          // swap counts from here, before it is kept, since once kept it may be sent. A swap refused
-          // before it is kept was never sent, and its spend is taken back.
-          const spends = deps.policy ? spendsOf(store) : undefined;
-          if (deps.policy) {
-            await checkPolicy(deps.policy, { owner: prepared.wallet, inputMint: intent.inputMint, amountIn: intent.amountIn }, spends, s.signature);
-            await spends?.recordSpend({ signature: s.signature, owner: prepared.wallet, mint: intent.inputMint, amountIn: intent.amountIn, at: Date.now() });
-          }
+          // swap counts from here, before it is kept, since once kept it may be sent. Every swap is
+          // recorded, with a policy or without, so that a daily limit set later counts it too. A swap
+          // refused before it is kept was never sent, and its spend is taken back.
+          const spends = spendsOf(store);
+          if (deps.policy) await checkPolicy(deps.policy, { owner: prepared.wallet, inputMint: intent.inputMint, amountIn: intent.amountIn }, spends, s.signature);
+          await spends?.recordSpend({ signature: s.signature, owner: prepared.wallet, mint: intent.inputMint, amountIn: intent.amountIn, at: Date.now() });
           try {
             const orderId = intent.id;
             await store.put({ ...s, ...(orderId ? { intentId: orderId } : {}) });
@@ -566,7 +567,7 @@ export async function runCli(command: string, input: unknown, deps: CliDeps): Pr
           },
         };
       }
-      if (e instanceof FloorError || e instanceof PriceImpactError || e instanceof PolicyError || unavailable(e)) return refusal(e, false);
+      if (e instanceof FloorError || e instanceof PriceImpactError || e instanceof PolicyError || e instanceof IntentError || unavailable(e)) return refusal(e, false);
       return { code: 1, output: { ok: false, sent: false, error: messageOf(e) } };
     } finally {
       release();
