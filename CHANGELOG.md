@@ -3,6 +3,15 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.7.2 (2026-09-28)
+
+- The check of what stays under the one-time key reads every balance after the swap from the
+  simulation's `postBalances`, matched to the transaction's accounts in order and to its lookup
+  tables, instead of asking for them in `accounts.addresses`, which some RPC providers limit to two.
+  An answer without balances, with another number of them, or with other loaded addresses is refused.
+- An account under the one-time key that the transaction does not name is read before the swap, and
+  counts as empty only when that read shows it empty.
+
 ## 1.7.1 (2026-09-28)
 
 - `orientim-verify prepare` and `finalize` hold to the user's approval from a dry run kept in the same
