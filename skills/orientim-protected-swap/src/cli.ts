@@ -16,6 +16,8 @@
  *   orientim-verify check      {"prepared": ..., "intent": {...}}      0 safe to sign   1 refused   (for bots that call the API themselves)
  *   orientim-verify key-challenge  {"wallet": "<address>"}             0 sign `message` (checked: Orientim's key message for this wallet, nothing else)
  *   orientim-verify key        {"message", "challenge", "signature"}   0 `key`, bound to that wallet   4 Orientim said no
+ *   A dry run's approval kept in the state directory (`node examples/swap.ts --dry-run`) holds here too:
+ *   prepare and finalize refuse a lower minimum, or an expired approval (exit 1, `error.code` `approval`).
  *   2 on any usage or configuration error (a slippageBps, maxPriceImpactBps, maxFeeBps or minOut it cannot use included); 5 when `intent.id` names an order that already swapped or
  *   whose transaction may still land (the same order is never swapped twice). finalize without
  *   `checked.intent.id` is a usage error: the id is what keeps the order from being swapped twice.
@@ -58,7 +60,7 @@ import {
   acquireLock, apiKeyChallenge, OrientimApiError, checkPrepared, createFileStore, finalizeSigned, isApiKeyMessage, pendingFor, PendingSwapError,
   prepareChecked, PriceImpactError, FloorError, ownFloor, receivedFor, recoverPending, redeemApiKey, resolvePending, resumeSigned, takeOrder,
   checkPolicy, loadPolicy, PolicyError, LockBusyError, OrientimOrderError, holdSolFee, releaseHeldLocks, stateDirFor, DEFAULT_STATE_DIR, IntentError,
-  exitCodeOf, settleOrder,
+  exitCodeOf, settleOrder, ApprovalError, forgetApproval, heldToApproval, keptApproval,
 } from '../examples/swap.ts';
 import type { Checked, FoundOrder, Intent, OrderBook, OrderRecord, OwnerPolicy, PendingStore, Prepared, SpendLog } from '../examples/swap.ts';
 import { ORIENTIM_TREASURY } from '../lib/orientim-verify.mjs';
@@ -108,6 +110,7 @@ function refusal(e: unknown, sent?: false): CliResult {
     return { code: 1, output: { ok: false, ...s, problems: [e.message], error: { code: 'price-impact-high', message: e.message, impactBps: e.impactBps, limitBps: e.limitBps } } };
   }
   if (e instanceof PolicyError) return policyRefusal(e, sent);
+  if (e instanceof ApprovalError) return { code: 1, output: { ok: false, ...s, problems: [e.message], error: { code: 'approval', message: e.message } } };
   if (unavailable(e)) return unavailableRefusal(e, sent);
   return { code: 1, output: { ok: false, ...s, problems: [messageOf(e)] } };
 }
@@ -120,6 +123,9 @@ const isIntent = (v: unknown): v is Intent => {
   return !!i && [i.owner, i.inputMint, i.outputMint, i.amountIn].every(x => typeof x === 'string' && x.length > 0);
 };
 const INTENT_SHAPE = '{"owner", "inputMint", "outputMint", "amountIn"} (strings)';
+/** Which dry-run approval holds for an intent: the same wallet, mints and amount. */
+const approvalKeyOf = (i: Pick<Intent, 'owner' | 'inputMint' | 'outputMint' | 'amountIn'>) =>
+  ({ owner: i.owner, inputMint: i.inputMint, outputMint: i.outputMint, amountIn: i.amountIn });
 /** A wallet address, as Solana writes one. */
 const ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
@@ -382,6 +388,8 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
     try {
       // The owner's limits, before anything is asked of Orientim; finalize holds the swap to them again.
       if (deps.policy) await checkPolicy(deps.policy, own, spendsOf(store));
+      // What the user approved after a dry run of this wallet, these mints and this amount: at least that minimum.
+      rest.minOut = heldToApproval(keptApproval(deps.stateDir, approvalKeyOf(own)), rest.minOut);
       const checked = await prepareChecked({
         ...api, rpc: deps.rpc, owner, intent: rest,
         fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey, requestTimeoutMs: deps.requestTimeoutMs, policy: deps.policy,
@@ -437,6 +445,8 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
         // Only this attempt's own order: a newer attempt that holds it is never written over.
         if (orderId) await settleOrder(store, orderId, { signature: result.signature, state: (result.outcome === 'unknown' ? 'pending' : result.outcome) as OrderRecord['state'] });
         if (result.outcome !== 'unknown') await store.remove(result.signature);
+        // A swap that landed uses the user's approval up; one that failed or expired keeps it until it expires.
+        if (result.outcome === 'confirmed') forgetApproval(deps.stateDir, approvalKeyOf({ ...intent, owner: prepared.wallet }));
       } catch (e) {
         bookkeepingError = messageOf(e);
       }
@@ -530,7 +540,8 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
       }
       // Checked again here, on your RPC, as for a first check: finalize takes nothing on trust, not
       // even prepare's output. The floor is held to Jupiter's own price and the hard limits again,
-      // and a fee in SOL to the skill's own limit.
+      // and a fee in SOL to the skill's own limit, and to what the user approved after a dry run.
+      intent.minOut = heldToApproval(keptApproval(deps.stateDir, approvalKeyOf({ ...intent, owner: prepared.wallet })), intent.minOut);
       const own = await ownFloor(intent, { rpc: deps.rpc, fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey, requestTimeoutMs: deps.requestTimeoutMs, policy: deps.policy });
       intent.minOut = own.minOut;
       await holdSolFee(intent, prepared, { fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey });
@@ -605,7 +616,9 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
           },
         };
       }
-      if (e instanceof FloorError || e instanceof PriceImpactError || e instanceof PolicyError || e instanceof IntentError || unavailable(e)) return refusal(e, false);
+      if (e instanceof FloorError || e instanceof PriceImpactError || e instanceof PolicyError || e instanceof IntentError || e instanceof ApprovalError || unavailable(e)) {
+        return refusal(e, false);
+      }
       return { code: 1, output: { ok: false, sent: false, error: messageOf(e) } };
     } finally {
       release();

@@ -308,6 +308,9 @@ It needs Node 22.18 or later and `npm ci` in this folder, and reads `SOLANA_RPC_
 - **`ORIENTIM_STATE_DIR` must outlive the bot**: an absolute path on a disk that stays across restarts
   (a volume, not a container's own file system), shared by every process of the same wallet. It holds
   the swaps that may still land and the order book; lose it, and nothing stops a second swap after a crash.
+- **Ask the user before a swap they have not approved**: run the dry run (`node examples/swap.ts ...
+  --dry-run`, same `ORIENTIM_STATE_DIR`), show its `approval`, and wait for a yes. `prepare` and
+  `finalize` then refuse a lower minimum, or an approval that expired (exit 1, `error.code` `approval`).
 - **Give every order an `id`**, the same on every retry of that order: a retry of an order that
   swapped, or may still land, exits 5 instead of swapping twice.
 - **Finalize can take minutes**: it waits for the outcome on the chain (up to 3 minutes, and more with
@@ -378,4 +381,6 @@ it holds (`until`, 10 minutes). It is kept in the state directory, and the real 
 wallet, mints and amount enforces at least that minimum. It refuses a lower `--min-out`, and refuses
 once the approval expired: run the dry run again and ask the user again. If the market moved and
 Orientim answers `price-moved`, do the same: a new dry run and a new yes, never a lower minimum on your
-own. The approval is used up once the swap goes out.
+own. The approval is used up once the swap lands; a swap that failed or expired keeps it until it
+expires, so a retry still holds to what the user approved. `orientim-verify prepare` and `finalize`
+hold to an approval kept in the same state directory too (`error.code` `approval` when they refuse).

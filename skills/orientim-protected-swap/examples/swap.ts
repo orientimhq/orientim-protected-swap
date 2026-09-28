@@ -291,7 +291,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.7.0';
+export const SKILL_VERSION = '1.7.1';
 
 /** Each call to Orientim ends within `timeoutMs`: an answer that never comes is no answer. */
 async function call<T>(fetchImpl: Fetch, url: string, key: string, body: unknown, timeoutMs = 30_000): Promise<T> {
@@ -928,6 +928,20 @@ export function heldToApproval(approval: Approval | null, minOut: string | undef
 
 /** The real swap would accept less than the user approved after the dry run, or the approval expired. */
 export class ApprovalError extends Error {}
+
+/**
+ * The approval kept for this wallet, these mints and this amount, for the example and for
+ * `orientim-verify` alike. An expired approval keeps refusing until a new dry run replaces it; a day
+ * later it is forgotten.
+ */
+export function keptApproval(dir: string, key: ApprovalKey, now = Date.now()): Approval | null {
+  const approved = approvalFor(dir, key);
+  if (approved && approved.expiresAt + DAY_MS < now) {
+    forgetApproval(dir, key);
+    return null;
+  }
+  return approved;
+}
 
 /** The swap is outside the owner's policy: refused before anything was prepared or sent. */
 export class PolicyError extends Error {
@@ -1847,12 +1861,7 @@ async function main() {
     }
     // What the user approved after the dry run, if they did: at least that minimum, until it expires.
     const approvalKey = { owner: wallet.address, inputMint, outputMint, amountIn };
-    let approved = approvalFor(stateDir, approvalKey);
-    // An expired approval keeps refusing until a new dry run replaces it; a day later it is forgotten.
-    if (approved && approved.expiresAt + DAY_MS < Date.now()) {
-      forgetApproval(stateDir, approvalKey);
-      approved = null;
-    }
+    const approved = keptApproval(stateDir, approvalKey);
     intent.minOut = heldToApproval(approved, intent.minOut);
     const result = await protectedSwap({
       apiUrl, apiKey, rpc, wallet, intent, jupiterApiKey, orders: store,
@@ -1862,8 +1871,9 @@ async function main() {
       policy, spends: store,
       onSigned: s => console.error(`Signed transaction ${s.signature}; it can land until block ${s.lastValidBlockHeight}.`),
     });
-    // A swap that went out uses the approval up: another swap needs another yes.
-    if (approved) forgetApproval(stateDir, approvalKey);
+    // A swap that landed uses the approval up: another swap needs another yes. One that failed or
+    // expired keeps it until it expires, so that a retry still holds to the minimum the user approved.
+    if (approved && result.outcome === 'confirmed') forgetApproval(stateDir, approvalKey);
     console.log(JSON.stringify({
       signature: result.signature, outcome: result.outcome, refusal: result.refusal, amounts: result.prepared.amounts,
       ...(result.received ? { received: result.received } : {}), ...(result.notices.length ? { notices: result.notices } : {}),

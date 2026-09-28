@@ -1472,7 +1472,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.7.0";
+const SKILL_VERSION = "1.7.1";
 /** Each call to Orientim ends within `timeoutMs`: an answer that never comes is no answer. */
 async function call(fetchImpl, url, key, body, timeoutMs = 3e4) {
 	const res = await fetchImpl(url, {
@@ -1967,6 +1967,19 @@ function heldToApproval(approval, minOut, now = Date.now()) {
 }
 /** The real swap would accept less than the user approved after the dry run, or the approval expired. */
 var ApprovalError = class extends Error {};
+/**
+* The approval kept for this wallet, these mints and this amount, for the example and for
+* `orientim-verify` alike. An expired approval keeps refusing until a new dry run replaces it; a day
+* later it is forgotten.
+*/
+function keptApproval(dir, key, now = Date.now()) {
+	const approved = approvalFor(dir, key);
+	if (approved && approved.expiresAt + DAY_MS < now) {
+		forgetApproval(dir, key);
+		return null;
+	}
+	return approved;
+}
 /** The swap is outside the owner's policy: refused before anything was prepared or sent. */
 var PolicyError = class extends Error {
 	code;
@@ -2852,11 +2865,7 @@ async function main$1() {
 			outputMint,
 			amountIn
 		};
-		let approved = approvalFor(stateDir, approvalKey);
-		if (approved && approved.expiresAt + DAY_MS < Date.now()) {
-			forgetApproval(stateDir, approvalKey);
-			approved = null;
-		}
+		const approved = keptApproval(stateDir, approvalKey);
 		intent.minOut = heldToApproval(approved, intent.minOut);
 		const result = await protectedSwap({
 			apiUrl,
@@ -2871,7 +2880,7 @@ async function main$1() {
 			spends: store,
 			onSigned: (s) => console.error(`Signed transaction ${s.signature}; it can land until block ${s.lastValidBlockHeight}.`)
 		});
-		if (approved) forgetApproval(stateDir, approvalKey);
+		if (approved && result.outcome === "confirmed") forgetApproval(stateDir, approvalKey);
 		console.log(JSON.stringify({
 			signature: result.signature,
 			outcome: result.outcome,
@@ -2965,6 +2974,8 @@ if (process.argv[1] && /swap\.ts$/.test(process.argv[1]) && fileURLToPath(import
 *   orientim-verify check      {"prepared": ..., "intent": {...}}      0 safe to sign   1 refused   (for bots that call the API themselves)
 *   orientim-verify key-challenge  {"wallet": "<address>"}             0 sign `message` (checked: Orientim's key message for this wallet, nothing else)
 *   orientim-verify key        {"message", "challenge", "signature"}   0 `key`, bound to that wallet   4 Orientim said no
+*   A dry run's approval kept in the state directory (`node examples/swap.ts --dry-run`) holds here too:
+*   prepare and finalize refuse a lower minimum, or an expired approval (exit 1, `error.code` `approval`).
 *   2 on any usage or configuration error (a slippageBps, maxPriceImpactBps, maxFeeBps or minOut it cannot use included); 5 when `intent.id` names an order that already swapped or
 *   whose transaction may still land (the same order is never swapped twice). finalize without
 *   `checked.intent.id` is a usage error: the id is what keeps the order from being swapped twice.
@@ -3079,6 +3090,18 @@ function refusal(e, sent) {
 		}
 	};
 	if (e instanceof PolicyError) return policyRefusal(e, sent);
+	if (e instanceof ApprovalError) return {
+		code: 1,
+		output: {
+			ok: false,
+			...s,
+			problems: [e.message],
+			error: {
+				code: "approval",
+				message: e.message
+			}
+		}
+	};
 	if (unavailable(e)) return unavailableRefusal(e, sent);
 	return {
 		code: 1,
@@ -3101,6 +3124,13 @@ const isIntent = (v) => {
 	].every((x) => typeof x === "string" && x.length > 0);
 };
 const INTENT_SHAPE = "{\"owner\", \"inputMint\", \"outputMint\", \"amountIn\"} (strings)";
+/** Which dry-run approval holds for an intent: the same wallet, mints and amount. */
+const approvalKeyOf = (i) => ({
+	owner: i.owner,
+	inputMint: i.inputMint,
+	outputMint: i.outputMint,
+	amountIn: i.amountIn
+});
 /** A wallet address, as Solana writes one. */
 const ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 /**
@@ -3529,6 +3559,7 @@ async function runCommand(command, input, deps) {
 		const { owner, ...rest } = own;
 		try {
 			if (deps.policy) await checkPolicy(deps.policy, own, spendsOf(store));
+			rest.minOut = heldToApproval(keptApproval(deps.stateDir, approvalKeyOf(own)), rest.minOut);
 			const checked = await prepareChecked({
 				...api,
 				rpc: deps.rpc,
@@ -3589,6 +3620,10 @@ async function runCommand(command, input, deps) {
 					state: result.outcome === "unknown" ? "pending" : result.outcome
 				});
 				if (result.outcome !== "unknown") await store.remove(result.signature);
+				if (result.outcome === "confirmed") forgetApproval(deps.stateDir, approvalKeyOf({
+					...intent,
+					owner: prepared.wallet
+				}));
 			} catch (e) {
 				bookkeepingError = messageOf(e);
 			}
@@ -3695,6 +3730,10 @@ async function runCommand(command, input, deps) {
 					error: "An earlier swap from this wallet may still land: run `orientim-verify recover` first. Nothing was sent."
 				}
 			};
+			intent.minOut = heldToApproval(keptApproval(deps.stateDir, approvalKeyOf({
+				...intent,
+				owner: prepared.wallet
+			})), intent.minOut);
 			intent.minOut = (await ownFloor(intent, {
 				rpc: deps.rpc,
 				fetchImpl: deps.fetchImpl,
@@ -3828,7 +3867,7 @@ async function runCommand(command, input, deps) {
 					error: e.record.state === "confirmed" ? `Order ${e.id} already swapped (${e.record.signature}). This run sent nothing.` : e.record.state === "pending" ? `Order ${e.id} has a transaction that may still land (${e.record.signature}): run \`orientim-verify recover\`. This run sent nothing.` : `Order ${e.id} was taken by another run, or this order book cannot retry it safely. This run sent nothing.`
 				}
 			};
-			if (e instanceof FloorError || e instanceof PriceImpactError || e instanceof PolicyError || e instanceof IntentError || unavailable(e)) return refusal(e, false);
+			if (e instanceof FloorError || e instanceof PriceImpactError || e instanceof PolicyError || e instanceof IntentError || e instanceof ApprovalError || unavailable(e)) return refusal(e, false);
 			return {
 				code: 1,
 				output: {

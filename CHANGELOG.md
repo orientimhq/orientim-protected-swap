@@ -3,6 +3,14 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.7.1 (2026-09-28)
+
+- `orientim-verify prepare` and `finalize` hold to the user's approval from a dry run kept in the same
+  state directory: they refuse a lower minimum, or an approval that expired (exit 1, `error.code`
+  `approval`).
+- The approval is used up only once the swap lands. A swap that failed or expired keeps it until it
+  expires, so a retry still holds to the minimum the user approved.
+
 ## 1.7.0 (2026-09-28)
 
 - The user's yes after a dry run now binds the real swap (A5). A dry run that finds no problem

@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import type { Rpc, SolanaRpcApi } from '@solana/kit';
 import { describe, expect, it } from 'vitest';
 import {
-  acquireLock, ApprovalError, approvalFor, checkPolicy, ConfigError, createFileStore, forgetApproval, heldToApproval, recordApproval, dataOnly, errorExitCode, errorLine, exitCodeOf, fillAgainstQuote, IntentError, isApiKeyMessage,
+  acquireLock, ApprovalError, approvalFor, checkPolicy, ConfigError, createFileStore, forgetApproval, heldToApproval, keptApproval, recordApproval, dataOnly, errorExitCode, errorLine, exitCodeOf, fillAgainstQuote, IntentError, isApiKeyMessage,
   loadPolicy, LockBusyError, OrientimApiError, OrientimOrderError, PendingSwapError, PolicyError, preparedData, receivedFor, recoverPending,
   releaseHeldLocks, safeCode, settleOrder, SKILL_VERSION, stateDirFor, untrustedLine,
 } from '../skills/orientim-protected-swap/examples/swap.ts';
@@ -290,6 +290,11 @@ describe('the skill holds its own state and limits against what it is handed', (
     // Once expired, nothing starts until a new dry run and a new yes.
     expect(() => heldToApproval(approved, undefined, now + 120_000)).toThrow('expired');
     forgetApproval(dir, key);
+    expect(approvalFor(dir, key)).toBeNull();
+    // An expired approval keeps refusing for a day, then is forgotten.
+    recordApproval(dir, { ...key, minOut: '100', expiresAt: now - 1 });
+    expect(keptApproval(dir, key, now)?.minOut).toBe('100');
+    expect(keptApproval(dir, key, now + 24 * 60 * 60_000 + 1)).toBeNull();
     expect(approvalFor(dir, key)).toBeNull();
   });
 
