@@ -130,6 +130,64 @@ async function readAccounts(rpc, addresses, opts = {}) {
 	};
 }
 /**
+* The accounts a transaction names, in the order the runtime numbers them (and `postBalances`
+* follows): the static accounts, then what the lookup tables load as writable, then as read-only,
+* table by table. Null when a table it names is not in `lookupTables`, or an index is past its end.
+*/
+function accountKeysOf(transaction, lookupTables) {
+	const compiled = getCompiledTransactionMessageDecoder().decode(transaction.messageBytes);
+	const lookups = compiled.addressTableLookups ?? [];
+	const load = (pick) => {
+		const out = [];
+		for (const l of lookups) {
+			const table = lookupTables[l.lookupTableAddress];
+			if (!table) return null;
+			for (const i of pick(l)) {
+				if (i >= table.length) return null;
+				out.push(table[i]);
+			}
+		}
+		return out;
+	};
+	const writable = load((l) => l.writableIndexes);
+	const readonly = load((l) => l.readonlyIndexes);
+	if (!writable || !readonly) return null;
+	return {
+		keys: [
+			...compiled.staticAccounts,
+			...writable,
+			...readonly
+		],
+		writable,
+		readonly
+	};
+}
+/**
+* What each account of `transaction` holds after a successful simulation, from its `postBalances`,
+* or why that answer cannot be relied on: no balances, a count that is not the transaction's, or
+* addresses loaded from lookup tables that are not the ones the tables hold. Read this way, the
+* accounts need not be named in `accounts.addresses`, which some RPC providers limit to two.
+*/
+function balancesAfterSimulation(transaction, value, lookupTables) {
+	const order = accountKeysOf(transaction, lookupTables);
+	if (!order) return "the transaction names a lookup table entry that could not be read";
+	const post = value.postBalances;
+	if (!Array.isArray(post)) return "the RPC did not report the balances after the transaction";
+	if (post.length !== order.keys.length) return `the RPC reported ${post.length} balances for ${order.keys.length} accounts`;
+	if (order.writable.length || order.readonly.length) {
+		const loaded = value.loadedAddresses;
+		const same = (a, b) => !!a && a.length === b.length && a.every((x, i) => x === b[i]);
+		if (!loaded || !same(loaded.writable, order.writable) || !same(loaded.readonly, order.readonly)) return "the RPC loaded other accounts from the lookup tables than the tables hold";
+	}
+	const out = /* @__PURE__ */ new Map();
+	for (const [i, a] of order.keys.entries()) {
+		const b = post[i];
+		if (typeof b !== "bigint" && typeof b !== "number") return "the RPC reported a balance that is not a number";
+		out.set(a, BigInt(b));
+	}
+	return out;
+}
+/**
 * Does `view` prove that a transaction with no record in it never landed, and never will? It can
 * land in blocks `earliest` to `lastValid`: the finalized chain must be past `lastValid`, and the
 * answering node's cache must still reach down to `earliest`. Past that window, "no record" is no
@@ -1059,6 +1117,7 @@ async function verifyPrepared(prepared, limits, rpc, opts = {}) {
 	else if (keeps < BigInt(limits.minOut)) problems.push(`the minimum ${keeps} is below yours, ${limits.minOut}`);
 	let snapshot;
 	let snapshotAddresses = [];
+	const underKey = await underKeyOf(p.ephemeral);
 	try {
 		const compiled = getCompiledTransactionMessageDecoder().decode(transaction.messageBytes);
 		const lookups = compiled.addressTableLookups ?? [];
@@ -1072,7 +1131,8 @@ async function verifyPrepared(prepared, limits, rpc, opts = {}) {
 			p.inputMint,
 			p.outputMint,
 			p.ephemeral,
-			...p.treasury ? [p.treasury] : []
+			...p.treasury ? [p.treasury] : [],
+			...underKey
 		], { timeoutMs });
 		snapshot = {
 			accounts,
@@ -1096,8 +1156,25 @@ async function verifyPrepared(prepared, limits, rpc, opts = {}) {
 	};
 	const keep = new Set([p.accounts.wOut, p.treasury].filter((a) => !!a));
 	const fresh = [...new Set(snapshotAddresses)].filter((a) => !exists(a) && !keep.has(a));
-	problems.push(...await leftUnderKey(prepared.transaction, p.ephemeral, rpc, snapshot.slot, timeoutMs, fresh));
+	problems.push(...await leftUnderKey(prepared.transaction, transaction, underKey, snapshot, rpc, timeoutMs, fresh));
 	return problems;
+}
+/**
+* E, each Pump market's account in E's name, and the token accounts those hold cashback in (WSOL,
+* or USDC on a USDC-quoted market): a claim E could make later is value under E too.
+*/
+async function underKeyOf(key) {
+	const markets = await Promise.all([PUMP_CURVE_PROGRAM, PUMP_AMM_PROGRAM].map((program) => routeAccountFor(program, key)));
+	const cashback = await Promise.all(markets.flatMap((owner) => [WSOL_MINT, USDC_MINT].map(async (mint) => (await findAssociatedTokenPda({
+		owner,
+		mint,
+		tokenProgram: TOKEN_PROGRAM
+	}))[0])));
+	return [
+		key,
+		...markets,
+		...cashback
+	];
 }
 /**
 * What stays behind after the swap, simulated on the agent's own RPC: under the one-time key, in the
@@ -1108,41 +1185,33 @@ async function verifyPrepared(prepared, limits, rpc, opts = {}) {
 * whatever market it belongs to, so none may stay. An account that does not exist
 * afterwards holds nothing; an answer that does not report the accounts proves nothing, and is refused.
 */
-async function leftUnderKey(transaction, key, rpc, minContextSlot = 0n, timeoutMs = 1e4, fresh = []) {
-	const markets = await Promise.all([PUMP_CURVE_PROGRAM, PUMP_AMM_PROGRAM].map((program) => routeAccountFor(program, key)));
-	const cashback = await Promise.all(markets.flatMap((owner) => [WSOL_MINT, USDC_MINT].map(async (mint) => (await findAssociatedTokenPda({
-		owner,
-		mint,
-		tokenProgram: TOKEN_PROGRAM
-	}))[0])));
-	const underKey = [
-		key,
-		...markets,
-		...cashback
-	];
+async function leftUnderKey(wire, transaction, underKey, snapshot, rpc, timeoutMs = 1e4, fresh = []) {
 	const opened = fresh.filter((a) => !underKey.includes(a));
-	const watched = [...underKey, ...opened];
 	try {
-		const { value } = await rpc.simulateTransaction(transaction, {
+		const { value } = await rpc.simulateTransaction(wire, {
 			encoding: "base64",
 			sigVerify: false,
 			replaceRecentBlockhash: true,
 			commitment: "confirmed",
-			accounts: {
-				addresses: watched,
-				encoding: "base64"
-			},
-			...minContextSlot > 0n ? { minContextSlot } : {}
+			...(snapshot.slot ?? 0n) > 0n ? { minContextSlot: snapshot.slot } : {}
 		}).send({ abortSignal: AbortSignal.timeout(timeoutMs) });
 		if (value.err) return [`the swap fails in simulation on your RPC: ${JSON.stringify(value.err, (_, v) => typeof v === "bigint" ? v.toString() : v)}`];
-		const after = value.accounts;
-		if (!Array.isArray(after) || after.length !== watched.length) return ["the simulation on your RPC did not report what the one-time key holds after the swap"];
-		const held = after.map((a) => BigInt(a?.lamports ?? 0));
+		const balances = balancesAfterSimulation(transaction, value, snapshot.lookupTables);
+		if (typeof balances === "string") return [`the simulation on your RPC cannot show what the one-time key holds after the swap: ${balances}`];
+		const heldAfter = (a) => {
+			const after = balances.get(a);
+			if (after !== void 0) return after;
+			if (!snapshot.accounts.has(a)) return null;
+			return snapshot.accounts.get(a)?.lamports ?? 0n;
+		};
 		const problems = [];
-		if (held[0] !== 0n) problems.push(`the one-time key would keep ${held[0]} lamports after the swap`);
-		const inMarkets = held.slice(1, underKey.length).reduce((sum, x) => sum + x, 0n);
+		const unknown = [...underKey, ...opened].filter((a) => heldAfter(a) === null);
+		if (unknown.length) return [`what ${unknown.length} account(s) under the one-time key hold after the swap could not be read`];
+		const held = heldAfter(underKey[0]);
+		if (held !== 0n) problems.push(`the one-time key would keep ${held} lamports after the swap`);
+		const inMarkets = underKey.slice(1).reduce((sum, a) => sum + heldAfter(a), 0n);
 		if (inMarkets !== 0n) problems.push(`a market account under the one-time key would keep ${inMarkets} lamports after the swap`);
-		const left = opened.filter((_, i) => held[underKey.length + i] !== 0n);
+		const left = opened.filter((a) => heldAfter(a) !== 0n);
 		if (left.length) problems.push(`the route would leave open ${left.length} account(s) it creates (${left.join(", ")}), holding lamports no one returns`);
 		return problems;
 	} catch (e) {
@@ -1472,7 +1541,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.7.1";
+const SKILL_VERSION = "1.7.2";
 /** Each call to Orientim ends within `timeoutMs`: an answer that never comes is no answer. */
 async function call(fetchImpl, url, key, body, timeoutMs = 3e4) {
 	const res = await fetchImpl(url, {

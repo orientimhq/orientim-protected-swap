@@ -1,11 +1,11 @@
-import { isSolanaError, SOLANA_ERROR__JSON_RPC__SERVER_ERROR_MIN_CONTEXT_SLOT_NOT_REACHED } from '@solana/kit';
-import type { Address, Rpc, SolanaRpcApi } from '@solana/kit';
+import { getCompiledTransactionMessageDecoder, isSolanaError, SOLANA_ERROR__JSON_RPC__SERVER_ERROR_MIN_CONTEXT_SLOT_NOT_REACHED } from '@solana/kit';
+import type { Address, Rpc, SolanaRpcApi, Transaction } from '@solana/kit';
 import type { AccountState } from '@orientim/core';
 
 /**
- * What the skill reads from the chain: accounts at a known slot, and whether a signature's missing
- * record proves anything. Sending, simulating and the one-time key are Orientim's server and page
- * (the bound repository), not the skill's.
+ * What the skill reads from the chain: accounts at a known slot, the balances a simulation reports,
+ * and whether a signature's missing record proves anything. Sending, simulating and the one-time key
+ * are Orientim's server and page (the bound repository), not the skill's.
  */
 export type SolanaRpc = Rpc<SolanaRpcApi>;
 
@@ -54,6 +54,72 @@ export async function readAccounts(
     });
   }
   return { accounts: out, slot };
+}
+
+/**
+ * The accounts a transaction names, in the order the runtime numbers them (and `postBalances`
+ * follows): the static accounts, then what the lookup tables load as writable, then as read-only,
+ * table by table. Null when a table it names is not in `lookupTables`, or an index is past its end.
+ */
+export function accountKeysOf(
+  transaction: Transaction, lookupTables: Readonly<Record<string, readonly Address[]>>,
+): { keys: Address[]; writable: Address[]; readonly: Address[] } | null {
+  const compiled = getCompiledTransactionMessageDecoder().decode(transaction.messageBytes) as unknown as {
+    staticAccounts: readonly Address[];
+    addressTableLookups?: readonly { lookupTableAddress: Address; writableIndexes: readonly number[]; readonlyIndexes: readonly number[] }[];
+  };
+  const lookups = compiled.addressTableLookups ?? [];
+  const load = (pick: (l: (typeof lookups)[number]) => readonly number[]) => {
+    const out: Address[] = [];
+    for (const l of lookups) {
+      const table = lookupTables[l.lookupTableAddress];
+      if (!table) return null;
+      for (const i of pick(l)) {
+        if (i >= table.length) return null;
+        out.push(table[i]);
+      }
+    }
+    return out;
+  };
+  const writable = load(l => l.writableIndexes);
+  const readonly = load(l => l.readonlyIndexes);
+  if (!writable || !readonly) return null;
+  return { keys: [...compiled.staticAccounts, ...writable, ...readonly], writable, readonly };
+}
+
+type SimulatedBalances = {
+  postBalances?: readonly (bigint | number)[] | null;
+  loadedAddresses?: { writable: readonly string[]; readonly: readonly string[] } | null;
+};
+
+/**
+ * What each account of `transaction` holds after a successful simulation, from its `postBalances`,
+ * or why that answer cannot be relied on: no balances, a count that is not the transaction's, or
+ * addresses loaded from lookup tables that are not the ones the tables hold. Read this way, the
+ * accounts need not be named in `accounts.addresses`, which some RPC providers limit to two.
+ */
+export function balancesAfterSimulation(
+  transaction: Transaction, value: SimulatedBalances, lookupTables: Readonly<Record<string, readonly Address[]>>,
+): Map<string, bigint> | string {
+  const order = accountKeysOf(transaction, lookupTables);
+  if (!order) return 'the transaction names a lookup table entry that could not be read';
+  const post = value.postBalances;
+  if (!Array.isArray(post)) return 'the RPC did not report the balances after the transaction';
+  if (post.length !== order.keys.length) return `the RPC reported ${post.length} balances for ${order.keys.length} accounts`;
+  if (order.writable.length || order.readonly.length) {
+    const loaded = value.loadedAddresses;
+    const same = (a: readonly string[] | undefined, b: readonly string[]) => !!a && a.length === b.length && a.every((x, i) => x === b[i]);
+    if (!loaded || !same(loaded.writable, order.writable) || !same(loaded.readonly, order.readonly)) {
+      return 'the RPC loaded other accounts from the lookup tables than the tables hold';
+    }
+  }
+  const out = new Map<string, bigint>();
+  for (const [i, a] of order.keys.entries()) {
+    const b = post[i];
+    if (typeof b !== 'bigint' && typeof b !== 'number') return 'the RPC reported a balance that is not a number';
+    out.set(a, BigInt(b));
+  }
+  return out;
 }
 
 /** A signature's status as the RPC reports it. */
