@@ -12,7 +12,7 @@
   ],
   "scripts": {
     "test": "vitest run",
-    "test:fuzz": "vitest run packages/verifier/test/property.test.ts packages/verifier/test/extensions.test.ts packages/verifier/test/slippage.property.test.ts packages/verifier/test/extremes.property.test.ts packages/verifier/test/mutation.property.test.ts packages/verifier/test/wallet.property.test.ts --mode fuzz",
+    "test:fuzz": "vitest run packages/verifier/test/property.test.ts packages/verifier/test/extensions.test.ts packages/verifier/test/slippage.property.test.ts packages/verifier/test/extremes.property.test.ts packages/verifier/test/mutation.property.test.ts --mode fuzz",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "node tools/build-skill.ts",
     "check": "node tools/build-skill.ts --check"

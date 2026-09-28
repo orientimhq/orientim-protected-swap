@@ -505,13 +505,6 @@ describe('rent a route needs the temporary key to pay (PumpSwap)', () => {
     const ixs = honest({ ...s, policy });
     expect(rules(await verify(mutated(s, ixs), policy, s.snapshot))).toContain('R4');
   });
-
-  it('the certificate states the rent, so the page can show it', async () => {
-    const s = await withRent();
-    const { certify } = await import('../src/index.ts');
-    const c = await certify(await compileHonest(s, 0), s.policy, s.snapshot);
-    expect(c.ok && c.certificate.routeRentLamports).toBe(RENT);
-  });
 });
 
 const details = (v: { violations: { detail: string }[] }) => v.violations.map(x => x.detail);

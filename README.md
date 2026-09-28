@@ -45,7 +45,7 @@ skills/orientim-protected-swap/   the skill, exactly as it is distributed
   SHA256SUMS                        the hash of every file above (generated)
 packages/verifier/                the verifier: rules R1–R7 on the transaction bytes
 packages/core/                    constants, types and the protected-swap layout the verifier checks
-packages/solana/                  RPC reads and the outcome of a sent transaction
+packages/solana/                  the RPC reads the skill makes, and when "no record" proves a swap never landed
 tools/build-skill.ts              builds the generated files and the zip
 test/                             tests of the skill itself
 ```
