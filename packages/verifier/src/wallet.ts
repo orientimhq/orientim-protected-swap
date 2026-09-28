@@ -47,6 +47,32 @@ function accountNames(m: Compiled): string[] {
   return names;
 }
 
+/**
+ * Each account key of a message as its address, reading lookup-table entries from `tables` (table
+ * address to its addresses, as on chain); null when a table or an entry is missing.
+ */
+function resolvedNames(m: Compiled, tables: ReadonlyMap<string, readonly string[]>): string[] | null {
+  const names: string[] = [...m.staticAccounts];
+  for (const kind of ['writableIndexes', 'readonlyIndexes'] as const) {
+    for (const l of m.addressTableLookups ?? []) {
+      const table = tables.get(l.lookupTableAddress);
+      for (const i of l[kind]) {
+        const a = table?.[i];
+        if (a === undefined) return null;
+        names.push(a);
+      }
+    }
+  }
+  return names;
+}
+
+/** Signer and writable, for any account key at `i`: static, or loaded from a lookup table. */
+function roleOf(m: Compiled, i: number): string {
+  if (i < m.staticAccounts.length) return staticRole(m, i);
+  const writable = (m.addressTableLookups ?? []).reduce((n, l) => n + l.writableIndexes.length, 0);
+  return i - m.staticAccounts.length < writable ? 'writable' : 'readonly';
+}
+
 /** Signer and writable, for a static account at `i`. */
 function staticRole(m: Compiled, i: number): string {
   const { numSignerAccounts: signers, numReadonlySignerAccounts: roSigners, numReadonlyNonSignerAccounts: ro } = m.header;
@@ -76,30 +102,44 @@ function networkFee(signers: number, instructions: Resolved[]): bigint {
  * account in the same role, new accounts read-only, the original instructions unchanged and in
  * order, and a compute limit raised by at most MAX_ADDED_COMPUTE_UNITS while the network fee stays
  * within `maxFee`. Returns what differs, or nothing when the change is only that.
+ *
+ * With `tables` (the lookup tables both messages name, read on chain), accounts are compared by
+ * address, wherever each message lists them: a wallet may then add lookup tables or entries, and
+ * list an account statically or through a table, as long as every original account keeps its role
+ * and every added one is read-only. Without them, the lookup tables must be the same.
  */
-function onlyAssertionsAdded(original: Compiled, returned: Compiled, maxFee: bigint): string | null {
+function onlyAssertionsAdded(original: Compiled, returned: Compiled, maxFee: bigint, tables?: ReadonlyMap<string, readonly string[]>): string | null {
   if (original.version !== returned.version || original.version === 1) return 'the message version or format changed';
   if (original.lifetimeToken !== returned.lifetimeToken) return 'the blockhash changed';
   const { header: a } = original;
   const { header: b } = returned;
   if (a.numSignerAccounts !== b.numSignerAccounts || a.numReadonlySignerAccounts !== b.numReadonlySignerAccounts) return 'the signers changed';
   for (let i = 0; i < a.numSignerAccounts; i++) if (original.staticAccounts[i] !== returned.staticAccounts[i]) return 'the signers changed';
-  if (JSON.stringify(original.addressTableLookups ?? []) !== JSON.stringify(returned.addressTableLookups ?? [])) return 'the lookup tables changed';
+  let namesA: string[];
+  let namesB: string[];
+  if (tables) {
+    const [a2, b2] = [resolvedNames(original, tables), resolvedNames(returned, tables)];
+    if (!a2 || !b2) return 'a lookup table the message names could not be read';
+    [namesA, namesB] = [a2, b2];
+  } else {
+    if (JSON.stringify(original.addressTableLookups ?? []) !== JSON.stringify(returned.addressTableLookups ?? [])) return 'the lookup tables changed';
+    [namesA, namesB] = [accountNames(original), accountNames(returned)];
+  }
 
-  const position = new Map(returned.staticAccounts.map((k, i) => [k as string, i]));
-  if (position.size !== returned.staticAccounts.length) return 'an account is listed twice';
-  for (let i = 0; i < original.staticAccounts.length; i++) {
-    const j = position.get(original.staticAccounts[i]!);
+  // Every account the verified message names keeps its signer and writable role; one the wallet
+  // added is read-only.
+  const position = new Map(namesB.map((k, i) => [k, i]));
+  if (position.size !== namesB.length) return 'an account is listed twice';
+  for (let i = 0; i < namesA.length; i++) {
+    const j = position.get(namesA[i]!);
     if (j === undefined) return 'an account was removed';
-    if (staticRole(original, i) !== staticRole(returned, j)) return 'an account changed its signer or writable role';
+    if (roleOf(original, i) !== roleOf(returned, j)) return 'an account changed its signer or writable role';
   }
-  const known = new Set<string>(original.staticAccounts);
-  for (let j = 0; j < returned.staticAccounts.length; j++) {
-    if (!known.has(returned.staticAccounts[j]!) && staticRole(returned, j) !== 'readonly') return 'an added account is writable or a signer';
+  const known = new Set<string>(namesA);
+  for (let j = 0; j < namesB.length; j++) {
+    if (!known.has(namesB[j]!) && roleOf(returned, j) !== 'readonly') return 'an added account is writable or a signer';
   }
 
-  const namesA = accountNames(original);
-  const namesB = accountNames(returned);
   const resolve = (names: string[], ix: Compiled['instructions'][number]): Resolved => ({
     program: names[ix.programAddressIndex],
     accounts: (ix.accountIndices ?? []).map(k => names[k]),
@@ -138,14 +178,19 @@ function onlyAssertionsAdded(original: Compiled, returned: Compiled, maxFee: big
  * (onlyAssertionsAdded) is accepted too, and its signature is checked over that message. Every
  * assertion can only make the transaction fail; the verified instructions are left as they were.
  * `maxNetworkFeeLamports` is the policy's F_max, which a raised compute limit must stay within
- * (never above ABSOLUTE_MAX_NETWORK_FEE_LAMPORTS).
+ * (never above ABSOLUTE_MAX_NETWORK_FEE_LAMPORTS). `lookupTables` lets a wallet that recompiles the
+ * message (Phantom adds lookup tables for its assertions) be compared account by account.
  */
 export async function verifyWalletReturn(
   original: Transaction,
   returnedBytes: Uint8Array,
   owner: Address,
   ephemeral: Address,
-  options: { acceptAssertions?: boolean; maxNetworkFeeLamports?: bigint } = {},
+  options: {
+    acceptAssertions?: boolean; maxNetworkFeeLamports?: bigint;
+    /** The lookup tables both messages name, table address to its addresses as read on chain. */
+    lookupTables?: ReadonlyMap<string, readonly string[]>;
+  } = {},
 ): Promise<Verdict & { transaction: Transaction | null }> {
   const violations: Violation[] = [];
   const fail = (detail: string) => void violations.push({ rule: 'R6', detail });
@@ -166,7 +211,9 @@ export async function verifyWalletReturn(
         const decode = getCompiledTransactionMessageDecoder();
         const asked = options.maxNetworkFeeLamports ?? ABSOLUTE_MAX_NETWORK_FEE_LAMPORTS;
         const maxFee = asked < ABSOLUTE_MAX_NETWORK_FEE_LAMPORTS ? asked : ABSOLUTE_MAX_NETWORK_FEE_LAMPORTS;
-        why = onlyAssertionsAdded(decode.decode(original.messageBytes) as Compiled, decode.decode(returned.messageBytes) as Compiled, maxFee);
+        why = onlyAssertionsAdded(
+          decode.decode(original.messageBytes) as Compiled, decode.decode(returned.messageBytes) as Compiled, maxFee, options.lookupTables,
+        );
       } catch {
         why = 'the wallet returned a message that cannot be decoded';
       }

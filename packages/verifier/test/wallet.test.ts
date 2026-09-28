@@ -110,6 +110,41 @@ describe('R6: Lighthouse assertions a wallet added', () => {
     expect(v.violations.map(x => x.detail)).toContain('the wallet added a Lighthouse instruction that is not an assertion');
   });
 
+  it("a wallet that adds a lookup table for its assertions is compared by address, with the tables read on chain", async () => {
+    const { owner, s, tx } = await setup(0);
+    const table = (await generateKeyPairSigner()).address;
+    const asserted = (await generateKeyPairSigner()).address;
+    const withTable = (entry: 'writable' | 'readonly') => {
+      const m = structuredClone(getCompiledTransactionMessageDecoder().decode(withLighthouse(tx, 5).messageBytes)) as unknown as Compiled & {
+        addressTableLookups?: { lookupTableAddress: string; writableIndexes: number[]; readonlyIndexes: number[] }[];
+      };
+      const loaded = (m.addressTableLookups ?? []).reduce((n, l) => n + l.writableIndexes.length + l.readonlyIndexes.length, 0);
+      m.addressTableLookups = [...(m.addressTableLookups ?? []), {
+        lookupTableAddress: table, writableIndexes: entry === 'writable' ? [0] : [], readonlyIndexes: entry === 'readonly' ? [0] : [],
+      }];
+      m.instructions[m.instructions.length - 1]!.accountIndices!.push(m.staticAccounts.length + loaded);
+      return { ...tx, messageBytes: getCompiledTransactionMessageEncoder().encode(m as never) } as Transaction;
+    };
+    const signed = await partiallySignTransaction([owner.keyPair], withTable('readonly'));
+    const tables = new Map([[table as string, [asserted as string]]]);
+    // Without the tables, a new table is refused, as before.
+    const blind = await verifyWalletReturn(tx, encode(signed), owner.address, s.E.address, { acceptAssertions: true });
+    expect(blind.violations.map(x => x.detail)).toContain('the lookup tables changed');
+    // With them, an added read-only account is only what the assertion reads: accepted.
+    const read = await verifyWalletReturn(tx, encode(signed), owner.address, s.E.address, { acceptAssertions: true, lookupTables: tables });
+    expect(read.violations).toEqual([]);
+    expect([...read.transaction!.messageBytes]).toEqual([...signed.messageBytes]);
+    // An added writable account, one that is already in the message, or a table that cannot be read: refused.
+    const writable = await partiallySignTransaction([owner.keyPair], withTable('writable'));
+    expect((await verifyWalletReturn(tx, encode(writable), owner.address, s.E.address, { acceptAssertions: true, lookupTables: tables }))
+      .violations.map(x => x.detail)).toContain('an added account is writable or a signer');
+    const twice = new Map([[table as string, [owner.address as string]]]);
+    expect((await verifyWalletReturn(tx, encode(signed), owner.address, s.E.address, { acceptAssertions: true, lookupTables: twice }))
+      .violations.map(x => x.detail)).toContain('an account is listed twice');
+    expect((await verifyWalletReturn(tx, encode(signed), owner.address, s.E.address, { acceptAssertions: true, lookupTables: new Map() }))
+      .violations.map(x => x.detail)).toContain('a lookup table the message names could not be read');
+  });
+
   it('a v1 message is held to the exact bytes', async () => {
     const { owner, s, tx } = await setup(1);
     const bytes = Uint8Array.from(tx.messageBytes);
