@@ -1472,7 +1472,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.6.0";
+const SKILL_VERSION = "1.7.0";
 /** Each call to Orientim ends within `timeoutMs`: an answer that never comes is no answer. */
 async function call(fetchImpl, url, key, body, timeoutMs = 3e4) {
 	const res = await fetchImpl(url, {
@@ -1920,6 +1920,53 @@ function stateDirFor(policy, given) {
 		warning: `The state directory is ${resolve(DEFAULT_STATE_DIR)}, relative to where this was started: set ORIENTIM_STATE_DIR to an absolute path that outlives this process, the same for every run of this wallet.`
 	};
 }
+/** How long a dry run's approval holds: after that, run the dry run again and ask again. */
+const APPROVAL_MS = 6e5;
+const approvalFile = (dir, k) => join(dir, `approval-${createHash("sha256").update(`${k.owner}:${k.inputMint}:${k.outputMint}:${k.amountIn}`).digest("hex").slice(0, 40)}.json`);
+/** Keeps what the user approved (`Approval`) in the state directory, the owner's alone. */
+function recordApproval(dir, approval) {
+	mkdirSync(dir, {
+		recursive: true,
+		mode: 448
+	});
+	const path = approvalFile(dir, approval);
+	const fd = openSync(`${path}.tmp`, "w", 384);
+	try {
+		writeSync(fd, JSON.stringify(approval));
+		fsyncSync(fd);
+	} finally {
+		closeSync(fd);
+	}
+	renameSync(`${path}.tmp`, path);
+}
+/** The approval kept for this wallet, these mints and this amount; null when there is none. */
+function approvalFor(dir, key) {
+	let a;
+	try {
+		a = JSON.parse(readFileSync(approvalFile(dir, key), "utf8"));
+	} catch {
+		return null;
+	}
+	if (!(a.owner === key.owner && a.inputMint === key.inputMint && a.outputMint === key.outputMint && a.amountIn === key.amountIn) || typeof a.minOut !== "string" || !/^\d{1,20}$/.test(a.minOut) || typeof a.expiresAt !== "number") return null;
+	return a;
+}
+/** Removes the approval for this wallet, these mints and this amount: used up, or expired. */
+function forgetApproval(dir, key) {
+	rmSync(approvalFile(dir, key), { force: true });
+}
+/**
+* Holds a real swap's minimum to what the user approved after the dry run, if they did: at least the
+* approved minimum, never a lower `minOut`, and nothing once the approval expired. Returns the minimum
+* to enforce (the intent's own when no approval is kept). Throws `ApprovalError` otherwise.
+*/
+function heldToApproval(approval, minOut, now = Date.now()) {
+	if (!approval) return minOut;
+	if (approval.expiresAt < now) throw new ApprovalError("The user's approval from the dry run has expired: run the dry run again and ask the user again. Nothing was started.");
+	if (minOut !== void 0 && BigInt(minOut) < BigInt(approval.minOut)) throw new ApprovalError(`--min-out ${minOut} is below the ${approval.minOut} the user approved after the dry run: run the dry run again and ask the user before accepting less. Nothing was started.`);
+	return minOut !== void 0 && BigInt(minOut) > BigInt(approval.minOut) ? minOut : approval.minOut;
+}
+/** The real swap would accept less than the user approved after the dry run, or the approval expired. */
+var ApprovalError = class extends Error {};
 /** The swap is outside the owner's policy: refused before anything was prepared or sent. */
 var PolicyError = class extends Error {
 	code;
@@ -2708,6 +2755,8 @@ async function main$1() {
 	const policy = process.env.ORIENTIM_POLICY ? loadPolicy(process.env.ORIENTIM_POLICY) : void 0;
 	if (process.argv.includes("--dry-run")) {
 		const owner = flag("owner") ?? (console.error("--dry-run needs --owner <address>."), process.exit(2));
+		const { dir: dryStateDir, warning: dryWarning } = stateDirFor(policy, flag("state") ?? (process.env.ORIENTIM_STATE_DIR || void 0));
+		if (dryWarning) console.error(dryWarning);
 		if (policy) await checkPolicy({ maxAmountIn: policy.maxAmountIn }, {
 			owner,
 			inputMint,
@@ -2741,8 +2790,25 @@ async function main$1() {
 		const problems = await checkPrepared(prepared, checked, rpc);
 		const risk = await tokenRisk(rpc, [inputMint, outputMint]);
 		const shownData = preparedData(prepared);
+		let approval;
+		if (!problems.length) {
+			const expiresAt = Date.now() + APPROVAL_MS;
+			recordApproval(dryStateDir, {
+				owner,
+				inputMint,
+				outputMint,
+				amountIn,
+				minOut,
+				expiresAt
+			});
+			approval = {
+				minOut,
+				until: new Date(expiresAt).toISOString()
+			};
+		}
 		console.log(JSON.stringify({
 			yourFloor: minOut,
+			...approval ? { approval } : {},
 			priceImpactBps: own.priceImpactBps,
 			amounts: shownData.amounts,
 			costs: shownData.costs,
@@ -2780,6 +2846,18 @@ async function main$1() {
 			process.exitCode = 3;
 			return;
 		}
+		const approvalKey = {
+			owner: wallet.address,
+			inputMint,
+			outputMint,
+			amountIn
+		};
+		let approved = approvalFor(stateDir, approvalKey);
+		if (approved && approved.expiresAt + DAY_MS < Date.now()) {
+			forgetApproval(stateDir, approvalKey);
+			approved = null;
+		}
+		intent.minOut = heldToApproval(approved, intent.minOut);
 		const result = await protectedSwap({
 			apiUrl,
 			apiKey,
@@ -2793,6 +2871,7 @@ async function main$1() {
 			spends: store,
 			onSigned: (s) => console.error(`Signed transaction ${s.signature}; it can land until block ${s.lastValidBlockHeight}.`)
 		});
+		if (approved) forgetApproval(stateDir, approvalKey);
 		console.log(JSON.stringify({
 			signature: result.signature,
 			outcome: result.outcome,

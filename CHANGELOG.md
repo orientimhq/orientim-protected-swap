@@ -3,6 +3,13 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.7.0 (2026-09-28)
+
+- The user's yes after a dry run now binds the real swap (A5). A dry run that finds no problem
+  answers `approval` (the least that arrives, and until when it holds, 10 minutes) and keeps it in the
+  state directory. The real swap of the same wallet, mints and amount enforces at least that minimum,
+  refuses a lower `--min-out`, and refuses once the approval expired; a swap that went out uses it up.
+
 ## 1.6.0 (2026-09-28)
 
 Fixes from a second external audit (A1 to A4, A6, A7):

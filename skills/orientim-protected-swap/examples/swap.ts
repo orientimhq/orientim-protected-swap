@@ -291,7 +291,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.6.0';
+export const SKILL_VERSION = '1.7.0';
 
 /** Each call to Orientim ends within `timeoutMs`: an answer that never comes is no answer. */
 async function call<T>(fetchImpl: Fetch, url: string, key: string, body: unknown, timeoutMs = 30_000): Promise<T> {
@@ -863,6 +863,71 @@ export function stateDirFor(policy: OwnerPolicy | undefined, given: string | und
     warning: `The state directory is ${resolve(DEFAULT_STATE_DIR)}, relative to where this was started: set ORIENTIM_STATE_DIR to an absolute path that outlives this process, the same for every run of this wallet.`,
   };
 }
+
+/**
+ * What the user approved after a dry run: the least that arrives (`minOut`) for this wallet, these
+ * mints and this amount, until `expiresAt` (ms). The dry run records it in the state directory; the
+ * real swap of the same wallet, mints and amount enforces at least that minimum, refuses a lower
+ * `--min-out`, and refuses once the approval expired, so that a "yes" holds for what the user saw,
+ * not for whatever the market offers later. A swap that went out uses it up.
+ */
+export type Approval = { owner: string; inputMint: string; outputMint: string; amountIn: string; minOut: string; expiresAt: number };
+/** How long a dry run's approval holds: after that, run the dry run again and ask again. */
+export const APPROVAL_MS = 10 * 60_000;
+type ApprovalKey = Pick<Approval, 'owner' | 'inputMint' | 'outputMint' | 'amountIn'>;
+const approvalFile = (dir: string, k: ApprovalKey) =>
+  join(dir, `approval-${createHash('sha256').update(`${k.owner}:${k.inputMint}:${k.outputMint}:${k.amountIn}`).digest('hex').slice(0, 40)}.json`);
+
+/** Keeps what the user approved (`Approval`) in the state directory, the owner's alone. */
+export function recordApproval(dir: string, approval: Approval): void {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const path = approvalFile(dir, approval);
+  const fd = openSync(`${path}.tmp`, 'w', 0o600);
+  try {
+    writeSync(fd, JSON.stringify(approval));
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(`${path}.tmp`, path);
+}
+
+/** The approval kept for this wallet, these mints and this amount; null when there is none. */
+export function approvalFor(dir: string, key: ApprovalKey): Approval | null {
+  let a: Partial<Approval>;
+  try {
+    a = JSON.parse(readFileSync(approvalFile(dir, key), 'utf8')) as Partial<Approval>;
+  } catch {
+    return null;
+  }
+  const same = a.owner === key.owner && a.inputMint === key.inputMint && a.outputMint === key.outputMint && a.amountIn === key.amountIn;
+  if (!same || typeof a.minOut !== 'string' || !/^\d{1,20}$/.test(a.minOut) || typeof a.expiresAt !== 'number') return null;
+  return a as Approval;
+}
+
+/** Removes the approval for this wallet, these mints and this amount: used up, or expired. */
+export function forgetApproval(dir: string, key: ApprovalKey): void {
+  rmSync(approvalFile(dir, key), { force: true });
+}
+
+/**
+ * Holds a real swap's minimum to what the user approved after the dry run, if they did: at least the
+ * approved minimum, never a lower `minOut`, and nothing once the approval expired. Returns the minimum
+ * to enforce (the intent's own when no approval is kept). Throws `ApprovalError` otherwise.
+ */
+export function heldToApproval(approval: Approval | null, minOut: string | undefined, now = Date.now()): string | undefined {
+  if (!approval) return minOut;
+  if (approval.expiresAt < now) {
+    throw new ApprovalError('The user\'s approval from the dry run has expired: run the dry run again and ask the user again. Nothing was started.');
+  }
+  if (minOut !== undefined && BigInt(minOut) < BigInt(approval.minOut)) {
+    throw new ApprovalError(`--min-out ${minOut} is below the ${approval.minOut} the user approved after the dry run: run the dry run again and ask the user before accepting less. Nothing was started.`);
+  }
+  return minOut !== undefined && BigInt(minOut) > BigInt(approval.minOut) ? minOut : approval.minOut;
+}
+
+/** The real swap would accept less than the user approved after the dry run, or the approval expired. */
+export class ApprovalError extends Error {}
 
 /** The swap is outside the owner's policy: refused before anything was prepared or sent. */
 export class PolicyError extends Error {
@@ -1712,6 +1777,9 @@ async function main() {
 
   if (process.argv.includes('--dry-run')) {
     const owner = flag('owner') ?? (console.error('--dry-run needs --owner <address>.'), process.exit(2));
+    // The same state directory as the real swap: the user's approval is kept there for it.
+    const { dir: dryStateDir, warning: dryWarning } = stateDirFor(policy, flag('state') ?? (process.env.ORIENTIM_STATE_DIR || undefined));
+    if (dryWarning) console.error(dryWarning);
     // A swap the owner's policy refuses is refused here too, before anything is prepared: its mint
     // and its amount. The daily limit is counted by the swap itself, against what the day spent.
     if (policy) await checkPolicy({ maxAmountIn: policy.maxAmountIn }, { owner, inputMint, amountIn });
@@ -1728,9 +1796,17 @@ async function main() {
     const risk = await tokenRisk(rpc, [inputMint, outputMint]);
     // Shown as the real swap shows it: only the fields the skill knows, and only data.
     const shownData = preparedData(prepared);
+    // What the user is asked to approve, kept for the real swap of the same wallet, mints and amount:
+    // it enforces at least this minimum, until the approval expires.
+    let approval: { minOut: string; until: string } | undefined;
+    if (!problems.length) {
+      const expiresAt = Date.now() + APPROVAL_MS;
+      recordApproval(dryStateDir, { owner, inputMint, outputMint, amountIn, minOut, expiresAt });
+      approval = { minOut, until: new Date(expiresAt).toISOString() };
+    }
     console.log(JSON.stringify({
-      yourFloor: minOut, priceImpactBps: own.priceImpactBps, amounts: shownData.amounts, costs: shownData.costs, blocksLeft: shownData.blocksLeft, problems,
-      notices: noticesOf(risk), tokenRisk: risk,
+      yourFloor: minOut, ...(approval ? { approval } : {}), priceImpactBps: own.priceImpactBps, amounts: shownData.amounts, costs: shownData.costs,
+      blocksLeft: shownData.blocksLeft, problems, notices: noticesOf(risk), tokenRisk: risk,
     }, null, 2));
     process.exitCode = problems.length ? 1 : 0;
     return;
@@ -1769,6 +1845,15 @@ async function main() {
       process.exitCode = 3;
       return;
     }
+    // What the user approved after the dry run, if they did: at least that minimum, until it expires.
+    const approvalKey = { owner: wallet.address, inputMint, outputMint, amountIn };
+    let approved = approvalFor(stateDir, approvalKey);
+    // An expired approval keeps refusing until a new dry run replaces it; a day later it is forgotten.
+    if (approved && approved.expiresAt + DAY_MS < Date.now()) {
+      forgetApproval(stateDir, approvalKey);
+      approved = null;
+    }
+    intent.minOut = heldToApproval(approved, intent.minOut);
     const result = await protectedSwap({
       apiUrl, apiKey, rpc, wallet, intent, jupiterApiKey, orders: store,
       // Kept on disk before finalize, and removed once settled: if this process stops, the next run
@@ -1777,6 +1862,8 @@ async function main() {
       policy, spends: store,
       onSigned: s => console.error(`Signed transaction ${s.signature}; it can land until block ${s.lastValidBlockHeight}.`),
     });
+    // A swap that went out uses the approval up: another swap needs another yes.
+    if (approved) forgetApproval(stateDir, approvalKey);
     console.log(JSON.stringify({
       signature: result.signature, outcome: result.outcome, refusal: result.refusal, amounts: result.prepared.amounts,
       ...(result.received ? { received: result.received } : {}), ...(result.notices.length ? { notices: result.notices } : {}),

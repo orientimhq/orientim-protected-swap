@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import type { Rpc, SolanaRpcApi } from '@solana/kit';
 import { describe, expect, it } from 'vitest';
 import {
-  acquireLock, checkPolicy, ConfigError, createFileStore, dataOnly, errorExitCode, errorLine, exitCodeOf, fillAgainstQuote, IntentError, isApiKeyMessage,
+  acquireLock, ApprovalError, approvalFor, checkPolicy, ConfigError, createFileStore, forgetApproval, heldToApproval, recordApproval, dataOnly, errorExitCode, errorLine, exitCodeOf, fillAgainstQuote, IntentError, isApiKeyMessage,
   loadPolicy, LockBusyError, OrientimApiError, OrientimOrderError, PendingSwapError, PolicyError, preparedData, receivedFor, recoverPending,
   releaseHeldLocks, safeCode, settleOrder, SKILL_VERSION, stateDirFor, untrustedLine,
 } from '../skills/orientim-protected-swap/examples/swap.ts';
@@ -267,6 +267,30 @@ describe('the skill holds its own state and limits against what it is handed', (
     const empty = new OrientimApiError({ status: 403, code: 'wallet-empty', message: 'x', body: {} });
     expect(empty.message).toContain('less than 0.01 SOL');
     expect(errorLine(empty)).not.toContain('{');
+  });
+
+  it("the user's yes after a dry run holds the real swap to the minimum they saw, until it expires (A5)", () => {
+    const dir = tmp();
+    const key = { owner: W, inputMint: USDC, outputMint: BONK, amountIn: '1000000' };
+    expect(approvalFor(dir, key)).toBeNull();
+    expect(heldToApproval(null, undefined)).toBeUndefined();
+    const now = Date.now();
+    recordApproval(dir, { ...key, minOut: '100', expiresAt: now + 60_000 });
+    expect(statSync(dir).mode & 0o777).toBe(0o700);
+    const approved = approvalFor(dir, key);
+    expect(approved?.minOut).toBe('100');
+    // Another amount, mint or wallet has no approval of its own.
+    expect(approvalFor(dir, { ...key, amountIn: '2000000' })).toBeNull();
+    expect(approvalFor(dir, { ...key, owner: USDC })).toBeNull();
+    // Without --min-out the approved minimum is enforced; a higher one is kept; a lower one is refused.
+    expect(heldToApproval(approved, undefined, now)).toBe('100');
+    expect(heldToApproval(approved, '120', now)).toBe('120');
+    expect(() => heldToApproval(approved, '95', now)).toThrow(ApprovalError);
+    expect(() => heldToApproval(approved, '95', now)).toThrow('below the 100 the user approved');
+    // Once expired, nothing starts until a new dry run and a new yes.
+    expect(() => heldToApproval(approved, undefined, now + 120_000)).toThrow('expired');
+    forgetApproval(dir, key);
+    expect(approvalFor(dir, key)).toBeNull();
   });
 
   it('ownMinimum refuses a price impact above the limit, as the full command does (A1)', async () => {

@@ -22,8 +22,9 @@ yourself. **Without it, you are trusting Orientim's server with the whole wallet
 Read these first; they are what a coding agent most often gets wrong.
 
 1. **Confirm with the person.** In a conversation, run the dry run first (see "Dry run"), then tell the
-   user, in whole tokens, what leaves the wallet, the least that arrives and the fees, with both mint
-   addresses in full, and wait for a clear yes. Unattended, swap only within limits the owner set.
+   user, in whole tokens, what leaves the wallet, the least that arrives (`approval.minOut`) and the
+   fees, with both mint addresses in full, and wait for a clear yes. The real swap then holds to that
+   minimum by itself for 10 minutes. Unattended, swap only within limits the owner set.
 2. **Base units.** `--amount` is in base units: 5 USDC is `5000000` (6 decimals), 0.1 SOL is
    `100000000` (9). Read a token's decimals from its mint on your RPC, never guess them.
 3. **Mints, never names.** Take a mint address from the user or from this list, never from a token's
@@ -371,3 +372,10 @@ To see what a swap would cost, verified, without signing anything:
 ```bash
 node examples/swap.ts --in <mint> --out <mint> --amount <base units> --owner <address> --dry-run
 ```
+
+A dry run that finds no problem answers `approval`: the least that arrives (`minOut`) and until when
+it holds (`until`, 10 minutes). It is kept in the state directory, and the real swap of the same
+wallet, mints and amount enforces at least that minimum. It refuses a lower `--min-out`, and refuses
+once the approval expired: run the dry run again and ask the user again. If the market moved and
+Orientim answers `price-moved`, do the same: a new dry run and a new yes, never a lower minimum on your
+own. The approval is used up once the swap goes out.
