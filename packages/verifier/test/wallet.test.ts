@@ -145,6 +145,32 @@ describe('R6: Lighthouse assertions a wallet added', () => {
       .violations.map(x => x.detail)).toContain('a lookup table the message names could not be read');
   });
 
+  it('a wallet that uses more entries of a table the message already names, or reorders them, is compared by address', async () => {
+    const { owner, s, tx } = await setup(0);
+    const table = (await generateKeyPairSigner()).address;
+    const [known, asserted] = [(await generateKeyPairSigner()).address, (await generateKeyPairSigner()).address];
+    type Lookup = { lookupTableAddress: string; writableIndexes: number[]; readonlyIndexes: number[] };
+    const withLookups = (t: Transaction, lookups: Lookup[], assertAt?: number) => {
+      const m = structuredClone(getCompiledTransactionMessageDecoder().decode(t.messageBytes)) as unknown as Compiled & { addressTableLookups?: Lookup[] };
+      m.addressTableLookups = lookups;
+      if (assertAt !== undefined) m.instructions[m.instructions.length - 1]!.accountIndices!.push(m.staticAccounts.length + assertAt);
+      return { ...t, messageBytes: getCompiledTransactionMessageEncoder().encode(m as never) } as Transaction;
+    };
+    // The verified message reads entry 0 of the table; the wallet's reads entries 1 and 0, in that order.
+    const verified = withLookups(tx, [{ lookupTableAddress: table, writableIndexes: [], readonlyIndexes: [0] }]);
+    const returned = withLookups(withLighthouse(verified, 5), [{ lookupTableAddress: table, writableIndexes: [], readonlyIndexes: [1, 0] }], 0);
+    const signed = await partiallySignTransaction([owner.keyPair], returned);
+    const tables = new Map([[table as string, [known as string, asserted as string]]]);
+    expect((await verifyWalletReturn(verified, encode(signed), owner.address, s.E.address, { acceptAssertions: true }))
+      .violations.map(x => x.detail)).toContain('the lookup tables changed');
+    expect((await verifyWalletReturn(verified, encode(signed), owner.address, s.E.address, { acceptAssertions: true, lookupTables: tables }))
+      .violations).toEqual([]);
+    // The same entry made writable is a changed role: refused.
+    const writable = withLookups(withLighthouse(verified, 5), [{ lookupTableAddress: table, writableIndexes: [0], readonlyIndexes: [1] }], 1);
+    expect((await verifyWalletReturn(verified, encode(await partiallySignTransaction([owner.keyPair], writable)), owner.address, s.E.address,
+      { acceptAssertions: true, lookupTables: tables })).violations.map(x => x.detail)).toContain('an account changed its signer or writable role');
+  });
+
   it('a v1 message is held to the exact bytes', async () => {
     const { owner, s, tx } = await setup(1);
     const bytes = Uint8Array.from(tx.messageBytes);
