@@ -158,7 +158,11 @@ answered). Verify, sign and finalize promptly; with fewer than 30 blocks left, p
 Before signing, run the verifier: `verifyPrepared(prepared, limits, yourRpc)` from the skill's
 `lib/orientim-verify.mjs`, where `limits` is what you asked for and the most you accept (fee, network
 fee, optionally Orientim's treasury address) and your own minimum, which is required: a price you got
-yourself, never Orientim's (`ownMinimum` asks Jupiter for one). It holds `policy` to those limits, reads
+yourself, never Orientim's (`ownMinimum` asks Jupiter for one, and refuses a price impact above
+`maxPriceImpactBps`, default 5%, as the full flow does). `verifyPrepared` checks the transaction, not
+the market: the protected flow in one call is `prepareChecked` (or `protectedSwap`) in the skill's
+`examples/swap.ts`, which adds your floor's 20% limit, the price impact and a fee in SOL held to your
+own price. `verifyPrepared` holds `policy` to those limits, reads
 every account the message names from your RPC, runs the verifier's rules on the exact bytes, and
 simulates the transaction there: nothing may stay under the one-time key, in its own account or in
 the account a Pump.fun market opens in its name, and no account the route opens may stay open,

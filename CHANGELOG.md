@@ -3,6 +3,25 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.6.0 (2026-09-28)
+
+Fixes from a second external audit (A1 to A4, A6, A7):
+
+- `ownMinimum` refuses an amount whose price impact is above `maxPriceImpactBps` (default 5%, at most
+  20%), so a bot built on `ownMinimum` and `verifyPrepared` keeps the check the full flow makes.
+  AGENT-API.md says what `verifyPrepared` does not check, and names `prepareChecked` as the full flow.
+- `orientim-verify finalize` refuses a `checked` without `intent.id` (exit 2) before anything is sent.
+- The SOL a swap delivered is read from the chain and the verified policy, never from the costs the
+  answer states; the check refuses an answer whose route rent, refund, SOL costs, fee rate or fee
+  mint differ from the policy.
+- An order's outcome is written only for the attempt that holds it (`settleOrder`): a late recovery
+  of an older attempt never writes over a newer one. `orientim-verify recover` holds each wallet's
+  lock while it settles, and waits (exit 3, `busy`) for a run that holds it.
+- `amounts` and `costs` pass to the agent only as the fields the skill knows, the dry run's included.
+- One exit-code rule for the example and `orientim-verify`: a confirmed swap whose record could not be
+  updated exits 3 from both; every exit 3 carries `recoveryRequired: true`; the example exits 2 for a
+  policy, state directory or keypair file it cannot use (`ConfigError`).
+
 ## 1.5.1 (2026-09-28)
 
 Fixes from a live test with a real wallet:
@@ -52,8 +71,8 @@ Fixes from a review of the skill and of `orientim-verify`:
 - A swap of another wallet no longer holds this wallet's `prepare` back. An order recorded pending
   whose swap record is gone can be settled with `resolve`.
 - A service that does not answer is `error.code` `unavailable`, with `retryAfter`.
-- The policy's fields and error details from the server are checked for shape; prose never reaches
-  the agent. An answer from Jupiter without a price impact is refused.
+- The policy's fields and error details from the server are checked for shape; the server's own
+  text reaches the agent only as one short line marked untrusted (`serverMessage`). An answer from Jupiter without a price impact is refused.
 - The example exits 0 only for a confirmed swap and 3 for what must be settled first; its dry run holds
   the owner's policy, and a bad key file is never repeated in an error.
 

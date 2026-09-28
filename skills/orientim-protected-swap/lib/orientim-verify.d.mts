@@ -99,9 +99,10 @@ export type OwnQuoteArgs = {
 /**
  * A floor of the agent's own: Jupiter's price for the amount Orientim will route, asked for directly,
  * less `maxBelowBps` (default 2%, or 5% on a Pump.fun bonding curve; with `slippageBps`, that and
- * 1.5% more). In base units, as a string.
+ * 1.5% more). In base units, as a string. Refuses an amount whose price impact is above
+ * `maxPriceImpactBps` (default 5%, at most 20%), as the example and `orientim-verify` do.
  */
-export function ownMinimum(args: OwnQuoteArgs): Promise<string>;
+export function ownMinimum(args: OwnQuoteArgs & { maxPriceImpactBps?: number }): Promise<string>;
 
 /** Jupiter's price, asked for directly: the agent's own floor, the price impact in bps (null only when allowed and unknown), and whether the route is a Pump.fun curve. */
 export function ownQuote(args: OwnQuoteArgs): Promise<{ minOut: string; outAmount: string; priceImpactBps: number | null; curve: boolean }>;

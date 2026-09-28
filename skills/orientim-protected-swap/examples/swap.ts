@@ -228,6 +228,13 @@ const PREPARED_FIELDS = [
   'amounts', 'costs', 'notices', 'tokens', 'slippageBps', 'route', 'certificate', 'policy',
 ] as const;
 
+/** The fields of `amounts` and `costs` the skill reads or shows (`Prepared`); any other is dropped. */
+const AMOUNT_FIELDS = ['amountIn', 'fee', 'feeMint', 'feeBps', 'swapAmount', 'quotedOut', 'minOut', 'priceImpactPct'] as const;
+const COST_FIELDS = [
+  'networkFeeLamports', 'outputAccountRentLamports', 'routeRentLamports', 'routeRefundLamports', 'keptSolLamports', 'routeKeptLamports',
+  'orientimFeeSolLamports', 'breakdown', 'tokenTax',
+] as const;
+
 const CODE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 /** An error code as data: Orientim's own shape, or `other`. */
 export const safeCode = (code: unknown) => (typeof code === 'string' && CODE.test(code) ? code : 'other');
@@ -284,7 +291,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.5.1';
+export const SKILL_VERSION = '1.6.0';
 
 /** Each call to Orientim ends within `timeoutMs`: an answer that never comes is no answer. */
 async function call<T>(fetchImpl: Fetch, url: string, key: string, body: unknown, timeoutMs = 30_000): Promise<T> {
@@ -435,6 +442,26 @@ export async function checkPrepared(p: Prepared, intent: Intent, rpc: Rpc<Solana
     problems.push(`the minimum ${p.amounts.minOut} is below yours, ${intent.minOut}`);
   }
   if (BigInt(p.costs.networkFeeLamports) > BigInt(intent.maxNetworkFeeLamports ?? 1_000_000)) problems.push(`the network fee ${p.costs.networkFeeLamports} is above your limit`);
+  // Every figure the answer states beside the bytes is the policy's own, so that nothing reported
+  // after the swap (what arrived, what it cost) rests on a number only the server vouched for.
+  const [takerRent, routeRefund, feeBps] = [whole(policy.takerRent), whole(policy.routeRefund), whole(policy.feeBps)];
+  if (takerRent === null || routeRefund === null || feeBps === null || policyFee === null) problems.push('the policy is malformed');
+  else {
+    const feeMint = policy.feeSide === 'output' ? policy.outputMint : policy.feeSide === 'sol' ? SOL_MINT : policy.inputMint;
+    const solFee = feeMint === SOL_MINT ? policyFee : 0n;
+    const kept = takerRent - routeRefund;
+    const stated: [string, string | undefined, bigint | string][] = [
+      ['costs.routeRentLamports', p.costs.routeRentLamports, takerRent],
+      ['costs.routeRefundLamports', p.costs.routeRefundLamports, routeRefund],
+      ['costs.routeKeptLamports', p.costs.routeKeptLamports, kept],
+      ['costs.orientimFeeSolLamports', p.costs.orientimFeeSolLamports, solFee],
+      ['costs.keptSolLamports', p.costs.keptSolLamports, BigInt(p.costs.networkFeeLamports) + kept + solFee],
+      ['amounts.feeBps', p.amounts.feeBps, policyFee === 0n ? 0n : feeBps],
+      ['amounts.feeMint', p.amounts.feeMint, String(feeMint)],
+    ];
+    const differ = stated.filter(([, v, want], i) => (i < 2 || v !== undefined) && v !== String(want)).map(([k]) => k);
+    if (differ.length) problems.push(`the figures stated differ from the policy the transaction is checked against: ${differ.join(', ')}`);
+  }
   // The answer's own claims are not evidence: what the bytes do is decided by the verifier.
   problems.push(...await verifyPrepared(p, { ...intent, minOut: intent.minOut ?? '' }, rpc, opts));
   return problems;
@@ -685,6 +712,12 @@ export class PriceImpactError extends Error {
  */
 export class IntentError extends Error {}
 
+/**
+ * The command's own setup cannot be used: the owner's policy file, the state directory it names, or
+ * the wallet's keypair file. A configuration error: exit 2 from the example, as a usage error is.
+ */
+export class ConfigError extends Error {}
+
 /** This order already confirmed, or its last transaction may still land: it is not swapped again. */
 export class OrientimOrderError extends Error {
   readonly id: string;
@@ -773,9 +806,9 @@ export function loadPolicy(path: string): OwnerPolicy {
   try {
     raw = JSON.parse(readFileSync(path, 'utf8'));
   } catch (e) {
-    throw new Error(`The owner's policy ${path} cannot be read as JSON: ${e instanceof Error ? e.message : String(e)}. Nothing was prepared.`);
+    throw new ConfigError(`The owner's policy ${path} cannot be read as JSON: ${e instanceof Error ? e.message : String(e)}. Nothing was prepared.`);
   }
-  const bad = (why: string) => new Error(`The owner's policy ${path} ${why}. Nothing was prepared.`);
+  const bad = (why: string) => new ConfigError(`The owner's policy ${path} ${why}. Nothing was prepared.`);
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw bad('is not a JSON object');
   const known = ['maxAmountIn', 'maxAmountInPerDay', 'stateDir', 'allowUnknownPriceImpact'];
   const unknown = Object.keys(raw).filter(k => !known.includes(k));
@@ -816,13 +849,13 @@ export const DEFAULT_STATE_DIR = '.orientim-state';
 export function stateDirFor(policy: OwnerPolicy | undefined, given: string | undefined): { dir: string; warning?: string } {
   if (policy?.stateDir) {
     if (given !== undefined && resolve(given) !== resolve(policy.stateDir)) {
-      throw new Error(`The owner's policy keeps the state in ${policy.stateDir}; another state directory (${given}) is not used. Nothing was started.`);
+      throw new ConfigError(`The owner's policy keeps the state in ${policy.stateDir}; another state directory (${given}) is not used. Nothing was started.`);
     }
     return { dir: policy.stateDir };
   }
   const dailyLimit = !!policy?.maxAmountInPerDay && Object.keys(policy.maxAmountInPerDay).length > 0;
   if (dailyLimit && !(given && isAbsolute(given))) {
-    throw new Error("The owner's policy sets a daily limit: name the state directory as an absolute path (the policy's stateDir, or ORIENTIM_STATE_DIR), so that every swap counts against it. Nothing was started.");
+    throw new ConfigError("The owner's policy sets a daily limit: name the state directory as an absolute path (the policy's stateDir, or ORIENTIM_STATE_DIR), so that every swap counts against it. Nothing was started.");
   }
   if (given) return { dir: given };
   return {
@@ -1037,6 +1070,19 @@ export function createFileStore(dir: string): PendingStore & OrderBook & SpendLo
 }
 
 /**
+ * Records `record` as the outcome of order `id` only while the order is still this attempt's (the
+ * same signature) or names none: a late settle of an older attempt never writes over a newer one.
+ * Every writer of one wallet's orders holds that wallet's lock (`acquireLock`), so the read and the
+ * write here are not raced by another run of the command. False when the order is another attempt's.
+ */
+export async function settleOrder(orders: OrderBook, id: string, record: OrderRecord): Promise<boolean> {
+  const now = await orders.order(id);
+  if (now && now.signature !== record.signature) return false;
+  await orders.recordOrder(id, record);
+  return true;
+}
+
+/**
  * Settles the swaps a stopped run left in `store`, each by its own signature on your RPC, and removes
  * those whose outcome is final. Returns what is still unknown: while anything is, start no new swap
  * for the same intent. A swap that "no record" can no longer prove expired stays unknown
@@ -1059,7 +1105,7 @@ export async function recoverPending(
     settled.push({ signature: s.signature, outcome });
     try {
       // The order learns its outcome before the record that says it was pending goes away.
-      if (s.intentId && opts.orders) await opts.orders.recordOrder(s.intentId, { signature: s.signature, state: outcome });
+      if (s.intentId && opts.orders) await settleOrder(opts.orders, s.intentId, { signature: s.signature, state: outcome });
       await store.remove(s.signature);
     } catch (e) {
       bookkeepingErrors.push({ signature: s.signature, error: e instanceof Error ? e.message : String(e) });
@@ -1089,7 +1135,7 @@ export async function resolvePending(
     throw new Error(`${signature} can still land until block ${lastBlockOf(kept)}: recover it instead. Nothing was changed.`);
   }
   const settledAs = onChain ?? outcome;
-  if (kept.intentId && opts.orders) await opts.orders.recordOrder(kept.intentId, { signature, state: settledAs });
+  if (kept.intentId && opts.orders) await settleOrder(opts.orders, kept.intentId, { signature, state: settledAs });
   await store.remove(signature);
   return { signature, outcome: settledAs, by: onChain ? 'chain' : 'you' };
 }
@@ -1317,6 +1363,13 @@ export async function prepareChecked(args: {
 export function preparedData(prepared: Prepared): Prepared {
   const known: Record<string, unknown> = {};
   for (const k of PREPARED_FIELDS) if (Object.hasOwn(prepared, k)) known[k] = (prepared as Record<string, unknown>)[k];
+  // Inside amounts and costs too, only the fields the skill knows: nothing else the server adds.
+  const only = (value: unknown, fields: readonly string[]) => {
+    if (!value || typeof value !== 'object') return value;
+    return Object.fromEntries(fields.filter(k => Object.hasOwn(value, k)).map(k => [k, (value as Record<string, unknown>)[k]]));
+  };
+  if (Object.hasOwn(known, 'amounts')) known.amounts = only(known.amounts, AMOUNT_FIELDS);
+  if (Object.hasOwn(known, 'costs')) known.costs = only(known.costs, COST_FIELDS);
   return { ...(dataOnly(known) as Prepared), transaction: prepared.transaction };
 }
 
@@ -1350,7 +1403,7 @@ const SOL_MINT = 'So11111111111111111111111111111111111111112';
  * and the market's account fee (less its refund) added back, since neither is swap output. Never fails.
  */
 export async function receivedFor(
-  rpc: Rpc<SolanaRpcApi>, signature: string, prepared: Pick<Prepared, 'wallet' | 'costs' | 'certificate'> & { version?: number },
+  rpc: Rpc<SolanaRpcApi>, signature: string, prepared: Pick<Prepared, 'wallet' | 'certificate' | 'policy'> & { version?: number },
   opts: { requestTimeoutMs?: number; tries?: number; pollMs?: number } = {},
 ): Promise<bigint | null> {
   const outputMint = prepared.certificate.output.mint;
@@ -1368,8 +1421,11 @@ export async function receivedFor(
         if (outputMint === SOL_MINT) {
           const [before, after] = [meta.preBalances[0], meta.postBalances[0]];
           if (before === undefined || after === undefined) return null;
-          return BigInt(after) - BigInt(before) + BigInt(meta.fee)
-            + BigInt(prepared.costs.routeRentLamports ?? '0') - BigInt(prepared.costs.routeRefundLamports ?? '0');
+          // The route's rent, from the policy the verifier held the bytes to, never from the answer's costs.
+          const whole = (v: unknown) => (typeof v === 'string' && /^\d{1,20}$/.test(v) ? BigInt(v) : null);
+          const [rent, refund] = [whole(prepared.policy?.takerRent), whole(prepared.policy?.routeRefund)];
+          if (rent === null || refund === null) return null;
+          return BigInt(after) - BigInt(before) + BigInt(meta.fee) + rent - refund;
         }
         const mine = (list: readonly TokenBalance[] | null | undefined) => (list ?? []).filter(b => b.mint === outputMint && b.owner === prepared.wallet);
         const after = mine(meta.postTokenBalances);
@@ -1613,7 +1669,7 @@ export async function protectedSwap(args: {
   // What happened on the chain is the answer; a record that could not be updated is said beside it,
   // never in its place.
   try {
-    if (orders) await orders.recordOrder(id!, { signature: result.signature, state: result.outcome === 'unknown' ? 'pending' : result.outcome });
+    if (orders) await settleOrder(orders, id!, { signature: result.signature, state: result.outcome === 'unknown' ? 'pending' : result.outcome });
     if (args.pending && result.outcome !== 'unknown') await args.pending.remove(result.signature);
   } catch (e) {
     return { ...told, bookkeepingError: e instanceof Error ? e.message : String(e) };
@@ -1670,8 +1726,10 @@ async function main() {
     await holdSolFee(checked, prepared, { jupiterApiKey });
     const problems = await checkPrepared(prepared, checked, rpc);
     const risk = await tokenRisk(rpc, [inputMint, outputMint]);
+    // Shown as the real swap shows it: only the fields the skill knows, and only data.
+    const shownData = preparedData(prepared);
     console.log(JSON.stringify({
-      yourFloor: minOut, priceImpactBps: own.priceImpactBps, amounts: prepared.amounts, costs: prepared.costs, blocksLeft: prepared.blocksLeft, problems,
+      yourFloor: minOut, priceImpactBps: own.priceImpactBps, amounts: shownData.amounts, costs: shownData.costs, blocksLeft: shownData.blocksLeft, problems,
       notices: noticesOf(risk), tokenRisk: risk,
     }, null, 2));
     process.exitCode = problems.length ? 1 : 0;
@@ -1732,7 +1790,7 @@ async function main() {
 }
 
 /**
- * The command's exit code for a swap's result, as `orientim-verify finalize` answers: 0 confirmed;
+ * The command's exit code for a swap's result, as `orientim-verify finalize` answers (both use this): 0 confirmed;
  * 1 not swapped (failed, rejected or expired: the order may be tried again); 3 unknown, or an outcome
  * whose record could not be updated: settle it before anything new.
  */
@@ -1755,12 +1813,12 @@ export function errorLine(e: unknown): string {
 }
 
 /**
- * The command's exit code for an error, as `orientim-verify` answers: 2 an intent it cannot use; 3
+ * The command's exit code for an error, as `orientim-verify` answers: 2 an intent or a setup it cannot use; 3
  * another swap from this wallet may still land; 5 this order already swapped, or may still land (never
  * retry it under a new id); 1 anything else: nothing was swapped.
  */
 export function errorExitCode(e: unknown): number {
-  if (e instanceof IntentError) return 2;
+  if (e instanceof IntentError || e instanceof ConfigError) return 2;
   if (e instanceof PendingSwapError) return 3;
   if (e instanceof OrientimOrderError) return 5;
   return 1;
@@ -1772,7 +1830,7 @@ function readKeypair(path: string): Uint8Array {
   try {
     text = readFileSync(path, 'utf8');
   } catch (e) {
-    throw new Error(`The wallet's keypair file cannot be read (${(e as NodeJS.ErrnoException).code ?? 'error'}). Nothing was started.`);
+    throw new ConfigError(`The wallet's keypair file cannot be read (${(e as NodeJS.ErrnoException).code ?? 'error'}). Nothing was started.`);
   }
   let bytes: unknown;
   try {
@@ -1781,7 +1839,7 @@ function readKeypair(path: string): Uint8Array {
     bytes = null;
   }
   if (!Array.isArray(bytes) || bytes.length !== 64 || !bytes.every(b => Number.isInteger(b) && b >= 0 && b <= 255)) {
-    throw new Error('The wallet\'s keypair file is not a solana-keygen file (a JSON array of 64 numbers). Nothing was started.');
+    throw new ConfigError('The wallet\'s keypair file is not a solana-keygen file (a JSON array of 64 numbers). Nothing was started.');
   }
   return new Uint8Array(bytes);
 }

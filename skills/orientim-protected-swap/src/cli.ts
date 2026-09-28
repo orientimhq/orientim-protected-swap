@@ -7,8 +7,9 @@
  *
  *   orientim-verify prepare    {"intent": {...}}                       0 ok: sign `message`   1 refused   3 settle first   4 Orientim said no
  *   orientim-verify finalize   {"checked": ..., "signature": "..."}    0 confirmed   1 not swapped   3 unknown: recover before anything new
+ *                                                                      (3 too for a confirmed swap whose record could not be updated)
  *                                                                      5 this order already swapped, or another run has it
- *   orientim-verify recover                                            0 all settled   3 something is still unknown
+ *   orientim-verify recover                                            0 all settled   3 something is still unknown, or a run holds the wallet
  *   orientim-verify resolve    {"signature": "...", "outcome": "..."}  0 settled   1 refused (it could still land, or is not kept)
  *   3 also when the state directory cannot be made, read or written: nothing is prepared or changed until
  *   it can, and when another run from the wallet holds its lock (`busy`: that run may have sent the swap).
@@ -16,7 +17,11 @@
  *   orientim-verify key-challenge  {"wallet": "<address>"}             0 sign `message` (checked: Orientim's key message for this wallet, nothing else)
  *   orientim-verify key        {"message", "challenge", "signature"}   0 `key`, bound to that wallet   4 Orientim said no
  *   2 on any usage or configuration error (a slippageBps, maxPriceImpactBps, maxFeeBps or minOut it cannot use included); 5 when `intent.id` names an order that already swapped or
- *   whose transaction may still land (the same order is never swapped twice).
+ *   whose transaction may still land (the same order is never swapped twice). finalize without
+ *   `checked.intent.id` is a usage error: the id is what keeps the order from being swapped twice.
+ *
+ * Every exit 3 carries `recoveryRequired: true`: run `recover` before anything new. `sent: false` says
+ * only that this call sent nothing, never that an earlier call for the same order did not.
  *
  * Finalize asked again for a swap it already kept (the same signature) is not a new send: it asks
  * Orientim once more for the same bytes and reads the chain, and always answers with that signature and
@@ -53,6 +58,7 @@ import {
   acquireLock, apiKeyChallenge, OrientimApiError, checkPrepared, createFileStore, finalizeSigned, isApiKeyMessage, pendingFor, PendingSwapError,
   prepareChecked, PriceImpactError, FloorError, ownFloor, receivedFor, recoverPending, redeemApiKey, resolvePending, resumeSigned, takeOrder,
   checkPolicy, loadPolicy, PolicyError, LockBusyError, OrientimOrderError, holdSolFee, releaseHeldLocks, stateDirFor, DEFAULT_STATE_DIR, IntentError,
+  exitCodeOf, settleOrder,
 } from '../examples/swap.ts';
 import type { Checked, FoundOrder, Intent, OrderBook, OrderRecord, OwnerPolicy, PendingStore, Prepared, SpendLog } from '../examples/swap.ts';
 import { ORIENTIM_TREASURY } from '../lib/orientim-verify.mjs';
@@ -206,7 +212,16 @@ async function resolveOrderOnly(
   return { code: 0, output: { ok: true, signature, outcome: state, by: settled ? 'chain' : 'you', order: found.id } };
 }
 
+/**
+ * One contract for every command: `sent` says only what this call did, and `recoveryRequired` (every
+ * exit 3) says whether anything may still be in flight from earlier: run `recover` before anything new.
+ */
 export async function runCli(command: string, input: unknown, deps: CliDeps): Promise<CliResult> {
+  const result = await runCommand(command, input, deps);
+  return result.code === 3 ? { code: 3, output: { ...result.output, recoveryRequired: true } } : result;
+}
+
+async function runCommand(command: string, input: unknown, deps: CliDeps): Promise<CliResult> {
   const body = (input ?? {}) as Record<string, unknown>;
   // A state directory that cannot be made is an answer too, like one that cannot be read: exit 3, in
   // JSON, and nothing is prepared, sent or changed until it can (the check and the key commands keep none).
@@ -245,7 +260,21 @@ export async function runCli(command: string, input: unknown, deps: CliDeps): Pr
   }
 
   if (command === 'recover') {
+    // Every wallet whose swaps are kept here is locked while they are settled, as finalize locks it:
+    // a recover never settles an order while a run from that wallet is taking it again.
+    const held: (() => void)[] = [];
     try {
+      let owners: string[];
+      try {
+        owners = [...new Set((await store.list()).map(s => s.owner ?? feePayerOf(s.signedTransaction)).filter((o): o is string => !!o && ADDRESS.test(o)))].sort();
+      } catch (e) {
+        return { code: 3, output: { ok: false, error: `The kept swaps could not be read or settled: ${messageOf(e)}. Nothing new may start until they are.` } };
+      }
+      try {
+        for (const owner of owners) held.push(acquireLock(deps.stateDir, owner));
+      } catch (e) {
+        return { code: 3, output: { ok: false, ...(e instanceof LockBusyError ? { busy: true } : {}), error: `${messageOf(e)} Nothing was settled; run recover again once it is done.` } };
+      }
       const { settled, unknown, bookkeepingErrors } = await recoverPending(store, deps.rpc, { pollMs: deps.pollMs, maxWaitMs: deps.maxWaitMs, orders: store });
       // What stays kept (an unknown outcome, or a record that could not be updated) is settled again next time.
       const open = unknown.length > 0 || bookkeepingErrors.length > 0;
@@ -258,6 +287,8 @@ export async function runCli(command: string, input: unknown, deps: CliDeps): Pr
       };
     } catch (e) {
       return { code: 3, output: { ok: false, error: `The kept swaps could not be read or settled: ${messageOf(e)}. Nothing new may start until they are.` } };
+    } finally {
+      for (const release of held) release();
     }
   }
 
@@ -387,6 +418,11 @@ export async function runCli(command: string, input: unknown, deps: CliDeps): Pr
     if (!checked?.prepared || !isIntent(checked.intent) || (typeof signature !== 'string' && typeof signedTransaction !== 'string')) {
       return usage('finalize reads {"checked": <prepare\'s checked, unchanged>, "signature": "<base58>"} or {"checked": ..., "signedTransaction": "<base64>"}.');
     }
+    // The order's id travels in checked: without it, nothing would keep this order from being swapped
+    // twice, so an adapter that lost it is stopped here, before anything is sent.
+    if (typeof checked.intent.id !== 'string' || !checked.intent.id) {
+      return usage('finalize needs checked.intent.id, the order\'s id prepare was given: pass prepare\'s checked unchanged. Nothing was sent.');
+    }
     const { prepared } = checked;
     // The wallet names the lock file: nothing but an address may reach a path.
     if (typeof prepared.wallet !== 'string' || !ADDRESS.test(prepared.wallet)) return usage('checked.prepared.wallet must be a wallet address.');
@@ -398,7 +434,8 @@ export async function runCli(command: string, input: unknown, deps: CliDeps): Pr
     const settle = async (result: { signature: string; outcome: string; refusal?: string }, orderId: string | undefined, resumed: boolean): Promise<CliResult> => {
       let bookkeepingError: string | undefined;
       try {
-        if (orderId) await store.recordOrder(orderId, { signature: result.signature, state: (result.outcome === 'unknown' ? 'pending' : result.outcome) as OrderRecord['state'] });
+        // Only this attempt's own order: a newer attempt that holds it is never written over.
+        if (orderId) await settleOrder(store, orderId, { signature: result.signature, state: (result.outcome === 'unknown' ? 'pending' : result.outcome) as OrderRecord['state'] });
         if (result.outcome !== 'unknown') await store.remove(result.signature);
       } catch (e) {
         bookkeepingError = messageOf(e);
@@ -408,7 +445,8 @@ export async function runCli(command: string, input: unknown, deps: CliDeps): Pr
         ? await receivedFor(deps.rpc, result.signature, prepared, { requestTimeoutMs: deps.requestTimeoutMs, pollMs: deps.pollMs })
         : null;
       return {
-        code: result.outcome === 'confirmed' ? 0 : result.outcome === 'unknown' ? 3 : 1,
+        // The example's own rule: a confirmed swap whose record could not be updated is 3, settle first.
+        code: exitCodeOf({ outcome: result.outcome as Parameters<typeof exitCodeOf>[0]['outcome'], bookkeepingError }),
         output: {
           ok: result.outcome === 'confirmed', signature: result.signature, outcome: result.outcome,
           ...(result.refusal ? { refusal: result.refusal } : {}), amounts: prepared.amounts,

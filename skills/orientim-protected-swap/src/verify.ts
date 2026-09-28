@@ -355,9 +355,22 @@ export type OwnQuoteArgs = {
   allowUnknownImpact?: boolean;
 };
 
-/** A floor of the agent's own (`ownQuote`). */
-export async function ownMinimum(args: OwnQuoteArgs): Promise<string> {
-  return (await ownQuote(args)).minOut;
+/**
+ * A floor of the agent's own (`ownQuote`), for a swap within the price impact limit: an amount that
+ * moves the market more than `maxPriceImpactBps` (default 5%, at most 20%) is refused here, as the
+ * example and `orientim-verify` refuse it, so that a bot built on `ownMinimum` and `verifyPrepared`
+ * keeps that check. `verifyPrepared` itself checks the bytes against your limits, not the market.
+ */
+export async function ownMinimum(args: OwnQuoteArgs & { maxPriceImpactBps?: number }): Promise<string> {
+  const limit = args.maxPriceImpactBps ?? DEFAULT_MAX_PRICE_IMPACT_BPS;
+  if (!(Number.isInteger(limit) && limit >= 0 && limit <= MAX_PRICE_IMPACT_BPS)) {
+    throw new Error(`maxPriceImpactBps must be a whole number of bps from 0 to ${MAX_PRICE_IMPACT_BPS}. Nothing was prepared.`);
+  }
+  const own = await ownQuote(args);
+  if (own.priceImpactBps !== null && own.priceImpactBps > limit) {
+    throw new Error(`Price impact is ${(own.priceImpactBps / 100).toFixed(2)}%, above the limit of ${(limit / 100).toFixed(2)}%: this amount would move the market too much. Nothing was prepared or signed.`);
+  }
+  return own.minOut;
 }
 
 /**

@@ -1400,6 +1400,28 @@ const PREPARED_FIELDS = [
 	"certificate",
 	"policy"
 ];
+/** The fields of `amounts` and `costs` the skill reads or shows (`Prepared`); any other is dropped. */
+const AMOUNT_FIELDS = [
+	"amountIn",
+	"fee",
+	"feeMint",
+	"feeBps",
+	"swapAmount",
+	"quotedOut",
+	"minOut",
+	"priceImpactPct"
+];
+const COST_FIELDS = [
+	"networkFeeLamports",
+	"outputAccountRentLamports",
+	"routeRentLamports",
+	"routeRefundLamports",
+	"keptSolLamports",
+	"routeKeptLamports",
+	"orientimFeeSolLamports",
+	"breakdown",
+	"tokenTax"
+];
 const CODE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 /** An error code as data: Orientim's own shape, or `other`. */
 const safeCode = (code) => typeof code === "string" && CODE.test(code) ? code : "other";
@@ -1450,7 +1472,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.5.1";
+const SKILL_VERSION = "1.6.0";
 /** Each call to Orientim ends within `timeoutMs`: an answer that never comes is no answer. */
 async function call(fetchImpl, url, key, body, timeoutMs = 3e4) {
 	const res = await fetchImpl(url, {
@@ -1604,6 +1626,55 @@ async function checkPrepared(p, intent, rpc, opts = {}) {
 	else if (BigInt(p.amounts.minOut) !== (policy.feeSide === "output" ? enforced - policyFee : enforced) || BigInt(p.amounts.fee) !== policyFee || BigInt(p.amounts.swapAmount) !== routed) problems.push("the amounts stated differ from the policy the transaction is checked against");
 	if (intent.minOut && /^\d{1,20}$/.test(intent.minOut) && BigInt(p.amounts.minOut) < BigInt(intent.minOut)) problems.push(`the minimum ${p.amounts.minOut} is below yours, ${intent.minOut}`);
 	if (BigInt(p.costs.networkFeeLamports) > BigInt(intent.maxNetworkFeeLamports ?? 1e6)) problems.push(`the network fee ${p.costs.networkFeeLamports} is above your limit`);
+	const [takerRent, routeRefund, feeBps] = [
+		whole(policy.takerRent),
+		whole(policy.routeRefund),
+		whole(policy.feeBps)
+	];
+	if (takerRent === null || routeRefund === null || feeBps === null || policyFee === null) problems.push("the policy is malformed");
+	else {
+		const feeMint = policy.feeSide === "output" ? policy.outputMint : policy.feeSide === "sol" ? SOL_MINT : policy.inputMint;
+		const solFee = feeMint === SOL_MINT ? policyFee : 0n;
+		const kept = takerRent - routeRefund;
+		const differ = [
+			[
+				"costs.routeRentLamports",
+				p.costs.routeRentLamports,
+				takerRent
+			],
+			[
+				"costs.routeRefundLamports",
+				p.costs.routeRefundLamports,
+				routeRefund
+			],
+			[
+				"costs.routeKeptLamports",
+				p.costs.routeKeptLamports,
+				kept
+			],
+			[
+				"costs.orientimFeeSolLamports",
+				p.costs.orientimFeeSolLamports,
+				solFee
+			],
+			[
+				"costs.keptSolLamports",
+				p.costs.keptSolLamports,
+				BigInt(p.costs.networkFeeLamports) + kept + solFee
+			],
+			[
+				"amounts.feeBps",
+				p.amounts.feeBps,
+				policyFee === 0n ? 0n : feeBps
+			],
+			[
+				"amounts.feeMint",
+				p.amounts.feeMint,
+				String(feeMint)
+			]
+		].filter(([, v, want], i) => (i < 2 || v !== void 0) && v !== String(want)).map(([k]) => k);
+		if (differ.length) problems.push(`the figures stated differ from the policy the transaction is checked against: ${differ.join(", ")}`);
+	}
 	problems.push(...await verifyPrepared(p, {
 		...intent,
 		minOut: intent.minOut ?? ""
@@ -1746,6 +1817,11 @@ var PriceImpactError = class extends Error {
 * example and `orientim-verify` exit 2. Nothing was prepared.
 */
 var IntentError = class extends Error {};
+/**
+* The command's own setup cannot be used: the owner's policy file, the state directory it names, or
+* the wallet's keypair file. A configuration error: exit 2 from the example, as a usage error is.
+*/
+var ConfigError = class extends Error {};
 /** This order already confirmed, or its last transaction may still land: it is not swapped again. */
 var OrientimOrderError = class extends Error {
 	id;
@@ -1793,9 +1869,9 @@ function loadPolicy(path) {
 	try {
 		raw = JSON.parse(readFileSync(path, "utf8"));
 	} catch (e) {
-		throw new Error(`The owner's policy ${path} cannot be read as JSON: ${e instanceof Error ? e.message : String(e)}. Nothing was prepared.`);
+		throw new ConfigError(`The owner's policy ${path} cannot be read as JSON: ${e instanceof Error ? e.message : String(e)}. Nothing was prepared.`);
 	}
-	const bad = (why) => /* @__PURE__ */ new Error(`The owner's policy ${path} ${why}. Nothing was prepared.`);
+	const bad = (why) => new ConfigError(`The owner's policy ${path} ${why}. Nothing was prepared.`);
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw bad("is not a JSON object");
 	const known = [
 		"maxAmountIn",
@@ -1834,10 +1910,10 @@ const DEFAULT_STATE_DIR = ".orientim-state";
 */
 function stateDirFor(policy, given) {
 	if (policy?.stateDir) {
-		if (given !== void 0 && resolve(given) !== resolve(policy.stateDir)) throw new Error(`The owner's policy keeps the state in ${policy.stateDir}; another state directory (${given}) is not used. Nothing was started.`);
+		if (given !== void 0 && resolve(given) !== resolve(policy.stateDir)) throw new ConfigError(`The owner's policy keeps the state in ${policy.stateDir}; another state directory (${given}) is not used. Nothing was started.`);
 		return { dir: policy.stateDir };
 	}
-	if (!!policy?.maxAmountInPerDay && Object.keys(policy.maxAmountInPerDay).length > 0 && !(given && isAbsolute(given))) throw new Error("The owner's policy sets a daily limit: name the state directory as an absolute path (the policy's stateDir, or ORIENTIM_STATE_DIR), so that every swap counts against it. Nothing was started.");
+	if (!!policy?.maxAmountInPerDay && Object.keys(policy.maxAmountInPerDay).length > 0 && !(given && isAbsolute(given))) throw new ConfigError("The owner's policy sets a daily limit: name the state directory as an absolute path (the policy's stateDir, or ORIENTIM_STATE_DIR), so that every swap counts against it. Nothing was started.");
 	if (given) return { dir: given };
 	return {
 		dir: DEFAULT_STATE_DIR,
@@ -2031,6 +2107,18 @@ function createFileStore(dir) {
 	};
 }
 /**
+* Records `record` as the outcome of order `id` only while the order is still this attempt's (the
+* same signature) or names none: a late settle of an older attempt never writes over a newer one.
+* Every writer of one wallet's orders holds that wallet's lock (`acquireLock`), so the read and the
+* write here are not raced by another run of the command. False when the order is another attempt's.
+*/
+async function settleOrder(orders, id, record) {
+	const now = await orders.order(id);
+	if (now && now.signature !== record.signature) return false;
+	await orders.recordOrder(id, record);
+	return true;
+}
+/**
 * Settles the swaps a stopped run left in `store`, each by its own signature on your RPC, and removes
 * those whose outcome is final. Returns what is still unknown: while anything is, start no new swap
 * for the same intent. A swap that "no record" can no longer prove expired stays unknown
@@ -2056,7 +2144,7 @@ async function recoverPending(store, rpc, opts = {}) {
 			outcome
 		});
 		try {
-			if (s.intentId && opts.orders) await opts.orders.recordOrder(s.intentId, {
+			if (s.intentId && opts.orders) await settleOrder(opts.orders, s.intentId, {
 				signature: s.signature,
 				state: outcome
 			});
@@ -2089,7 +2177,7 @@ async function resolvePending(store, rpc, signature, outcome, opts = {}) {
 	if (!onChain && status) throw new Error(`The network has seen ${signature} but not settled it yet: wait and recover again. Nothing was changed.`);
 	if (!onChain && (view.coveredHeight === null || view.coveredHeight <= lastBlockOf(kept))) throw new Error(`${signature} can still land until block ${lastBlockOf(kept)}: recover it instead. Nothing was changed.`);
 	const settledAs = onChain ?? outcome;
-	if (kept.intentId && opts.orders) await opts.orders.recordOrder(kept.intentId, {
+	if (kept.intentId && opts.orders) await settleOrder(opts.orders, kept.intentId, {
 		signature,
 		state: settledAs
 	});
@@ -2327,6 +2415,12 @@ async function prepareChecked(args) {
 function preparedData(prepared) {
 	const known = {};
 	for (const k of PREPARED_FIELDS) if (Object.hasOwn(prepared, k)) known[k] = prepared[k];
+	const only = (value, fields) => {
+		if (!value || typeof value !== "object") return value;
+		return Object.fromEntries(fields.filter((k) => Object.hasOwn(value, k)).map((k) => [k, value[k]]));
+	};
+	if (Object.hasOwn(known, "amounts")) known.amounts = only(known.amounts, AMOUNT_FIELDS);
+	if (Object.hasOwn(known, "costs")) known.costs = only(known.costs, COST_FIELDS);
 	return {
 		...dataOnly(known),
 		transaction: prepared.transaction
@@ -2373,7 +2467,10 @@ async function receivedFor(rpc, signature, prepared, opts = {}) {
 				if (outputMint === SOL_MINT) {
 					const [before, after] = [meta.preBalances[0], meta.postBalances[0]];
 					if (before === void 0 || after === void 0) return null;
-					return BigInt(after) - BigInt(before) + BigInt(meta.fee) + BigInt(prepared.costs.routeRentLamports ?? "0") - BigInt(prepared.costs.routeRefundLamports ?? "0");
+					const whole = (v) => typeof v === "string" && /^\d{1,20}$/.test(v) ? BigInt(v) : null;
+					const [rent, refund] = [whole(prepared.policy?.takerRent), whole(prepared.policy?.routeRefund)];
+					if (rent === null || refund === null) return null;
+					return BigInt(after) - BigInt(before) + BigInt(meta.fee) + rent - refund;
 				}
 				const mine = (list) => (list ?? []).filter((b) => b.mint === outputMint && b.owner === prepared.wallet);
 				const after = mine(meta.postTokenBalances);
@@ -2560,7 +2657,7 @@ async function protectedSwap(args) {
 		...got !== null ? { received: got.toString() } : {}
 	};
 	try {
-		if (orders) await orders.recordOrder(id, {
+		if (orders) await settleOrder(orders, id, {
 			signature: result.signature,
 			state: result.outcome === "unknown" ? "pending" : result.outcome
 		});
@@ -2643,12 +2740,13 @@ async function main$1() {
 		await holdSolFee(checked, prepared, { jupiterApiKey });
 		const problems = await checkPrepared(prepared, checked, rpc);
 		const risk = await tokenRisk(rpc, [inputMint, outputMint]);
+		const shownData = preparedData(prepared);
 		console.log(JSON.stringify({
 			yourFloor: minOut,
 			priceImpactBps: own.priceImpactBps,
-			amounts: prepared.amounts,
-			costs: prepared.costs,
-			blocksLeft: prepared.blocksLeft,
+			amounts: shownData.amounts,
+			costs: shownData.costs,
+			blocksLeft: shownData.blocksLeft,
 			problems,
 			notices: noticesOf(risk),
 			tokenRisk: risk
@@ -2711,7 +2809,7 @@ async function main$1() {
 	}
 }
 /**
-* The command's exit code for a swap's result, as `orientim-verify finalize` answers: 0 confirmed;
+* The command's exit code for a swap's result, as `orientim-verify finalize` answers (both use this): 0 confirmed;
 * 1 not swapped (failed, rejected or expired: the order may be tried again); 3 unknown, or an outcome
 * whose record could not be updated: settle it before anything new.
 */
@@ -2731,12 +2829,12 @@ function errorLine(e) {
 	return e instanceof PriceImpactError ? `price-impact-high: ${e.message}` : e instanceof FloorError ? `floor-too-low: ${e.message}` : e instanceof PolicyError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e);
 }
 /**
-* The command's exit code for an error, as `orientim-verify` answers: 2 an intent it cannot use; 3
+* The command's exit code for an error, as `orientim-verify` answers: 2 an intent or a setup it cannot use; 3
 * another swap from this wallet may still land; 5 this order already swapped, or may still land (never
 * retry it under a new id); 1 anything else: nothing was swapped.
 */
 function errorExitCode(e) {
-	if (e instanceof IntentError) return 2;
+	if (e instanceof IntentError || e instanceof ConfigError) return 2;
 	if (e instanceof PendingSwapError) return 3;
 	if (e instanceof OrientimOrderError) return 5;
 	return 1;
@@ -2747,7 +2845,7 @@ function readKeypair(path) {
 	try {
 		text = readFileSync(path, "utf8");
 	} catch (e) {
-		throw new Error(`The wallet's keypair file cannot be read (${e.code ?? "error"}). Nothing was started.`);
+		throw new ConfigError(`The wallet's keypair file cannot be read (${e.code ?? "error"}). Nothing was started.`);
 	}
 	let bytes;
 	try {
@@ -2755,7 +2853,7 @@ function readKeypair(path) {
 	} catch {
 		bytes = null;
 	}
-	if (!Array.isArray(bytes) || bytes.length !== 64 || !bytes.every((b) => Number.isInteger(b) && b >= 0 && b <= 255)) throw new Error("The wallet's keypair file is not a solana-keygen file (a JSON array of 64 numbers). Nothing was started.");
+	if (!Array.isArray(bytes) || bytes.length !== 64 || !bytes.every((b) => Number.isInteger(b) && b >= 0 && b <= 255)) throw new ConfigError("The wallet's keypair file is not a solana-keygen file (a JSON array of 64 numbers). Nothing was started.");
 	return new Uint8Array(bytes);
 }
 if (process.argv[1] && /swap\.ts$/.test(process.argv[1]) && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
@@ -2779,8 +2877,9 @@ if (process.argv[1] && /swap\.ts$/.test(process.argv[1]) && fileURLToPath(import
 *
 *   orientim-verify prepare    {"intent": {...}}                       0 ok: sign `message`   1 refused   3 settle first   4 Orientim said no
 *   orientim-verify finalize   {"checked": ..., "signature": "..."}    0 confirmed   1 not swapped   3 unknown: recover before anything new
+*                                                                      (3 too for a confirmed swap whose record could not be updated)
 *                                                                      5 this order already swapped, or another run has it
-*   orientim-verify recover                                            0 all settled   3 something is still unknown
+*   orientim-verify recover                                            0 all settled   3 something is still unknown, or a run holds the wallet
 *   orientim-verify resolve    {"signature": "...", "outcome": "..."}  0 settled   1 refused (it could still land, or is not kept)
 *   3 also when the state directory cannot be made, read or written: nothing is prepared or changed until
 *   it can, and when another run from the wallet holds its lock (`busy`: that run may have sent the swap).
@@ -2788,7 +2887,11 @@ if (process.argv[1] && /swap\.ts$/.test(process.argv[1]) && fileURLToPath(import
 *   orientim-verify key-challenge  {"wallet": "<address>"}             0 sign `message` (checked: Orientim's key message for this wallet, nothing else)
 *   orientim-verify key        {"message", "challenge", "signature"}   0 `key`, bound to that wallet   4 Orientim said no
 *   2 on any usage or configuration error (a slippageBps, maxPriceImpactBps, maxFeeBps or minOut it cannot use included); 5 when `intent.id` names an order that already swapped or
-*   whose transaction may still land (the same order is never swapped twice).
+*   whose transaction may still land (the same order is never swapped twice). finalize without
+*   `checked.intent.id` is a usage error: the id is what keeps the order from being swapped twice.
+*
+* Every exit 3 carries `recoveryRequired: true`: run `recover` before anything new. `sent: false` says
+* only that this call sent nothing, never that an earlier call for the same order did not.
 *
 * Finalize asked again for a swap it already kept (the same signature) is not a new send: it asks
 * Orientim once more for the same bytes and reads the chain, and always answers with that signature and
@@ -3062,7 +3165,21 @@ async function resolveOrderOnly(signature, outcome, store, deps) {
 		}
 	};
 }
+/**
+* One contract for every command: `sent` says only what this call did, and `recoveryRequired` (every
+* exit 3) says whether anything may still be in flight from earlier: run `recover` before anything new.
+*/
 async function runCli(command, input, deps) {
+	const result = await runCommand(command, input, deps);
+	return result.code === 3 ? {
+		code: 3,
+		output: {
+			...result.output,
+			recoveryRequired: true
+		}
+	} : result;
+}
+async function runCommand(command, input, deps) {
 	const body = input ?? {};
 	let store;
 	try {
@@ -3112,31 +3229,60 @@ async function runCli(command, input, deps) {
 			return refusal(e);
 		}
 	}
-	if (command === "recover") try {
-		const { settled, unknown, bookkeepingErrors } = await recoverPending(store, deps.rpc, {
-			pollMs: deps.pollMs,
-			maxWaitMs: deps.maxWaitMs,
-			orders: store
-		});
-		const open = unknown.length > 0 || bookkeepingErrors.length > 0;
-		return {
-			code: open ? 3 : 0,
-			output: {
-				ok: !open,
-				settled,
-				unknown,
-				...bookkeepingErrors.length ? { bookkeepingErrors } : {},
-				...unknown.length ? { next: "Check each unknown signature before swapping again. One the network can no longer prove: look it up in a full history (an explorer), then `orientim-verify resolve`." } : {}
+	if (command === "recover") {
+		const held = [];
+		try {
+			let owners;
+			try {
+				owners = [...new Set((await store.list()).map((s) => s.owner ?? feePayerOf(s.signedTransaction)).filter((o) => !!o && ADDRESS.test(o)))].sort();
+			} catch (e) {
+				return {
+					code: 3,
+					output: {
+						ok: false,
+						error: `The kept swaps could not be read or settled: ${messageOf(e)}. Nothing new may start until they are.`
+					}
+				};
 			}
-		};
-	} catch (e) {
-		return {
-			code: 3,
-			output: {
-				ok: false,
-				error: `The kept swaps could not be read or settled: ${messageOf(e)}. Nothing new may start until they are.`
+			try {
+				for (const owner of owners) held.push(acquireLock(deps.stateDir, owner));
+			} catch (e) {
+				return {
+					code: 3,
+					output: {
+						ok: false,
+						...e instanceof LockBusyError ? { busy: true } : {},
+						error: `${messageOf(e)} Nothing was settled; run recover again once it is done.`
+					}
+				};
 			}
-		};
+			const { settled, unknown, bookkeepingErrors } = await recoverPending(store, deps.rpc, {
+				pollMs: deps.pollMs,
+				maxWaitMs: deps.maxWaitMs,
+				orders: store
+			});
+			const open = unknown.length > 0 || bookkeepingErrors.length > 0;
+			return {
+				code: open ? 3 : 0,
+				output: {
+					ok: !open,
+					settled,
+					unknown,
+					...bookkeepingErrors.length ? { bookkeepingErrors } : {},
+					...unknown.length ? { next: "Check each unknown signature before swapping again. One the network can no longer prove: look it up in a full history (an explorer), then `orientim-verify resolve`." } : {}
+				}
+			};
+		} catch (e) {
+			return {
+				code: 3,
+				output: {
+					ok: false,
+					error: `The kept swaps could not be read or settled: ${messageOf(e)}. Nothing new may start until they are.`
+				}
+			};
+		} finally {
+			for (const release of held) release();
+		}
 	}
 	if (command === "resolve") {
 		const { signature, outcome } = body;
@@ -3350,6 +3496,7 @@ async function runCli(command, input, deps) {
 		const checked = body.checked;
 		const { signature, signedTransaction } = body;
 		if (!checked?.prepared || !isIntent(checked.intent) || typeof signature !== "string" && typeof signedTransaction !== "string") return usage("finalize reads {\"checked\": <prepare's checked, unchanged>, \"signature\": \"<base58>\"} or {\"checked\": ..., \"signedTransaction\": \"<base64>\"}.");
+		if (typeof checked.intent.id !== "string" || !checked.intent.id) return usage("finalize needs checked.intent.id, the order's id prepare was given: pass prepare's checked unchanged. Nothing was sent.");
 		const { prepared } = checked;
 		if (typeof prepared.wallet !== "string" || !ADDRESS.test(prepared.wallet)) return usage("checked.prepared.wallet must be a wallet address.");
 		const ownOrError = ownIntent(checked.intent, deps);
@@ -3358,7 +3505,7 @@ async function runCli(command, input, deps) {
 		const settle = async (result, orderId, resumed) => {
 			let bookkeepingError;
 			try {
-				if (orderId) await store.recordOrder(orderId, {
+				if (orderId) await settleOrder(store, orderId, {
 					signature: result.signature,
 					state: result.outcome === "unknown" ? "pending" : result.outcome
 				});
@@ -3371,7 +3518,10 @@ async function runCli(command, input, deps) {
 				pollMs: deps.pollMs
 			}) : null;
 			return {
-				code: result.outcome === "confirmed" ? 0 : result.outcome === "unknown" ? 3 : 1,
+				code: exitCodeOf({
+					outcome: result.outcome,
+					bookkeepingError
+				}),
 				output: {
 					ok: result.outcome === "confirmed",
 					signature: result.signature,

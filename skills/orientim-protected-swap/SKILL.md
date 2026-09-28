@@ -124,7 +124,8 @@ Run or adapt `examples/swap.ts`. Do not write the flow from scratch, and never d
    tolerance and 1.5% more (2% on a curve). A minimum of your own may be higher than that, never more
    than 20% below Jupiter's own price: the example asks Jupiter every time and refuses a lower one
    (`floor-too-low`) before anything is prepared. The example does this when `--min-out` is not given. The
-   check refuses to sign without one.
+   check refuses to sign without one. `ownMinimum` also refuses an amount whose price impact is above
+   `maxPriceImpactBps` (default 5%, at most 20%), as the example does.
 2. **Prepare.** `POST {ORIENTIM_API_URL}/api/v1/prepare` with
    `{ owner, inputMint, outputMint, amountIn, minOut }`. All amounts are integer strings in base
    units (5 USDC is `"5000000"`; SOL is 9 decimals, mint `So11111111111111111111111111111111111111112`).
@@ -314,11 +315,14 @@ It needs Node 22.18 or later and `npm ci` in this folder, and reads `SOLANA_RPC_
 
 | Command | Input (stdin) | Exit code |
 | --- | --- | --- |
-| `recover` | none | 0 all settled; 3 an earlier outcome is still unknown, or its record could not be updated (`bookkeepingErrors`): start nothing new |
+| `recover` | none | 0 all settled; 3 an earlier outcome is still unknown, or its record could not be updated (`bookkeepingErrors`), or another run holds the wallet's lock (`busy`): start nothing new |
 | `resolve` | `{"signature": "<a kept swap>", "outcome": "confirmed" \| "failed" \| "expired"}` | 0 settled (the chain's answer is used when your RPC has one); 1 refused: it could still land, or no swap with that signature is kept; 3 the state directory cannot be made or read. Only after you looked the signature up in a full history (an explorer), for a swap `recover` can no longer prove |
 | `prepare` | `{"intent": {"owner", "inputMint", "outputMint", "amountIn", "id", "slippageBps", "maxPriceImpactBps", ...}}` | 0 sign `message` (the answer also carries `notices` about the tokens); 1 refused, including `error.code` `price-impact-high`, `floor-too-low`, `unavailable` (try again after `retryAfter`) and the owner's policy (`mint-not-allowed`, `amount-over-limit`, `daily-limit`); 2 no `id`, an `intent.treasury` (the treasury comes only from `ORIENTIM_TREASURY`), or a `slippageBps` (10 to 1500), `maxPriceImpactBps`, `maxFeeBps` or `minOut` outside what the skill allows; 3 settle first; 4 Orientim said no (`error.code`, as below); 5 this order (`id`) already swapped or may still land |
-| `finalize` | `{"checked": <prepare's checked, unchanged>, "signature": "<base58>"}` | 0 confirmed, with `received`: what the wallet's output balance gained when it was read, in base units; 1 not swapped (the same refusals as `prepare`: `checked` is checked again, the floor included); 2 an intent it cannot use, as for `prepare`; 3 unknown: run `recover` before anything new (also `busy`: another run from this wallet holds its lock, and may have sent it; and a state directory that cannot be read, with `outcome` `unknown`); 5 this order already swapped, or may still land, under another transaction (`order`). Asked again for a swap it kept, it answers with that swap's signature and outcome (`resumed`) |
+| `finalize` | `{"checked": <prepare's checked, unchanged>, "signature": "<base58>"}` | 0 confirmed, with `received`: what the wallet's output balance gained when it was read, in base units; 1 not swapped (the same refusals as `prepare`: `checked` is checked again, the floor included); 2 no `checked.intent.id` (pass prepare's `checked` unchanged), or an intent it cannot use, as for `prepare`; 3 unknown: run `recover` before anything new (also a confirmed swap whose record could not be updated, `bookkeepingError`) (also `busy`: another run from this wallet holds its lock, and may have sent it; and a state directory that cannot be read, with `outcome` `unknown`); 5 this order already swapped, or may still land, under another transaction (`order`). Asked again for a swap it kept, it answers with that swap's signature and outcome (`resumed`) |
 | `check` | `{"prepared": <prepare answer>, "intent": {...}}` | 0 safe to sign; 1 refused (for bots that call the API themselves). A daily limit counts only the swaps this state directory kept |
+
+Every exit 3 carries `recoveryRequired: true`. `sent: false` says only that this call sent nothing,
+never that an earlier call for the same order did not: act on the exit code and `recoveryRequired`.
 
 `slippageBps` and `maxPriceImpactBps` are optional, and the same as on the page: without them the
 tolerance is automatic (0.5%, or 3% on a Pump.fun curve) and a price impact above 5% is refused.
@@ -352,8 +356,9 @@ In Rust, `keypair.sign_message(&message).to_string()` gives the same base58 sign
 ## The example's exit codes
 
 `node examples/swap.ts` exits 0 only for a confirmed swap; 1 when nothing was swapped (refused,
-failed or expired); 2 on a usage or configuration error, a `--slippage-bps` outside 10 to 1500 or a
-`--max-price-impact-bps` outside 0 to 2000 included; 3 when an outcome is unknown, a record
+failed or expired); 2 on a usage or configuration error, a `--slippage-bps` outside 10 to 1500, a
+`--max-price-impact-bps` outside 0 to 2000, and a policy, state directory or keypair file it cannot
+use included; 3 when an outcome is unknown, a record
 could not be written, or another run from this wallet holds its lock: settle first (run it again
 with the same `--id`), never start another way; 5 when this order (`--id`) already swapped, or its
 transaction may still land, as `orientim-verify` answers: never retry it under a new id. Stopped by
