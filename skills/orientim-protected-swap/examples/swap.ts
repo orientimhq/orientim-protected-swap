@@ -150,6 +150,8 @@ export type Finalized = {
   signature: string;
   status: 'sent' | 'unknown' | 'rejected';
   refusal?: string;
+  /** For a `network` refusal: the simulation's error behind it, as JSON. Read with `networkCause`, never shown as it came. */
+  transactionError?: string;
   signedTransaction?: string;
   lastValidBlockHeight: string;
 };
@@ -173,7 +175,7 @@ export const ERROR_MEANINGS: Readonly<Record<string, string>> = {
   'route-format': 'Jupiter changed its format and Orientim cannot read it yet. Wait at least the Retry-After seconds.',
   paused: 'Orientim has paused swaps; funds are not affected. Try later.',
   'fee-unavailable': 'Orientim cannot collect its fee on this swap right now, so it built nothing. Wait the Retry-After seconds.',
-  'amount-too-small': 'The amount is below the smallest swap Orientim takes. Swap a larger amount.',
+  'amount-too-small': 'The amount is below the smallest swap Orientim takes. Swap a larger amount, or sell your whole balance of the token, which is allowed at any size.',
   'skill-outdated': 'This copy of the skill is too old. Replace the skill folder with the current one.',
   'transaction-changed': 'The signed transaction differs from the one prepared. Sign exactly what prepare returned.',
   'wallet-changed-transaction': 'The wallet changed the transaction or did not sign it. Sign exactly what prepare returned.',
@@ -294,7 +296,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.7.6';
+export const SKILL_VERSION = '1.7.7';
 
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res: Response) => {
@@ -1616,7 +1618,7 @@ export async function finalizeSigned(args: {
   maxWaitMs?: number;
   /** How long one call to Orientim or to your RPC may take, in ms (default 30 s and 10 s). */
   requestTimeoutMs?: number;
-}): Promise<{ signature: string; outcome: Outcome | 'rejected'; prepared: Prepared; refusal?: string }> {
+}): Promise<{ signature: string; outcome: Outcome | 'rejected'; prepared: Prepared; refusal?: string; cause?: string }> {
   const { prepared, signedTransaction } = args;
   const mine = getTransactionDecoder().decode(Buffer.from(signedTransaction, 'base64'));
   const built = getTransactionDecoder().decode(Buffer.from(prepared.transaction, 'base64'));
@@ -1652,6 +1654,52 @@ export async function finalizeSigned(args: {
   return { ...await askAndConfirm(args, signed, mine, prepared.temporaryAuthority), prepared };
 }
 
+/** Jupiter's swap program: its own error 6001 is the slippage limit being exceeded. */
+const JUPITER_SWAP_PROGRAM = 'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4';
+const ERROR_NAME = /^[A-Za-z]{3,40}$/;
+
+/**
+ * The simulation's error behind a refusal by the network's own check, in words, or undefined when
+ * it is not one of the shapes a simulation gives. The error came from Orientim, so it is read only
+ * as those shapes and the program it names is taken from the transaction you signed, never from
+ * the answer.
+ */
+export function networkCause(raw: string, transaction: Transaction): string | undefined {
+  let err: unknown;
+  try {
+    if (raw.length > 300) return undefined;
+    err = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (typeof err === 'string') {
+    if (!ERROR_NAME.test(err)) return undefined;
+    if (err === 'BlockhashNotFound') return "the network no longer knew the transaction's blockhash (it had expired)";
+    if (err === 'InsufficientFundsForFee') return 'the wallet could not pay the network fee';
+    return `the network's check failed with ${err}`;
+  }
+  const failed = (err as { InstructionError?: unknown } | null)?.InstructionError;
+  if (!Array.isArray(failed) || failed.length !== 2 || !Number.isInteger(failed[0]) || failed[0] < 0 || failed[0] > 64) return undefined;
+  const [index, detail] = failed as [number, unknown];
+  const custom = (detail as { Custom?: unknown } | null)?.Custom;
+  const named = typeof detail === 'string' && ERROR_NAME.test(detail) ? detail : undefined;
+  if (named === undefined && !(Number.isInteger(custom) && (custom as number) >= 0 && (custom as number) < 2 ** 32)) return undefined;
+  let program: string | undefined;
+  try {
+    const message = getCompiledTransactionMessageDecoder().decode(transaction.messageBytes) as unknown as {
+      staticAccounts: string[]; instructions?: { programAddressIndex: number }[];
+    };
+    const instruction = message.instructions?.[index];
+    program = instruction ? message.staticAccounts[instruction.programAddressIndex] : undefined;
+  } catch {
+    program = undefined;
+  }
+  if (program === JUPITER_SWAP_PROGRAM && custom === 6001) return 'the price moved beyond your slippage tolerance (Jupiter error 6001, the route now gives less than your minimum)';
+  const where = program ? `instruction ${index} (program ${program})` : `instruction ${index}`;
+  if (named === 'InsufficientFunds') return `${where} reported insufficient funds for what it moves`;
+  return named ? `${where} failed with ${named}` : `${where} failed with its own error code ${custom}`;
+}
+
 /**
  * Finalize asked for a kept swap, then its outcome read on your RPC. Asked once more when no answer
  * came back, or none that reads (the same bytes can land only once). A refusal (4xx) is not asked
@@ -1660,7 +1708,7 @@ export async function finalizeSigned(args: {
 async function askAndConfirm(
   args: { apiUrl: string; apiKey: string; rpc: Rpc<SolanaRpcApi>; fetchImpl?: Fetch; pollMs?: number; maxWaitMs?: number; requestTimeoutMs?: number },
   signed: Signed, mine: Transaction, temporaryAuthority: string,
-): Promise<{ signature: string; outcome: Outcome | 'rejected'; refusal?: string }> {
+): Promise<{ signature: string; outcome: Outcome | 'rejected'; refusal?: string; cause?: string }> {
   const fetchImpl = args.fetchImpl ?? fetch;
   const { signature } = signed;
   let done: Finalized | null = null;
@@ -1681,9 +1729,10 @@ async function askAndConfirm(
   });
   // Kept or not, the caller decides what to do with a pending record: an unknown outcome stays pending.
   const refusal = refused ? refused.code : done?.status === 'rejected' ? safeCode(done.refusal ?? 'network') : undefined;
+  const cause = refusal === 'network' && done?.transactionError ? networkCause(done.transactionError, mine) : undefined;
   // Refused by Orientim, and the chain shows it can no longer land: that refusal is what happened.
-  if (outcome === 'expired' && refusal) return { signature, outcome: 'rejected', refusal };
-  return { signature, outcome, ...(refusal ? { refusal } : {}) };
+  if (outcome === 'expired' && refusal) return { signature, outcome: 'rejected', refusal, ...(cause ? { cause } : {}) };
+  return { signature, outcome, ...(refusal ? { refusal } : {}), ...(cause ? { cause } : {}) };
 }
 
 /**
@@ -1696,7 +1745,7 @@ async function askAndConfirm(
 export async function resumeSigned(args: {
   apiUrl: string; apiKey: string; rpc: Rpc<SolanaRpcApi>; signed: Signed;
   fetchImpl?: Fetch; pollMs?: number; maxWaitMs?: number; requestTimeoutMs?: number;
-}): Promise<{ signature: string; outcome: Outcome | 'rejected'; refusal?: string }> {
+}): Promise<{ signature: string; outcome: Outcome | 'rejected'; refusal?: string; cause?: string }> {
   const mine = getTransactionDecoder().decode(Buffer.from(args.signed.signedTransaction, 'base64'));
   if (getSignatureFromTransaction(mine) !== args.signed.signature) throw new Error('The kept record does not carry its own transaction. Nothing was sent.');
   // E is the transaction's other signer: the wallet pays, so it signs first, and there are exactly two.
@@ -1740,7 +1789,7 @@ export async function protectedSwap(args: {
   /** Where every swap is recorded before it is kept, policy or not, for a daily limit to count. */
   spends?: SpendLog;
 }): Promise<{
-  signature: string; outcome: Outcome | 'rejected'; prepared: Prepared; refusal?: string; bookkeepingError?: string;
+  signature: string; outcome: Outcome | 'rejected'; prepared: Prepared; refusal?: string; cause?: string; bookkeepingError?: string;
   /** Notes about the tokens (`tokenNotices`), for whoever decides what to buy. */
   notices: string[];
   /** What each token's issuer can do, or `unavailable` (`tokenRisk`). */
@@ -1946,7 +1995,7 @@ async function main() {
     // expired keeps it until it expires, so that a retry still holds to the minimum the user approved.
     if (approved && result.outcome === 'confirmed') forgetApproval(stateDir, approvalKey);
     console.log(JSON.stringify({
-      signature: result.signature, outcome: result.outcome, refusal: result.refusal, meaning: outcomeMeaning(result.outcome, result.refusal),
+      signature: result.signature, outcome: result.outcome, refusal: result.refusal, meaning: outcomeMeaning(result.outcome, result.refusal, result.cause),
       amounts: result.prepared.amounts,
       ...(result.received ? { received: result.received } : {}), ...(result.notices.length ? { notices: result.notices } : {}),
       ...(result.tokenRisk ? { tokenRisk: result.tokenRisk } : {}),
@@ -1973,13 +2022,16 @@ export function exitCodeOf(result: { outcome: Outcome | 'rejected'; bookkeepingE
  * commands use this), with what to do next. `rejected` and `expired` are said only once the chain
  * shows the transaction can no longer land.
  */
-export function outcomeMeaning(outcome: Outcome | 'rejected', refusal?: string): string {
+export function outcomeMeaning(outcome: Outcome | 'rejected', refusal?: string, cause?: string): string {
   const retry = 'Nothing moved and no fee was paid. The order may be tried again with the same id.';
   if (outcome === 'confirmed') return 'The swap landed. `received` is what arrived in the wallet, read on your RPC.';
   if (outcome === 'failed') return 'The transaction landed but failed on chain, so no tokens moved; only the network fee was paid. The order may be tried again with the same id.';
   if (outcome === 'expired') return `The transaction did not land before it expired. ${retry}`;
   if (outcome === 'unknown') return 'No outcome could be read in time: the swap may still land. Look up the signature (orientim-verify resolve, or resolvePending) before anything new from this wallet.';
-  if (refusal === 'network') return `The network refused the transaction when it was sent (its own check failed at that moment, most often because the price moved beyond your slippage), and it can no longer land. ${retry}`;
+  if (refusal === 'network') {
+    const why = cause ? `: ${cause}` : ' (its own check failed at that moment, most often because the price moved beyond your slippage)';
+    return `The network refused the transaction when it was sent${why}, and it can no longer land. ${retry}`;
+  }
   if (refusal === 'busy') return `Orientim was sending too many transactions and did not send this one, and it can no longer land. ${retry} Wait a few seconds first.`;
   if (refusal === 'paused') return `Orientim has paused swaps and did not send this one, and it can no longer land. ${retry} Try later.`;
   const meaning = refusal && Object.hasOwn(ERROR_MEANINGS, refusal) ? ERROR_MEANINGS[refusal] : undefined;

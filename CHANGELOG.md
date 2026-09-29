@@ -3,6 +3,15 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.7.7 (2026-09-29)
+
+- When the network's own check refuses a transaction at send time, `meaning` names the reason it
+  gave, read from the simulation's error and the transaction you signed: Jupiter's slippage error
+  (6001) is "the price moved beyond your slippage"; other program errors name the instruction, its
+  program and the code. The error is read only in the shapes a simulation gives.
+- Selling the whole balance of a token is allowed at any size, however little it is worth (Orientim
+  refuses swaps below about $1 otherwise).
+
 ## 1.7.6 (2026-09-29)
 
 - The example's result and `orientim-verify finalize` carry `meaning`: the outcome and `refusal` in
