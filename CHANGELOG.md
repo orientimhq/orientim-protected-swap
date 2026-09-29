@@ -3,6 +3,11 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.8.1 (2026-09-30)
+
+- A dry run's approval is found for an amount written with leading zeros past 20 digits too (found
+  by the new fuzz of the owner's ceilings, "auto" tolerance and the archive's proof).
+
 ## 1.8.0 (2026-09-29)
 
 - The owner's policy caps what an agent may choose: `maxSlippageBps` (the route's tolerance),

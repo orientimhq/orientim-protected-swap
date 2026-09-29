@@ -1574,7 +1574,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.8.0";
+const SKILL_VERSION = "1.8.1";
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res) => {
 	const after = Number(res.headers.get("retry-after"));
@@ -2118,7 +2118,7 @@ function stateDirFor(policy, given) {
 /** How long a dry run's approval holds: after that, run the dry run again and ask again. */
 const APPROVAL_MS = 6e5;
 /** An amount as one spelling: "05000000" and "5000000" are the same amount, and find the same approval. */
-const sameAmount = (amount) => /^\d{1,20}$/.test(amount) ? BigInt(amount).toString() : amount;
+const sameAmount = (amount) => /^\d{1,64}$/.test(amount) ? BigInt(amount).toString() : amount;
 const approvalFile = (dir, k) => join(dir, `approval-${createHash("sha256").update(`${k.owner}:${k.inputMint}:${k.outputMint}:${sameAmount(k.amountIn)}`).digest("hex").slice(0, 40)}.json`);
 /** Keeps what the user approved (`Approval`) in the state directory, the owner's alone. */
 function recordApproval(dir, approval) {
