@@ -7,7 +7,7 @@ import type { Rpc, SolanaRpcApi } from '@solana/kit';
  */
 export declare const ORIENTIM_TREASURY: 'ARzSA3sZGhf5t4UnYrmB3TWyZ5m3Wo1nA9zWBcoiTqLE';
 
-/** The tolerance an agent may choose for its route: 0.1% to 15%, as on the page. */
+/** The tolerance an agent may choose for its route: 0.1% to 15%. */
 export declare const MIN_SLIPPAGE_BPS: 10;
 export declare const MAX_SLIPPAGE_BPS: 1500;
 /** Above this price impact an agent refuses unless its owner allows more. */
@@ -21,6 +21,8 @@ export declare const MAX_FEE_BPS: 30;
 /** The fee limit the check applies: the agent's own, never above MAX_FEE_BPS. */
 export declare function feeLimitBps(maxFeeBps?: number): number;
 export function isSlippageBps(v: unknown): v is number;
+/** A problem that says your RPC did not answer, not that the transaction is wrong: worth running the check again. */
+export declare function isRpcFailure(problem: string): boolean;
 
 /** What the agent asked for, and the most it accepts. */
 export type AgentLimits = {

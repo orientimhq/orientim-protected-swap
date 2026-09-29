@@ -60,6 +60,17 @@ export const MAX_FEE_BPS = 30;
 export const feeLimitBps = (maxFeeBps?: number) =>
   Number.isInteger(maxFeeBps) && (maxFeeBps as number) >= 0 ? Math.min(maxFeeBps as number, MAX_FEE_BPS) : MAX_FEE_BPS;
 export const isSlippageBps = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= MIN_SLIPPAGE_BPS && v <= MAX_SLIPPAGE_BPS;
+/** A limit outside what the skill allows: a usage error (exit 2), not a refusal of this swap. */
+const usageError = (message: string) => Object.assign(new Error(message), { name: 'IntentError' });
+/**
+ * A problem that says your RPC did not answer, not that the transaction is wrong: the same check may
+ * be run again once the RPC answers.
+ */
+export const isRpcFailure = (problem: string) => /^the (chain state could not be read from|swap could not be simulated on) your RPC/.test(problem);
+/** Jupiter refused for too many requests: without a key of its own, the agent shares the keyless limit. */
+const jupiterRefusal = (status: number, asked: string, apiKey?: string) =>
+  `Jupiter answered ${status} when asked for ${asked}`
+  + (status === 429 && !apiKey ? ' (without JUPITER_API_KEY Jupiter allows very few requests: set one, from portal.jup.ag)' : '');
 
 export type AgentLimits = {
   /** The agent's wallet, which signs first and pays. */
@@ -210,7 +221,7 @@ export async function verifyPrepared(
   // A fee in SOL from the wallet is priced by the server; the agent holds it to a price of its own.
   if (p.feeSide === 'sol') {
     if (limits.maxSolFeeLamports === undefined) {
-      problems.push('the Orientim fee is paid in SOL at a price the check cannot see: set maxSolFeeLamports from a price you got yourself (ownSolFeeLimit asks Jupiter)');
+      problems.push('the Orientim fee is paid in SOL at a price the check cannot see: hold it with maxSolFeeLamports from ownSolFeeLimit, which asks Jupiter (a higher limit only in the owner\'s own words)');
     } else if (p.fee > BigInt(limits.maxSolFeeLamports)) {
       problems.push(`the Orientim fee in SOL is ${p.fee} lamports, above your limit of ${limits.maxSolFeeLamports}`);
     }
@@ -225,7 +236,7 @@ export async function verifyPrepared(
   // Orientim takes its fee in SOL first, then USDC or USDT, on whichever side of the swap they are).
   const keeps = p.feeSide === 'output' ? p.minOut - p.fee : p.minOut;
   if (!/^\d{1,20}$/.test(limits.minOut ?? '') || BigInt(limits.minOut) === 0n) {
-    problems.push('no minimum of your own: set minOut from a price you got yourself (ownMinimum asks Jupiter for one)');
+    problems.push('no minimum of your own: take minOut from ownMinimum, which asks Jupiter (a lower one only in the user\'s own words)');
   } else if (keeps < BigInt(limits.minOut)) {
     problems.push(`the minimum ${keeps} is below yours, ${limits.minOut}`);
   }
@@ -379,11 +390,11 @@ export type OwnQuoteArgs = {
 export async function ownMinimum(args: OwnQuoteArgs & { maxPriceImpactBps?: number }): Promise<string> {
   const limit = args.maxPriceImpactBps ?? DEFAULT_MAX_PRICE_IMPACT_BPS;
   if (!(Number.isInteger(limit) && limit >= 0 && limit <= MAX_PRICE_IMPACT_BPS)) {
-    throw new Error(`maxPriceImpactBps must be a whole number of bps from 0 to ${MAX_PRICE_IMPACT_BPS}. Nothing was prepared.`);
+    throw usageError(`maxPriceImpactBps must be a whole number of bps from 0 to ${MAX_PRICE_IMPACT_BPS}. Nothing was sent.`);
   }
   const own = await ownQuote(args);
   if (own.priceImpactBps !== null && own.priceImpactBps > limit) {
-    throw new Error(`Price impact is ${(own.priceImpactBps / 100).toFixed(2)}%, above the limit of ${(limit / 100).toFixed(2)}%: this amount would move the market too much. Nothing was prepared or signed.`);
+    throw new Error(`Price impact is ${(own.priceImpactBps / 100).toFixed(2)}%, above the limit of ${(limit / 100).toFixed(2)}%: this amount would move the market too much. Nothing was sent.`);
   }
   return own.minOut;
 }
@@ -396,7 +407,7 @@ export async function ownMinimum(args: OwnQuoteArgs & { maxPriceImpactBps?: numb
  */
 export async function ownQuote(args: OwnQuoteArgs): Promise<{ minOut: string; outAmount: string; priceImpactBps: number | null; curve: boolean }> {
   if (args.maxBelowBps !== undefined && !(Number.isInteger(args.maxBelowBps) && args.maxBelowBps >= 0 && args.maxBelowBps <= MAX_BELOW_BPS)) {
-    throw new Error(`maxBelowBps must be a whole number of bps from 0 to ${MAX_BELOW_BPS}: a floor further below the market is not accepted. Nothing was prepared.`);
+    throw usageError(`maxBelowBps must be a whole number of bps from 0 to ${MAX_BELOW_BPS}: a floor further below the market is not accepted. Nothing was sent.`);
   }
   const amount = BigInt(args.amountIn);
   const afterFee = amount - (amount * BigInt(feeLimitBps(args.maxFeeBps))) / 10_000n;
@@ -409,7 +420,7 @@ export async function ownQuote(args: OwnQuoteArgs): Promise<{ minOut: string; ou
   const res = await (args.fetchImpl ?? fetch)(url.toString(), {
     headers: args.apiKey ? { 'x-api-key': args.apiKey } : {}, signal: AbortSignal.timeout(15_000),
   });
-  if (!res.ok) throw new Error(`Jupiter answered ${res.status} when asked for your own price`);
+  if (!res.ok) throw new Error(jupiterRefusal(res.status, 'your own price', args.apiKey));
   const r = (await res.json()) as {
     inputMint?: string; outputMint?: string; inAmount?: string; outAmount?: string; priceImpactPct?: string | number;
     swapInstruction?: { accounts?: { pubkey: string }[] };
@@ -532,7 +543,7 @@ export async function ownSolFeeLimit(args: {
   const res = await (args.fetchImpl ?? fetch)(url.toString(), {
     headers: args.apiKey ? { 'x-api-key': args.apiKey } : {}, signal: AbortSignal.timeout(15_000),
   });
-  if (!res.ok) throw new Error(`Jupiter answered ${res.status} when asked for the value of your swap in SOL`);
+  if (!res.ok) throw new Error(jupiterRefusal(res.status, 'the value of your swap in SOL', args.apiKey));
   const r = (await res.json()) as { inputMint?: string; outputMint?: string; inAmount?: string; outAmount?: string };
   if (r.inputMint !== args.inputMint || r.outputMint !== query.outputMint || r.inAmount !== args.amountIn || !/^\d{1,20}$/.test(r.outAmount ?? '')) {
     throw new Error('Jupiter answered for another trade when asked for the value of your swap in SOL');
@@ -540,6 +551,6 @@ export async function ownSolFeeLimit(args: {
   const fee = (BigInt(r.outAmount!) * BigInt(feeLimitBps(args.maxFeeBps))) / 10_000n;
   const limit = fee + fee / 50n;
   // A limit beyond what a Number holds exactly is refused rather than rounded.
-  if (limit > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('the fee in SOL for this amount is beyond an exact limit; set maxSolFeeLamports yourself');
+  if (limit > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('the fee in SOL for this amount is beyond an exact limit: only the owner can set maxSolFeeLamports for it');
   return Number(limit);
 }

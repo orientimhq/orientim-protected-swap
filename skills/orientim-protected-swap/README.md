@@ -30,7 +30,7 @@ one swap may spend of each input mint (`maxAmountIn`; a mint not listed is refus
 swaps may spend in 24 hours (`maxAmountInPerDay`), and the absolute path of the state directory every
 swap keeps its record in (`stateDir`; a daily limit needs one). See Setup in `SKILL.md`.
 
-Slippage is automatic unless you set it, as on the page: 0.5%, or 3% on a Pump.fun curve. Set
+Slippage is automatic unless you set it: 0.5%, or 3% on a Pump.fun curve. Set
 `slippageBps` (10 to 1500) for your own. A swap that would move the market more than 5% is refused
 before anything is prepared (`maxPriceImpactBps` raises it, to 20% at most), and so is a minimum of
 your own more than 20% below Jupiter's price (`floor-too-low`). The example and the command line start

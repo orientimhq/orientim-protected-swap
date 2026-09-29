@@ -13,9 +13,10 @@
  *   orientim-verify resolve    {"signature": "...", "outcome": "..."}  0 settled   1 refused (it could still land, or is not kept)
  *   3 also when the state directory cannot be made, read or written: nothing is prepared or changed until
  *   it can, and when another run from the wallet holds its lock (`busy`: that run may have sent the swap).
- *   orientim-verify check      {"prepared": ..., "intent": {...}}      0 safe to sign   1 refused   (for bots that call the API themselves)
+ *   orientim-verify check      {"prepared": ..., "intent": {...}}      0 safe to sign   1 refused   2 usage   (for bots that call the API themselves)
  *   orientim-verify key-challenge  {"wallet": "<address>"}             0 sign `message` (checked: Orientim's key message for this wallet, nothing else)
  *   orientim-verify key        {"message", "challenge", "signature"}   0 `key`, bound to that wallet   4 Orientim said no
+ *   (both key commands: 1 when Orientim did not answer, with `code` `unavailable`; their `error` is a string, `code` beside it)
  *   A dry run's approval kept in the state directory (`node examples/swap.ts --dry-run`) holds here too:
  *   prepare and finalize refuse a lower minimum, or an expired approval (exit 1, `error.code` `approval`).
  *   2 on any usage or configuration error (a slippageBps, maxPriceImpactBps, maxFeeBps or minOut it cannot use included); 5 when `intent.id` names an order that already swapped or
@@ -40,7 +41,7 @@
  * as `signedTransaction`. Finalize checks everything again before anything is sent, the floor from
  * Jupiter's own price and the hard limits included: `checked` is taken on trust for nothing.
  *
- * A refusal because a service did not answer (Jupiter busy, an RPC or Orientim timing out) carries
+ * A refusal because a service did not answer (Jupiter busy, your RPC or Orientim not answering) carries
  * `error.code` `unavailable` and `retryAfter`: try again later. Any other refusal is not a retry.
  *
  * Environment: SOLANA_RPC_URL (your own RPC; always), ORIENTIM_API_URL and ORIENTIM_API_KEY (prepare,
@@ -54,7 +55,10 @@
  * Finalize can take minutes (it reads the outcome on the chain): a run that is stopped anyway is settled
  * by `recover` before anything new.
  */
-import { createSolanaRpc, getBase58Encoder, getCompiledTransactionMessageDecoder, getSignatureFromTransaction, getTransactionDecoder, getTransactionEncoder } from '@solana/kit';
+import {
+  createSolanaRpc, getBase58Encoder, getCompiledTransactionMessageDecoder, getSignatureFromTransaction, getTransactionDecoder, getTransactionEncoder,
+  isSolanaError, SOLANA_ERROR__RPC__TRANSPORT_HTTP_ERROR,
+} from '@solana/kit';
 import type { Address, Rpc, SignatureBytes, SolanaRpcApi } from '@solana/kit';
 import {
   acquireLock, apiKeyChallenge, OrientimApiError, checkPrepared, createFileStore, finalizeSigned, isApiKeyMessage, pendingFor, PendingSwapError,
@@ -63,7 +67,7 @@ import {
   exitCodeOf, settleOrder, ApprovalError, forgetApproval, heldToApproval, keptApproval,
 } from '../examples/swap.ts';
 import type { Checked, FoundOrder, Intent, OrderBook, OrderRecord, OwnerPolicy, PendingStore, Prepared, SpendLog } from '../examples/swap.ts';
-import { ORIENTIM_TREASURY } from '../lib/orientim-verify.mjs';
+import { isRpcFailure, ORIENTIM_TREASURY } from '../lib/orientim-verify.mjs';
 
 export type CliDeps = {
   rpc: Rpc<SolanaRpcApi>;
@@ -150,15 +154,17 @@ function ownIntent(raw: Intent, deps: CliDeps): Intent | string {
  */
 function unavailable(e: unknown): boolean {
   if (!(e instanceof Error)) return false;
-  return e.name === 'TimeoutError' || e.name === 'AbortError'
+  return e.name === 'TimeoutError' || e.name === 'AbortError' || e.name === 'RpcUnavailableError'
     || (e instanceof TypeError && /fetch failed/i.test(e.message))
+    // Your RPC answered 429 or 5xx: busy or down, not a verdict on the swap.
+    || (isSolanaError(e, SOLANA_ERROR__RPC__TRANSPORT_HTTP_ERROR) && [429, 500, 502, 503, 504].includes(Number(e.context.statusCode)))
     || /^Jupiter answered (429|5\d\d)\b/.test(e.message);
 }
 const unavailableRefusal = (e: unknown, sent?: false): CliResult => ({
   code: 1,
   output: {
     ok: false, ...(sent === false ? { sent } : {}), problems: [messageOf(e)],
-    error: { code: 'unavailable', message: 'A service this needs did not answer, or is busy. Nothing was signed or sent; try again in a few seconds.', retryAfter: 5 },
+    error: { code: 'unavailable', message: 'A service this needs did not answer, or is busy: `problems` names it. Nothing was sent; try again in a few seconds.', retryAfter: 5 },
   },
 });
 /** A store for the commands that keep nothing: any use of it is the error that made it. */
@@ -259,6 +265,7 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
       // A fee in SOL: never above the skill's own limit, whatever the intent says.
       await holdSolFee(intent, prepared, { fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey });
       const problems = await checkPrepared(prepared, intent, deps.rpc, { requestTimeoutMs: deps.requestTimeoutMs });
+      if (problems.length && problems.every(isRpcFailure)) return unavailableRefusal(new Error(problems.join('; ')));
       return { code: problems.length ? 1 : 0, output: { ok: problems.length === 0, problems, yourFloor: intent.minOut, priceImpactBps } };
     } catch (e) {
       return refusal(e);
@@ -350,6 +357,7 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
       return { code: 0, output: { ok: true, ...issued } };
     } catch (e) {
       if (e instanceof OrientimApiError) return { code: 4, output: { ok: false, error: e.message, status: e.status, code: e.code, retryAfter: e.retryAfter } };
+      if (unavailable(e)) return { code: 1, output: { ok: false, error: `Orientim did not answer: ${messageOf(e)}. Nothing was signed; try again in a few seconds.`, code: 'unavailable', retryAfter: 5 } };
       return { code: 1, output: { ok: false, error: messageOf(e) } };
     }
   }
@@ -450,7 +458,7 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
       } catch (e) {
         bookkeepingError = messageOf(e);
       }
-      // What arrived, read from the chain, as the page reports it; never a reason to fail.
+      // What arrived, read from the chain; never a reason to fail.
       const received = result.outcome === 'confirmed'
         ? await receivedFor(deps.rpc, result.signature, prepared, { requestTimeoutMs: deps.requestTimeoutMs, pollMs: deps.pollMs })
         : null;
@@ -546,6 +554,7 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
       intent.minOut = own.minOut;
       await holdSolFee(intent, prepared, { fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey });
       const problems = await checkPrepared(prepared, intent, deps.rpc, { requestTimeoutMs: deps.requestTimeoutMs });
+      if (problems.length && problems.every(isRpcFailure)) return unavailableRefusal(new Error(problems.join('; ')), false);
       if (problems.length) return { code: 1, output: { ok: false, sent: false, problems } };
       let wire = typeof signedTransaction === 'string' ? signedTransaction : '';
       if (!wire) {

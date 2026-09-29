@@ -3,6 +3,23 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.7.5 (2026-09-29)
+
+- An RPC that does not answer during the check is `error.code` `unavailable`, with `retryAfter`,
+  instead of a refusal of the transaction; so is an RPC that answers 429 or 5xx. Other refusals are
+  unchanged.
+- A Jupiter 429 without `JUPITER_API_KEY` says that the key is missing.
+- Refusals after the wallet signed say "Nothing was sent", not "nothing was prepared or signed".
+- A limit outside what the skill allows (`maxBelowBps`, `maxNetworkFeeLamports`,
+  `maxRouteCostLamports`, `maxSolFeeLamports`) is a usage error, exit 2, as documented.
+- The key commands read `Retry-After`, answer `unavailable` when Orientim does not answer, and
+  explain `bad-signature`. An answer from Orientim that is not JSON is `unavailable` (5xx).
+- Error meanings name the cause the check has: `price-moved` also when the route that meets the
+  minimum is too big, `unauthorized` for an expired or revoked key, and `insufficient-sol` as an
+  estimate.
+- A retry refused for a book without `reclaimOrder` no longer suggests a new order id.
+- `fillAgainstQuote` says "within your tolerance" only when it is.
+
 ## 1.7.4 (2026-09-29)
 
 - Adds an opt-in Jupiter fast route-search request to the example, with the same owner floor,
