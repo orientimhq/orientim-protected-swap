@@ -64,7 +64,7 @@ import {
   acquireLock, apiKeyChallenge, OrientimApiError, checkPrepared, createFileStore, finalizeSigned, isApiKeyMessage, pendingFor, PendingSwapError,
   prepareChecked, PriceImpactError, FloorError, ownFloor, receivedFor, recoverPending, redeemApiKey, resolvePending, resumeSigned, takeOrder,
   checkPolicy, loadPolicy, PolicyError, LockBusyError, OrientimOrderError, holdSolFee, releaseHeldLocks, stateDirFor, DEFAULT_STATE_DIR, IntentError,
-  exitCodeOf, settleOrder, ApprovalError, forgetApproval, heldToApproval, keptApproval,
+  exitCodeOf, outcomeMeaning, settleOrder, ApprovalError, forgetApproval, heldToApproval, keptApproval,
 } from '../examples/swap.ts';
 import type { Checked, FoundOrder, Intent, OrderBook, OrderRecord, OwnerPolicy, PendingStore, Prepared, SpendLog } from '../examples/swap.ts';
 import { isRpcFailure, ORIENTIM_TREASURY } from '../lib/orientim-verify.mjs';
@@ -467,7 +467,8 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
         code: exitCodeOf({ outcome: result.outcome as Parameters<typeof exitCodeOf>[0]['outcome'], bookkeepingError }),
         output: {
           ok: result.outcome === 'confirmed', signature: result.signature, outcome: result.outcome,
-          ...(result.refusal ? { refusal: result.refusal } : {}), amounts: prepared.amounts,
+          ...(result.refusal ? { refusal: result.refusal } : {}),
+          meaning: outcomeMeaning(result.outcome as Parameters<typeof outcomeMeaning>[0], result.refusal), amounts: prepared.amounts,
           ...(received !== null ? { received: received.toString() } : {}),
           ...(resumed ? { resumed: true } : {}),
           ...(bookkeepingError ? { bookkeepingError } : {}),
