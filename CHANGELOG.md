@@ -3,6 +3,23 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.8.0 (2026-09-29)
+
+- The owner's policy caps what an agent may choose: `maxSlippageBps` (the route's tolerance),
+  `maxBelowBps` (how far below Jupiter's price the floor may sit) and `maxPriceImpactBps`. A choice
+  beyond them is refused before anything is prepared (`slippage-over-limit`, `floor-over-limit`,
+  `impact-over-limit`); a default beyond them is brought within them.
+- `slippageBps: "auto"` (`--slippage-bps auto`): Jupiter's estimate of the tolerance the trade needs,
+  from 0.5% to 3% (3% on a Pump.fun curve), never above the owner's ceiling. The route is built at
+  that number, and the check holds it there; `checked.intent` carries it.
+- `ORIENTIM_ARCHIVE_RPC_URL` (`archive` in code): an RPC with the full history, a second proof of
+  expiry from the one-time key's own history when your RPC missed the moment the status cache could
+  prove it. An outage near expiry no longer leaves the wallet at `unknown`.
+- A lock held through a long wait (a signer asking a person) is kept fresh, so another worker never
+  judges it left behind. A retry's marker file is removed once the order names the new attempt.
+- An approval from a dry run is found for the same amount however it is written (`05000000`).
+- The transaction's lifetime is stated as about a minute (150 blocks), not 40 seconds.
+
 ## 1.7.9 (2026-09-29)
 
 - Orientim's fee is 0.25%; the check still refuses a fee above 0.3%. The smallest swap is about

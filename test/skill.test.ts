@@ -442,7 +442,7 @@ describe('the skill holds its own state and limits against what it is handed', (
       encoding: 'utf8', env,
     });
     expect(narrow.status).toBe(2);
-    expect(narrow.stderr).toContain('slippageBps must be a whole number of bps from 10 to 1500');
+    expect(narrow.stderr).toContain('slippageBps must be "auto" or a whole number of bps from 10 to 1500');
     const run = spawnSync(process.execPath, [example, '--in', USDC, '--out', BONK, '--amount', '1000000', '--id', 'k'], {
       encoding: 'utf8', env: { ...env, ORIENTIM_STATE_DIR: join(dir, 'state') },
     });

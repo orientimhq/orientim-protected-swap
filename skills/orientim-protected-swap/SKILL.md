@@ -98,6 +98,18 @@ The user provides these; never ask for them in chat, and never print or log them
 
   `allowUnknownPriceImpact` (optional, `true` or `false`) lets a swap go on when Jupiter does not state
   its price impact; without it, such a swap is refused.
+  The owner's ceilings on what the agent may choose (optional, whole bps): `maxSlippageBps` (10 to 1500)
+  is the most tolerance a route may be built at; `maxBelowBps` (0 to 2000) the furthest below Jupiter's
+  price the agent's floor may sit; `maxPriceImpactBps` (0 to 2000) the most price impact accepted. A
+  `slippageBps`, `maxBelowBps`, `minOut` or `maxPriceImpactBps` beyond them is refused before anything
+  is prepared (`slippage-over-limit`, `floor-over-limit`, `impact-over-limit`); a default or an
+  `"auto"` estimate beyond them is brought within them instead. For an agent trading volatile tokens:
+
+  ```json
+  { "maxAmountIn": { "So11111111111111111111111111111111111111112": "500000000" },
+    "maxSlippageBps": 300, "maxBelowBps": 500, "maxPriceImpactBps": 300 }
+  ```
+
   `stateDir` (optional) is the absolute path of the state directory every swap of this wallet uses;
   with it, any other directory is refused. With a daily limit, the state directory must be an absolute
   path (the policy's `stateDir` or `ORIENTIM_STATE_DIR`): the limit counts only the swaps kept there.
@@ -145,7 +157,11 @@ Run or adapt `examples/swap.ts`. Do not write the flow from scratch, and never d
    is refused (`insufficient-sol`). Hold the fee to a price of your own with `maxSolFeeLamports`
    (`ownSolFeeLimit` from `lib/orientim-verify.mjs` asks Jupiter; the example does it).
    Set `slippageBps` (10 to 1500) for the route's tolerance, as the owner or bot chooses; without it,
-   0.5%, or 3% on a Pump.fun curve. The price impact of your own quote is held to `maxPriceImpactBps`
+   0.5%, or 3% on a Pump.fun curve. `"auto"` asks Jupiter how much this trade needs and builds at that,
+   from 0.5% to 3% (3% on a curve): for memecoins and other volatile tokens, where 0.5% is often refused
+   as the price moves. Never above the owner's `maxSlippageBps`. After a swap refused or reverted for
+   its price, retry with `"auto"` or a wider tolerance only within the owner's ceiling, and prefer a
+   smaller amount to a wider tolerance: a wide tolerance is what a sandwich bot takes. The price impact of your own quote is held to `maxPriceImpactBps`
    (default 500): above it the swap is refused before anything is prepared (`PriceImpactError`), and
    only the user or the agent's owner may raise it. A quote from Jupiter without a price impact is
    refused too: unknown is not none. Only the owner's policy (`allowUnknownPriceImpact: true`) lets
@@ -182,7 +198,7 @@ Run or adapt `examples/swap.ts`. Do not write the flow from scratch, and never d
    transaction's id is now known: it is the wallet's signature (`getSignatureFromTransaction`).
    **Keep it before finalize** (the example's `onSigned`); it is how you learn what happened if an
    answer is lost or the process stops.
-5. **Finalize** promptly: the transaction lives 150 blocks, about 40 seconds at today's block times.
+5. **Finalize** promptly: the transaction lives 150 blocks, about a minute at today's block times.
    With fewer than 30 blocks left (`lastValidBlockHeight` minus your RPC's block height) prepare
    again instead; the example does. `POST /api/v1/finalize` with `{ ticket, signedTransaction }`.
    Orientim looks the transaction up first (a repeated finalize answers for the same transaction and
@@ -198,7 +214,11 @@ Run or adapt `examples/swap.ts`. Do not write the flow from scratch, and never d
    RPC's node still holds every block the swap could have landed in, some 30 seconds after its
    lifetime (the example passes `confirm` the height you signed at). Later it proves nothing: the
    swap stays `unknown` until you look it up in a full history (an explorer) and settle it with
-   `orientim-verify resolve` or `resolvePending`. A swap is done only when confirmed (a supermajority
+   `orientim-verify resolve` or `resolvePending`. An unattended bot can name a second RPC that keeps the
+   chain's full history (`ORIENTIM_ARCHIVE_RPC_URL`, or `archive` in code): when its own RPC missed that
+   window, the archive proves expiry from the one-time key's own history, which no other swap signs, so
+   an outage near expiry does not leave the wallet stopped at `unknown`. Name only an archive that keeps
+   all of its history. A swap is done only when confirmed (a supermajority
    voted for it; wait for `finalized` if you need rooted finality); `sent` is not done.
 7. **Prepare again only when the chain says the first one can no longer land.** A `rejected` status
    or an error from finalize speaks for that one request: an earlier finalize whose answer was lost
@@ -346,8 +366,9 @@ that can start a process: JSON in on stdin, JSON out on stdout, an exit code. Th
 and signs one message itself; the command does the rest with the example's own code: the floor, the
 check on your RPC, the record kept before finalize, finalize, and the outcome read on the chain.
 It needs Node 22.18 or later and `npm ci` in this folder, and reads `SOLANA_RPC_URL`,
-`ORIENTIM_API_URL`, `ORIENTIM_API_KEY`, `JUPITER_API_KEY`, `ORIENTIM_POLICY` (see Setup) and `ORIENTIM_STATE_DIR` (default
-`./.orientim-state`) from the environment.
+`ORIENTIM_API_URL`, `ORIENTIM_API_KEY`, `JUPITER_API_KEY`, `ORIENTIM_POLICY` (see Setup), `ORIENTIM_STATE_DIR` (default
+`./.orientim-state`) and, optionally, `ORIENTIM_ARCHIVE_RPC_URL` (an RPC with the full history, a second
+proof of expiry; see The flow) from the environment.
 
 - **`ORIENTIM_STATE_DIR` must outlive the bot**: an absolute path on a disk that stays across restarts
   (a volume, not a container's own file system), shared by every process of the same wallet. It holds
@@ -373,7 +394,10 @@ Every exit 3 carries `recoveryRequired: true`. `sent: false` says only that this
 never that an earlier call for the same order did not: act on the exit code and `recoveryRequired`.
 
 `slippageBps` and `maxPriceImpactBps` are optional: without them the
-tolerance is automatic (0.5%, or 3% on a Pump.fun curve) and a price impact above 5% is refused.
+tolerance is Orientim's default (0.5%, or 3% on a Pump.fun curve) and a price impact above 5% is refused.
+`slippageBps: "auto"` asks Jupiter for the trade's own tolerance (0.5% to 3%); `prepare`'s `checked.intent`
+then carries the number it was built at, and `check` needs that number, not `"auto"`. The owner's policy
+refusals include `slippage-over-limit`, `floor-over-limit` and `impact-over-limit`.
 
 `message` is the transaction's message in base64: sign those bytes with the wallet's ed25519 key and
 pass the 64-byte signature in base58 (or the whole signed transaction in base64 as
@@ -404,7 +428,7 @@ In Rust, `keypair.sign_message(&message).to_string()` gives the same base58 sign
 ## The example's exit codes
 
 `node examples/swap.ts` exits 0 only for a confirmed swap; 1 when nothing was swapped (refused,
-failed or expired); 2 on a usage or configuration error, a `--slippage-bps` outside 10 to 1500, a
+failed or expired, or refused by the owner's policy); 2 on a usage or configuration error, a `--slippage-bps` other than `auto` or 10 to 1500, a
 `--max-price-impact-bps` outside 0 to 2000, and a policy, state directory or keypair file it cannot
 use included; 3 when an outcome is unknown, a record
 could not be written, or another run from this wallet holds its lock: settle first (run it again

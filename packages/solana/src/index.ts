@@ -21,7 +21,7 @@ export type SolanaRpc = Rpc<SolanaRpcApi>;
 /**
  * The HTTP status of a failed RPC call. Read from the error's context, never its text: a
  * production build of kit replaces every message with "Solana error #<code>", so a test on the
- * words "429" or "Too Many Requests" never matches in the page users actually load.
+ * words "429" or "Too Many Requests" never matches in the build that actually runs.
  */
 export function httpStatusOf(e: unknown): number | null {
   if (!isSolanaError(e, SOLANA_ERROR__RPC__TRANSPORT_HTTP_ERROR)) return null;

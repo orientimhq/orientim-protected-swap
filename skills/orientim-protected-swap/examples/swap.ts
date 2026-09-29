@@ -22,11 +22,15 @@
  *   ORIENTIM_TREASURY=<address>                     (optional: only for another Orientim deployment;
  *                                                Orientim's own treasury is pinned in the skill)
  *   JUPITER_API_KEY=...                          (for your own price: Jupiter throttles keyless calls after one or two)
- *   ORIENTIM_POLICY=/path/to/policy.json         (optional: the owner's limits per swap and per day; see OwnerPolicy)
+ *   ORIENTIM_POLICY=/path/to/policy.json         (optional: the owner's limits per swap and per day, and the
+ *                                                ceilings on tolerance, floor and price impact; see OwnerPolicy)
+ *   ORIENTIM_ARCHIVE_RPC_URL=https://<full history>  (optional: a second proof that a swap expired when your
+ *                                                RPC missed the moment it could prove it; see confirm)
  *
- *   node swap.ts --in <mint> --out <mint> --amount <base units> --id <order id> [--slippage-bps N] [--max-price-impact-bps N]
+ *   node swap.ts --in <mint> --out <mint> --amount <base units> --id <order id> [--slippage-bps N|auto] [--max-price-impact-bps N]
  *                [--min-out <base units>] [--max-below-bps N] [--max-fee-bps 30] [--max-route-cost-lamports N] [--accept-cost-bps N] [--v1]
- *   (without --slippage-bps the tolerance is automatic: 0.5%, or 3% on a Pump.fun curve; above 5% price impact, refused)
+ *   (without --slippage-bps the tolerance is Orientim's default: 0.5%, or 3% on a Pump.fun curve; with auto,
+ *   Jupiter's estimate for the trade, 0.5% to 3%; never above the owner's maxSlippageBps; above 5% price impact, refused)
  *   node swap.ts ... --owner <address> --dry-run      prepare and verify only: nothing is signed
  *
  * Unattended, the command line keeps every signed swap in a state directory (the policy's stateDir,
@@ -37,7 +41,7 @@
  * when something must be settled first, and 5 when this order (--id) already swapped or may still land.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { chmodSync, closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync } from 'node:fs';
+import { chmodSync, closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -92,10 +96,13 @@ export type Intent = {
   acceptCostBps?: string;
   /**
    * The route's slippage tolerance, as the owner or bot chooses it: how far below the quote the
-   * swap may fill, 10 to 1500 bps. Unset: 0.5%, or 3% on a Pump.fun bonding curve. The route is built
+   * swap may fill, 10 to 1500 bps. Unset: 0.5%, or 3% on a Pump.fun bonding curve. `"auto"`: the
+   * tolerance Jupiter estimates for this trade, from 0.5% to 3% (3% on a curve). The route is built
    * at it, and the check holds the route to it; your own floor follows it (1.5% below, 2% on a curve).
+   * Never above the owner's `maxSlippageBps` (`OwnerPolicy`): a chosen one above it is refused, a
+   * default or an estimate above it is lowered to it.
    */
-  slippageBps?: number;
+  slippageBps?: number | 'auto';
   /** Opt in to Jupiter's beta fast route search when the deployment enables it. */
   routingMode?: 'standard' | 'fast';
   /**
@@ -122,7 +129,7 @@ export type Prepared = {
   wallet: string;
   temporaryAuthority: string;
   lastValidBlockHeight: string;
-  /** Blocks left in the transaction's life when prepare answered (150 at most, about 40 s). */
+  /** Blocks left in the transaction's life when prepare answered (150 at most, about a minute). */
   blocksLeft?: string;
   /**
    * `fee` is in `feeMint`: SOL first, then USDC or USDT, on whichever side; otherwise the input token.
@@ -141,6 +148,8 @@ export type Prepared = {
     /** Orientim's fee when it is paid in SOL from the wallet; 0 otherwise. */
     solFee?: { lamports: string; destination: string | null };
   };
+  /** The route's slippage tolerance the transaction was built at, in bps; the check holds it to yours. */
+  slippageBps?: number;
   /** What the transaction was built against; held to your intent by the check, never trusted. */
   policy: Record<string, unknown>;
 };
@@ -188,7 +197,6 @@ export const ERROR_MEANINGS: Readonly<Record<string, string>> = {
   'simulation-failed': 'The swap failed in simulation, so nothing was built.',
   'bad-request': 'Orientim could not read the request.',
   unauthorized: 'The API key was refused: missing, unknown, expired or revoked. Get a new one for this wallet (requestApiKey, or orientim-verify key-challenge then key).',
-  'not-found': 'Orientim does not know this request.',
   'wrong-wallet': 'This API key belongs to another wallet: a key prepares swaps for its own wallet only. Use this wallet\'s own key (requestApiKey, or orientim-verify key-challenge then key).',
   'invalid-ticket': 'Orientim did not issue this ticket to this API key. Finalize with the ticket prepare returned, under the same key.',
   'not-enabled': 'This deployment does not offer what was asked (such as a v1 transaction). Ask without it.',
@@ -296,7 +304,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.7.9';
+export const SKILL_VERSION = '1.8.0';
 
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res: Response) => {
@@ -487,12 +495,14 @@ export async function checkPrepared(p: Prepared, intent: Intent, rpc: Rpc<Solana
     if (differ.length) problems.push(`the figures stated differ from the policy the transaction is checked against: ${differ.join(', ')}`);
   }
   // The answer's own claims are not evidence: what the bytes do is decided by the verifier.
-  problems.push(...await verifyPrepared(p, { ...intent, minOut: intent.minOut ?? '' }, rpc, opts));
+  // "auto" is resolved to a number before prepare (`ownFloor`): the route is held to that number.
+  if (intent.slippageBps === 'auto') return [...problems, 'slippageBps is "auto": check against the number of bps the swap was prepared with'];
+  problems.push(...await verifyPrepared(p, { ...intent, slippageBps: intent.slippageBps, minOut: intent.minOut ?? '' }, rpc, opts));
   return problems;
 }
 
 /**
- * The transaction lives 150 blocks, about 40 s. Finalize only with this many
+ * The transaction lives 150 blocks, about a minute. Finalize only with this many
  * left, so that it can still land; otherwise prepare again.
  */
 export const MIN_BLOCKS_TO_FINALIZE = 30n;
@@ -590,6 +600,46 @@ async function lookUp(rpc: Rpc<SolanaRpcApi>, signature: string, bounded: () => 
   };
 }
 
+/** E, the transaction's other signer: the wallet pays, so it signs first, and there are exactly two. */
+export function temporaryAuthorityOf(signedTransaction: string): string | undefined {
+  try {
+    const message = getCompiledTransactionMessageDecoder().decode(getTransactionDecoder().decode(Buffer.from(signedTransaction, 'base64')).messageBytes);
+    const signers = message.staticAccounts.slice(0, message.header.numSignerAccounts);
+    return signers.length === 2 ? signers[1] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A list this long may be cut: it proves nothing about what is not on it. */
+const ARCHIVE_PAGE = 1_000;
+
+/**
+ * The second proof that a transaction never landed, from an RPC with the chain's full history that
+ * the owner named (`ORIENTIM_ARCHIVE_RPC_URL`): its finalized height is past the lifetime, it has no
+ * status for the signature, and the one-time key E, which no other transaction of Orientim's signs,
+ * lists no such signature at a slot at least as late. Its confirmed status, if it has one, is the
+ * outcome instead. Null when it proves nothing. Used when your RPC does not answer, or can no longer
+ * prove it (`confirm`). An archive that trims its history proves nothing: name only one that keeps all of it.
+ */
+async function archiveOutcome(
+  archive: Rpc<SolanaRpcApi>, signature: string, temporaryAuthority: string, lastValidBlockHeight: bigint,
+  bounded: () => { abortSignal: AbortSignal },
+): Promise<'expired' | 'confirmed' | { err: unknown } | null> {
+  const { value: [status] } = await archive.getSignatureStatuses([signature as never], { searchTransactionHistory: true }).send(bounded());
+  if (status) {
+    if (status.confirmationStatus !== 'confirmed' && status.confirmationStatus !== 'finalized') return null;
+    return status.err ? { err: status.err } : 'confirmed';
+  }
+  const finalized = await archive.getEpochInfo({ commitment: 'finalized' }).send(bounded());
+  const height = (finalized as { blockHeight?: bigint | number }).blockHeight;
+  if (height === undefined || BigInt(height) <= lastValidBlockHeight) return null;
+  const listed = await archive.getSignaturesForAddress(temporaryAuthority as Address, {
+    commitment: 'finalized', minContextSlot: BigInt(finalized.absoluteSlot), limit: ARCHIVE_PAGE,
+  }).send(bounded());
+  return listed.length < ARCHIVE_PAGE && !listed.some(x => x.signature === signature) ? 'expired' : null;
+}
+
 /**
  * Settles one transaction on your own RPC, by its signature, until it lands, can no longer land, or
  * `maxWaitMs` passes. With `signedTransaction` (the fully signed bytes, checked to be this very
@@ -603,12 +653,19 @@ async function lookUp(rpc: Rpc<SolanaRpcApi>, signature: string, bounded: () => 
  * failed, so the outcome stays `unknown` and is returned as soon as that is clear.
  * Without `earliestHeight` nothing is proven expired. Every request is bounded by what is left of
  * `maxWaitMs`, so one that never answers cannot hold the agent past it.
+ *
+ * With `archive` (an RPC with the full history, that the owner names) and `temporaryAuthority`, a
+ * swap past that window can still be proven expired, twice as well (`archiveProvesNeverLanded`):
+ * a bot whose RPC was down while the status cache could prove it is not left with `unknown`.
  */
 export async function confirm(
   rpc: Rpc<SolanaRpcApi>,
   signature: string,
   lastValidBlockHeight: bigint,
-  opts: { signedTransaction?: string; pollMs?: number; maxWaitMs?: number; requestTimeoutMs?: number; earliestHeight?: bigint; onFailed?: (err: unknown) => void } = {},
+  opts: {
+    signedTransaction?: string; pollMs?: number; maxWaitMs?: number; requestTimeoutMs?: number; earliestHeight?: bigint; onFailed?: (err: unknown) => void;
+    archive?: Rpc<SolanaRpcApi>; temporaryAuthority?: string;
+  } = {},
 ): Promise<Outcome> {
   const pollMs = opts.pollMs ?? 1_000;
   const deadline = Date.now() + (opts.maxWaitMs ?? 180_000);
@@ -620,9 +677,12 @@ export async function confirm(
   let pastLifetime = false;
   let empty = 0;
   let unprovable = 0;
+  let archived = 0;
+  const canAskArchive = !!opts.archive && !!opts.temporaryAuthority;
   let lastSend = 0;
   while (Date.now() < deadline) {
     // A failed read says nothing about the transaction: keep reading until the deadline.
+    let read = false;
     try {
       if (!pastLifetime) {
         const [status] = (await rpc.getSignatureStatuses([signature as never], { searchTransactionHistory: false }).send(bounded())).value;
@@ -632,17 +692,28 @@ export async function confirm(
           lastSend = Date.now();
           await rpc.sendTransaction(opts.signedTransaction as never, { encoding: 'base64', skipPreflight: true, maxRetries: 0n }).send(bounded()).catch(() => undefined);
         }
+        read = !pastLifetime;
       } else {
         // It can no longer be included: one coherent view of the full history.
         const { status: late, view } = await lookUp(rpc, signature, bounded);
         if (settled(late)) return late!.err ? failed(late!.err) : 'confirmed';
-        if (!late && earliest !== undefined && provesNeverLanded(view, lastValidBlockHeight, earliest) && ++empty >= 2) return 'expired';
-        // Past the window in which "no record" proves anything, waiting longer proves nothing either.
-        const over = view.coveredHeight !== null && view.coveredHeight > lastValidBlockHeight;
-        if (!late && over && (earliest === undefined || pastProof(view, earliest)) && ++unprovable >= 2) return 'unknown';
+        if (late) read = true;
+        else {
+          if (earliest !== undefined && provesNeverLanded(view, lastValidBlockHeight, earliest) && ++empty >= 2) return 'expired';
+          const over = view.coveredHeight !== null && view.coveredHeight > lastValidBlockHeight;
+          // Past the window in which "no record" proves anything, waiting longer proves nothing either,
+          // unless the owner's archive can prove it (below).
+          if (over && (earliest === undefined || pastProof(view, earliest)) && ++unprovable >= (canAskArchive ? 3 : 2)) return 'unknown';
+        }
       }
     } catch {
       // keep reading
+    }
+    // Your RPC did not answer, or no longer can prove it: the owner's archive, if one was named.
+    if (!read && canAskArchive) {
+      const proven = await archiveOutcome(opts.archive!, signature, opts.temporaryAuthority!, lastValidBlockHeight, bounded).catch(() => null);
+      if (proven === 'expired' && ++archived >= 2) return 'expired';
+      if (proven && proven !== 'expired') return proven === 'confirmed' ? 'confirmed' : failed(proven.err);
     }
     await wait(Math.max(0, Math.min(pastLifetime ? pollMs * 2 : pollMs, deadline - Date.now())));
   }
@@ -823,7 +894,27 @@ export type OwnerPolicy = {
    * swap is refused: an unknown impact is not a small one. Only the owner may set it.
    */
   allowUnknownPriceImpact?: boolean;
+  /**
+   * The most slippage tolerance a route may be built at, in bps (10 to 1500). The agent chooses
+   * within it: a `slippageBps` above it is refused (`slippage-over-limit`); Orientim's default (3% on
+   * a Pump.fun curve) and an `"auto"` estimate above it are lowered to it.
+   */
+  maxSlippageBps?: number;
+  /**
+   * The furthest below Jupiter's own price the agent's floor may sit, in bps (0 to 2000): a
+   * `maxBelowBps` or a `minOut` further below is refused (`floor-over-limit`), a default further
+   * below is raised to it. Without it the skill's own limit holds (`MAX_BELOW_BPS`, 20%).
+   */
+  maxBelowBps?: number;
+  /**
+   * The most price impact a swap may have, in bps (0 to 2000): a `maxPriceImpactBps` above it is
+   * refused (`impact-over-limit`), and the default of 5% is lowered to it.
+   */
+  maxPriceImpactBps?: number;
 };
+
+/** The owner's ceilings on what an intent may choose: the route's tolerance, the floor, the price impact. */
+export type OwnerCeilings = Pick<OwnerPolicy, 'maxSlippageBps' | 'maxBelowBps' | 'maxPriceImpactBps' | 'allowUnknownPriceImpact'>;
 
 const DAY_MS = 24 * 60 * 60_000;
 
@@ -837,7 +928,7 @@ export function loadPolicy(path: string): OwnerPolicy {
   }
   const bad = (why: string) => new ConfigError(`The owner's policy ${path} ${why}. Nothing was prepared.`);
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw bad('is not a JSON object');
-  const known = ['maxAmountIn', 'maxAmountInPerDay', 'stateDir', 'allowUnknownPriceImpact'];
+  const known = ['maxAmountIn', 'maxAmountInPerDay', 'stateDir', 'allowUnknownPriceImpact', 'maxSlippageBps', 'maxBelowBps', 'maxPriceImpactBps'];
   const unknown = Object.keys(raw).filter(k => !known.includes(k));
   if (unknown.length) throw bad(`has fields it does not know: ${unknown.join(', ')}`);
   const limits = (name: string, value: unknown): Record<string, string> => {
@@ -855,11 +946,23 @@ export function loadPolicy(path: string): OwnerPolicy {
   if (policy.allowUnknownPriceImpact !== undefined && typeof policy.allowUnknownPriceImpact !== 'boolean') {
     throw bad('needs allowUnknownPriceImpact as true or false');
   }
+  const ceiling = (name: string, least: number, most: number): number | undefined => {
+    const v = policy[name];
+    if (v === undefined) return undefined;
+    if (!(typeof v === 'number' && Number.isInteger(v) && v >= least && v <= most)) throw bad(`needs ${name} as a whole number of bps from ${least} to ${most}`);
+    return v;
+  };
+  const maxSlippageBps = ceiling('maxSlippageBps', MIN_SLIPPAGE_BPS, MAX_SLIPPAGE_BPS);
+  const maxBelowBps = ceiling('maxBelowBps', 0, MAX_BELOW_BPS);
+  const maxPriceImpactBps = ceiling('maxPriceImpactBps', 0, MAX_PRICE_IMPACT_BPS);
   return {
     maxAmountIn: limits('maxAmountIn', policy.maxAmountIn),
     ...(policy.maxAmountInPerDay !== undefined ? { maxAmountInPerDay: limits('maxAmountInPerDay', policy.maxAmountInPerDay) } : {}),
     ...(policy.stateDir !== undefined ? { stateDir: policy.stateDir as string } : {}),
     ...(policy.allowUnknownPriceImpact === true ? { allowUnknownPriceImpact: true } : {}),
+    ...(maxSlippageBps !== undefined ? { maxSlippageBps } : {}),
+    ...(maxBelowBps !== undefined ? { maxBelowBps } : {}),
+    ...(maxPriceImpactBps !== undefined ? { maxPriceImpactBps } : {}),
   };
 }
 
@@ -902,8 +1005,10 @@ export type Approval = { owner: string; inputMint: string; outputMint: string; a
 /** How long a dry run's approval holds: after that, run the dry run again and ask again. */
 export const APPROVAL_MS = 10 * 60_000;
 type ApprovalKey = Pick<Approval, 'owner' | 'inputMint' | 'outputMint' | 'amountIn'>;
+/** An amount as one spelling: "05000000" and "5000000" are the same amount, and find the same approval. */
+const sameAmount = (amount: string) => (/^\d{1,20}$/.test(amount) ? BigInt(amount).toString() : amount);
 const approvalFile = (dir: string, k: ApprovalKey) =>
-  join(dir, `approval-${createHash('sha256').update(`${k.owner}:${k.inputMint}:${k.outputMint}:${k.amountIn}`).digest('hex').slice(0, 40)}.json`);
+  join(dir, `approval-${createHash('sha256').update(`${k.owner}:${k.inputMint}:${k.outputMint}:${sameAmount(k.amountIn)}`).digest('hex').slice(0, 40)}.json`);
 
 /** Keeps what the user approved (`Approval`) in the state directory, the owner's alone. */
 export function recordApproval(dir: string, approval: Approval): void {
@@ -927,7 +1032,8 @@ export function approvalFor(dir: string, key: ApprovalKey): Approval | null {
   } catch {
     return null;
   }
-  const same = a.owner === key.owner && a.inputMint === key.inputMint && a.outputMint === key.outputMint && a.amountIn === key.amountIn;
+  const same = a.owner === key.owner && a.inputMint === key.inputMint && a.outputMint === key.outputMint
+    && typeof a.amountIn === 'string' && sameAmount(a.amountIn) === sameAmount(key.amountIn);
   if (!same || typeof a.minOut !== 'string' || !/^\d{1,20}$/.test(a.minOut) || typeof a.expiresAt !== 'number') return null;
   return a as Approval;
 }
@@ -972,7 +1078,7 @@ export function keptApproval(dir: string, key: ApprovalKey, now = Date.now()): A
 
 /** The swap is outside the owner's policy: refused before anything was prepared or sent. */
 export class PolicyError extends Error {
-  readonly code: 'mint-not-allowed' | 'amount-over-limit' | 'daily-limit';
+  readonly code: 'mint-not-allowed' | 'amount-over-limit' | 'daily-limit' | 'slippage-over-limit' | 'floor-over-limit' | 'impact-over-limit';
   readonly limit?: string;
   readonly spent?: string;
   constructor(code: PolicyError['code'], message: string, figures: { limit?: string; spent?: string } = {}) {
@@ -1112,14 +1218,18 @@ export function createFileStore(dir: string): PendingStore & OrderBook & SpendLo
     },
     async reclaimOrder(id, prior, record) {
       // One retry per earlier attempt: the worker that creates this marker first takes the order.
+      const marker = `${orderFile(id)}.retry-${prior.signature}`;
       try {
-        writeDurably(`${orderFile(id)}.retry-${prior.signature}`, '', 'wx');
+        writeDurably(marker, '', 'wx');
       } catch {
         return false;
       }
       const now = readOrder(id);
       if (!now || now.signature !== prior.signature || now.state !== prior.state) return false;
       writeOrder(id, record);
+      // Once the order names the new attempt, a worker still holding `prior` finds it changed and
+      // stands down: the marker has done its work and is removed, so markers do not pile up.
+      rmSync(marker, { force: true });
       return true;
     },
     async put(s) {
@@ -1201,13 +1311,15 @@ export async function settleOrder(orders: OrderBook, id: string, record: OrderRe
  * pending record stays for the next run.
  */
 export async function recoverPending(
-  store: PendingStore, rpc: Rpc<SolanaRpcApi>, opts: { pollMs?: number; maxWaitMs?: number; orders?: OrderBook } = {},
+  store: PendingStore, rpc: Rpc<SolanaRpcApi>, opts: { pollMs?: number; maxWaitMs?: number; orders?: OrderBook; archive?: Rpc<SolanaRpcApi> } = {},
 ): Promise<{ settled: { signature: string; outcome: Outcome }[]; unknown: string[]; bookkeepingErrors: { signature: string; error: string }[] }> {
   const settled: { signature: string; outcome: Outcome }[] = [];
   const unknown: string[] = [];
   const bookkeepingErrors: { signature: string; error: string }[] = [];
   for (const s of await store.list()) {
-    const outcome = await confirm(rpc, s.signature, lastBlockOf(s), { ...opts, earliestHeight: s.signedHeight });
+    const outcome = await confirm(rpc, s.signature, lastBlockOf(s), {
+      ...opts, earliestHeight: s.signedHeight, temporaryAuthority: temporaryAuthorityOf(s.signedTransaction),
+    });
     if (outcome === 'unknown') {
       unknown.push(s.signature);
       continue;
@@ -1374,7 +1486,21 @@ export function acquireLock(dir: string, owner: string, staleMs = 10 * 60_000): 
       throw busy();
     }
   }
+  // Held, the lock is kept fresh: a swap that waits long (a signer asking a person, a slow RPC)
+  // outlives `staleMs` without another worker judging its lock left behind.
+  const beat = setInterval(() => {
+    try {
+      if (tokenAt(path) === token) {
+        const now = new Date();
+        utimesSync(path, now, now);
+      }
+    } catch {
+      // Unwritable for a moment: the next beat tries again.
+    }
+  }, Math.max(1_000, Math.floor(staleMs / 3)));
+  beat.unref?.();
   const release = () => {
+    clearInterval(beat);
     heldLocks.delete(release);
     if (tokenAt(path) === token) rmSync(path, { force: true });
   };
@@ -1389,8 +1515,8 @@ export function acquireLock(dir: string, owner: string, staleMs = 10 * 60_000): 
 export class FloorError extends Error {
   readonly minOut: string;
   readonly lowest: string;
-  constructor(minOut: string, lowest: string) {
-    super(`The minimum ${minOut} is more than ${MAX_BELOW_BPS / 100}% below the market's own price; the lowest accepted is ${lowest}. Nothing was sent.`);
+  constructor(minOut: string, lowest: string, belowBps = MAX_BELOW_BPS) {
+    super(`The minimum ${minOut} is more than ${belowBps / 100}% below the market's own price; the lowest accepted is ${lowest}. Nothing was sent.`);
     this.minOut = minOut;
     this.lowest = lowest;
   }
@@ -1399,22 +1525,37 @@ export class FloorError extends Error {
 /**
  * Your floor and the market's price impact, from a price asked of Jupiter directly, whatever the
  * intent says. Without `minOut`, the floor is Jupiter's price
- * less `maxBelowBps`; with one, it may be higher than that, never more than `MAX_BELOW_BPS` below
- * the market. The price impact is held to `maxPriceImpactBps`, itself at most `MAX_PRICE_IMPACT_BPS`.
+ * less `maxBelowBps`; with one, it may be higher than that, never more than `MAX_BELOW_BPS` (or the
+ * owner's `maxBelowBps`) below the market. The price impact is held to `maxPriceImpactBps`, itself at
+ * most `MAX_PRICE_IMPACT_BPS` and the owner's own. `slippageBps` is the tolerance to build the route
+ * at: the intent's, Jupiter's estimate on `"auto"`, or the owner's ceiling where Orientim's default is
+ * above it; undefined leaves Orientim's default.
  */
 export async function ownFloor(
   intent: Intent,
-  deps: { rpc: Rpc<SolanaRpcApi>; fetchImpl?: Fetch; jupiterApiKey?: string; requestTimeoutMs?: number; policy?: Pick<OwnerPolicy, 'allowUnknownPriceImpact'> },
-): Promise<{ minOut: string; priceImpactBps: number | null }> {
+  deps: { rpc: Rpc<SolanaRpcApi>; fetchImpl?: Fetch; jupiterApiKey?: string; requestTimeoutMs?: number; policy?: OwnerCeilings },
+): Promise<{ minOut: string; priceImpactBps: number | null; slippageBps?: number }> {
   if (intent.routingMode !== undefined && intent.routingMode !== 'standard' && intent.routingMode !== 'fast') {
     throw new IntentError('routingMode must be standard or fast. Nothing was sent.');
   }
-  if (intent.slippageBps !== undefined && !isSlippageBps(intent.slippageBps)) {
-    throw new IntentError(`slippageBps must be a whole number of bps from ${MIN_SLIPPAGE_BPS} to ${MAX_SLIPPAGE_BPS}. Nothing was sent.`);
+  const auto = intent.slippageBps === 'auto';
+  if (intent.slippageBps !== undefined && !auto && !isSlippageBps(intent.slippageBps)) {
+    throw new IntentError(`slippageBps must be "auto" or a whole number of bps from ${MIN_SLIPPAGE_BPS} to ${MAX_SLIPPAGE_BPS}. Nothing was sent.`);
   }
-  const maxImpact = intent.maxPriceImpactBps ?? DEFAULT_MAX_PRICE_IMPACT_BPS;
+  const owner = deps.policy ?? {};
+  const chosen = auto ? undefined : intent.slippageBps as number | undefined;
+  if (chosen !== undefined && owner.maxSlippageBps !== undefined && chosen > owner.maxSlippageBps) {
+    throw new PolicyError('slippage-over-limit', `A slippage tolerance of ${chosen} bps is above the owner's limit of ${owner.maxSlippageBps}.`, { limit: String(owner.maxSlippageBps) });
+  }
+  if (intent.maxBelowBps !== undefined && owner.maxBelowBps !== undefined && intent.maxBelowBps > owner.maxBelowBps) {
+    throw new PolicyError('floor-over-limit', `A floor ${intent.maxBelowBps} bps below the market is further than the owner's limit of ${owner.maxBelowBps}.`, { limit: String(owner.maxBelowBps) });
+  }
+  const maxImpact = intent.maxPriceImpactBps ?? Math.min(DEFAULT_MAX_PRICE_IMPACT_BPS, owner.maxPriceImpactBps ?? DEFAULT_MAX_PRICE_IMPACT_BPS);
   if (!(Number.isInteger(maxImpact) && maxImpact >= 0 && maxImpact <= MAX_PRICE_IMPACT_BPS)) {
     throw new IntentError(`maxPriceImpactBps must be a whole number of bps from 0 to ${MAX_PRICE_IMPACT_BPS}. Nothing was sent.`);
+  }
+  if (owner.maxPriceImpactBps !== undefined && maxImpact > owner.maxPriceImpactBps) {
+    throw new PolicyError('impact-over-limit', `A price impact limit of ${maxImpact} bps is above the owner's limit of ${owner.maxPriceImpactBps}.`, { limit: String(owner.maxPriceImpactBps) });
   }
   if (intent.maxFeeBps !== undefined && feeLimitBps(intent.maxFeeBps) !== intent.maxFeeBps) {
     throw new IntentError(`maxFeeBps must be a whole number of bps from 0 to ${feeLimitBps()}, Orientim's pinned fee. Nothing was sent.`);
@@ -1427,15 +1568,29 @@ export async function ownFloor(
   }
   const own = await ownQuote({
     inputMint: intent.inputMint, outputMint: intent.outputMint, amountIn: intent.amountIn, taker: intent.owner,
-    maxFeeBps: intent.maxFeeBps, maxBelowBps: intent.maxBelowBps, slippageBps: intent.slippageBps, apiKey: deps.jupiterApiKey, fetchImpl: deps.fetchImpl,
+    maxFeeBps: intent.maxFeeBps, maxBelowBps: intent.maxBelowBps, slippageBps: chosen, autoSlippage: auto, apiKey: deps.jupiterApiKey, fetchImpl: deps.fetchImpl,
+    ceilings: { maxSlippageBps: owner.maxSlippageBps, maxBelowBps: owner.maxBelowBps },
     inputTax: await inputTransferFee(deps.rpc, intent.inputMint, deps.requestTimeoutMs),
-    allowUnknownImpact: deps.policy?.allowUnknownPriceImpact === true,
+    allowUnknownImpact: owner.allowUnknownPriceImpact === true,
   });
   if (own.priceImpactBps !== null && own.priceImpactBps > maxImpact) throw new PriceImpactError(own.priceImpactBps, maxImpact);
-  if (intent.minOut === undefined) return { minOut: own.minOut, priceImpactBps: own.priceImpactBps };
-  const lowest = (BigInt(own.outAmount) * BigInt(10_000 - MAX_BELOW_BPS)) / 10_000n;
-  if (BigInt(intent.minOut) < lowest) throw new FloorError(intent.minOut, lowest.toString());
-  return { minOut: intent.minOut, priceImpactBps: own.priceImpactBps };
+  const tolerance = own.slippageBps !== undefined ? { slippageBps: own.slippageBps } : {};
+  if (intent.minOut === undefined) return { minOut: own.minOut, priceImpactBps: own.priceImpactBps, ...tolerance };
+  const belowBps = owner.maxBelowBps ?? MAX_BELOW_BPS;
+  const lowest = (BigInt(own.outAmount) * BigInt(10_000 - belowBps)) / 10_000n;
+  if (BigInt(intent.minOut) < lowest) {
+    if (owner.maxBelowBps !== undefined && owner.maxBelowBps < MAX_BELOW_BPS) {
+      throw new PolicyError('floor-over-limit', `The minimum ${intent.minOut} is more than ${belowBps / 100}% below the market's own price, the owner's limit; the lowest accepted is ${lowest}.`, { limit: String(belowBps) });
+    }
+    throw new FloorError(intent.minOut, lowest.toString());
+  }
+  return { minOut: intent.minOut, priceImpactBps: own.priceImpactBps, ...tolerance };
+}
+
+/** The intent with the tolerance `ownFloor` resolved: a number, or none for Orientim's default. */
+export function withTolerance<T extends Intent | Omit<Intent, 'owner'>>(intent: T, slippageBps: number | undefined): T {
+  const { slippageBps: _asked, ...rest } = intent;
+  return (slippageBps !== undefined ? { ...rest, slippageBps } : rest) as T;
 }
 
 /** A prepared swap that passed the check, with the intent and limits it was checked against. */
@@ -1456,12 +1611,11 @@ export async function prepareChecked(args: {
   fetchImpl?: Fetch; jupiterApiKey?: string; requestTimeoutMs?: number;
   /** Optional diagnostics. Exceptions from this observer never change the signing decision. */
   onTiming?: (phase: 'ownFloor' | 'apiPrepare' | 'localVerification' | 'tokenRisk' | 'sign' | 'finalize', ms: number) => void;
-  /** The owner's limits: here, whether a swap may go on without a price impact from Jupiter. */
-  policy?: Pick<OwnerPolicy, 'allowUnknownPriceImpact'>;
+  /** The owner's limits here: the ceilings on tolerance, floor and price impact, and whether a swap may go on without a price impact. */
+  policy?: OwnerCeilings;
 }): Promise<Checked> {
   const fetchImpl = args.fetchImpl ?? fetch;
   const owner = args.owner;
-  const { slippageBps } = args.intent;
   let phaseStarted = performance.now();
   const measured = (phase: Parameters<NonNullable<typeof args.onTiming>>[0]) => {
     const now = performance.now();
@@ -1473,7 +1627,9 @@ export async function prepareChecked(args: {
   });
   measured('ownFloor');
   const minOut = own.minOut;
-  const intent: Intent = { ...args.intent, owner, minOut };
+  // The tolerance as resolved: "auto" becomes Jupiter's estimate, and the check holds the route to it.
+  const intent: Intent = withTolerance({ ...args.intent, owner, minOut }, own.slippageBps);
+  const { slippageBps } = intent;
   const prepared = await call<Prepared>(fetchImpl, `${args.apiUrl}/api/v1/prepare`, args.apiKey, {
     owner: intent.owner, inputMint: intent.inputMint, outputMint: intent.outputMint, amountIn: intent.amountIn,
     ...(intent.minOut ? { minOut: intent.minOut } : {}),
@@ -1619,6 +1775,8 @@ export async function finalizeSigned(args: {
   maxWaitMs?: number;
   /** How long one call to Orientim or to your RPC may take, in ms (default 30 s and 10 s). */
   requestTimeoutMs?: number;
+  /** An RPC with the full history, that the owner names: a second proof of expiry (`confirm`). */
+  archive?: Rpc<SolanaRpcApi>;
 }): Promise<{ signature: string; outcome: Outcome | 'rejected'; prepared: Prepared; refusal?: string; cause?: string }> {
   const { prepared, signedTransaction } = args;
   const mine = getTransactionDecoder().decode(Buffer.from(signedTransaction, 'base64'));
@@ -1720,7 +1878,7 @@ export function failureCause(err: unknown, transaction: Transaction): string | u
  * again: it says this request sent nothing, and the chain says the rest.
  */
 async function askAndConfirm(
-  args: { apiUrl: string; apiKey: string; rpc: Rpc<SolanaRpcApi>; fetchImpl?: Fetch; pollMs?: number; maxWaitMs?: number; requestTimeoutMs?: number },
+  args: { apiUrl: string; apiKey: string; rpc: Rpc<SolanaRpcApi>; fetchImpl?: Fetch; pollMs?: number; maxWaitMs?: number; requestTimeoutMs?: number; archive?: Rpc<SolanaRpcApi> },
   signed: Signed, mine: Transaction, temporaryAuthority: string,
 ): Promise<{ signature: string; outcome: Outcome | 'rejected'; refusal?: string; cause?: string }> {
   const fetchImpl = args.fetchImpl ?? fetch;
@@ -1741,6 +1899,7 @@ async function askAndConfirm(
   let chainError: unknown;
   const outcome = await confirm(args.rpc, signature, signed.lastValidBlockHeight, {
     signedTransaction: bytes, pollMs: args.pollMs, maxWaitMs: args.maxWaitMs, requestTimeoutMs: args.requestTimeoutMs, earliestHeight: signed.signedHeight,
+    archive: args.archive, temporaryAuthority,
     onFailed: err => { chainError = err; },
   });
   // Kept or not, the caller decides what to do with a pending record: an unknown outcome stays pending.
@@ -1761,15 +1920,11 @@ async function askAndConfirm(
  */
 export async function resumeSigned(args: {
   apiUrl: string; apiKey: string; rpc: Rpc<SolanaRpcApi>; signed: Signed;
-  fetchImpl?: Fetch; pollMs?: number; maxWaitMs?: number; requestTimeoutMs?: number;
+  fetchImpl?: Fetch; pollMs?: number; maxWaitMs?: number; requestTimeoutMs?: number; archive?: Rpc<SolanaRpcApi>;
 }): Promise<{ signature: string; outcome: Outcome | 'rejected'; refusal?: string; cause?: string }> {
   const mine = getTransactionDecoder().decode(Buffer.from(args.signed.signedTransaction, 'base64'));
   if (getSignatureFromTransaction(mine) !== args.signed.signature) throw new Error('The kept record does not carry its own transaction. Nothing was sent.');
-  // E is the transaction's other signer: the wallet pays, so it signs first, and there are exactly two.
-  const message = getCompiledTransactionMessageDecoder().decode(mine.messageBytes);
-  const signers = message.staticAccounts.slice(0, message.header.numSignerAccounts);
-  const temporaryAuthority = signers.find(a => a !== signers[0]) ?? '';
-  return askAndConfirm(args, args.signed, mine, temporaryAuthority);
+  return askAndConfirm(args, args.signed, mine, temporaryAuthorityOf(args.signed.signedTransaction) ?? '');
 }
 
 /**
@@ -1790,6 +1945,8 @@ export async function protectedSwap(args: {
   maxWaitMs?: number;
   /** How long one call to Orientim or to your RPC may take, in ms (default 30 s and 10 s). */
   requestTimeoutMs?: number;
+  /** An RPC with the full history, that the owner names: a second proof of expiry (`confirm`). */
+  archive?: Rpc<SolanaRpcApi>;
   /** Where orders are kept by `intent.id` (see `OrderBook`); without an id or a book, not used. */
   orders?: OrderBook;
   /**
@@ -1901,7 +2058,7 @@ async function main() {
   const need = (name: string) => process.env[name] ?? (console.error(`Set ${name}.`), process.exit(2));
   const [inputMint, outputMint, amountIn] = [flag('in'), flag('out'), flag('amount')];
   if (!inputMint || !outputMint || !amountIn) {
-    console.error('usage: node swap.ts --in <mint> --out <mint> --amount <base units> --id <order id> [--slippage-bps N] [--max-price-impact-bps N] [--min-out N] [--max-below-bps N] [--max-fee-bps N] [--max-route-cost-lamports N] [--accept-cost-bps N] [--fast] [--v1] [--state <dir>] [--owner <address> --dry-run]');
+    console.error('usage: node swap.ts --in <mint> --out <mint> --amount <base units> --id <order id> [--slippage-bps N|auto] [--max-price-impact-bps N] [--min-out N] [--max-below-bps N] [--max-fee-bps N] [--max-route-cost-lamports N] [--accept-cost-bps N] [--fast] [--v1] [--state <dir>] [--owner <address> --dry-run]');
     process.exit(2);
   }
   const apiUrl = need('ORIENTIM_API_URL').replace(/\/+$/, '');
@@ -1910,7 +2067,7 @@ async function main() {
     inputMint, outputMint, amountIn, minOut: flag('min-out'), treasury: process.env.ORIENTIM_TREASURY || undefined,
     maxFeeBps: flag('max-fee-bps') ? Number(flag('max-fee-bps')) : undefined,
     maxBelowBps: flag('max-below-bps') ? Number(flag('max-below-bps')) : undefined,
-    slippageBps: flag('slippage-bps') ? Number(flag('slippage-bps')) : undefined,
+    slippageBps: flag('slippage-bps') === 'auto' ? 'auto' as const : flag('slippage-bps') ? Number(flag('slippage-bps')) : undefined,
     maxPriceImpactBps: flag('max-price-impact-bps') ? Number(flag('max-price-impact-bps')) : undefined,
     maxRouteCostLamports: flag('max-route-cost-lamports') ? Number(flag('max-route-cost-lamports')) : undefined,
     acceptCostBps: flag('accept-cost-bps'),
@@ -1922,6 +2079,8 @@ async function main() {
   if (!jupiterApiKey) console.error('JUPITER_API_KEY is not set: Jupiter throttles keyless calls, and your own floor may not be priced.');
   // Your own RPC: the verification is worth what the chain state it reads is worth.
   const rpc = createSolanaRpc(need('SOLANA_RPC_URL'));
+  // Optional: an RPC with the full history, for a second proof that a swap expired (`confirm`).
+  const archive = process.env.ORIENTIM_ARCHIVE_RPC_URL ? createSolanaRpc(process.env.ORIENTIM_ARCHIVE_RPC_URL) : undefined;
   // The owner's limits, read first: a policy that cannot be read stops everything, the dry run included.
   const policy = process.env.ORIENTIM_POLICY ? loadPolicy(process.env.ORIENTIM_POLICY) : undefined;
 
@@ -1938,10 +2097,10 @@ async function main() {
     const prepared = await call<Prepared>(fetch, `${apiUrl}/api/v1/prepare`, apiKey, {
       owner, inputMint, outputMint, amountIn, minOut,
       ...(intent.acceptCostBps ? { acceptCostBps: intent.acceptCostBps } : {}), ...(intent.version ? { version: 1 } : {}),
-      ...(intent.slippageBps !== undefined ? { slippageBps: intent.slippageBps } : {}),
+      ...(own.slippageBps !== undefined ? { slippageBps: own.slippageBps } : {}),
       ...(intent.routingMode === 'fast' ? { routingMode: 'fast' } : {}),
     });
-    const checked: Intent = { ...intent, owner, minOut };
+    const checked: Intent = withTolerance({ ...intent, owner, minOut }, own.slippageBps);
     await holdSolFee(checked, prepared, { jupiterApiKey });
     const problems = await checkPrepared(prepared, checked, rpc);
     const risk = await tokenRisk(rpc, [inputMint, outputMint]);
@@ -1956,7 +2115,7 @@ async function main() {
       approval = { minOut, until: new Date(expiresAt).toISOString() };
     }
     console.log(JSON.stringify({
-      yourFloor: minOut, ...(approval ? { approval } : {}), priceImpactBps: own.priceImpactBps, amounts: shownData.amounts, costs: shownData.costs,
+      yourFloor: minOut, ...(approval ? { approval } : {}), priceImpactBps: own.priceImpactBps, slippageBps: shownData.slippageBps, amounts: shownData.amounts, costs: shownData.costs,
       blocksLeft: shownData.blocksLeft, problems, notices: noticesOf(risk), tokenRisk: risk,
     }, null, 2));
     process.exitCode = problems.length ? 1 : 0;
@@ -1985,7 +2144,7 @@ async function main() {
   }
   try {
     // What a stopped run left is settled first; while any outcome is unknown, no new swap starts.
-    const { settled, unknown, bookkeepingErrors } = await recoverPending(store, rpc, { orders: store });
+    const { settled, unknown, bookkeepingErrors } = await recoverPending(store, rpc, { orders: store, archive });
     for (const s of settled) console.error(`An earlier swap, ${s.signature}, ended ${s.outcome}.`);
     for (const b of bookkeepingErrors) console.error(`Its record could not be updated (${b.error}); the next run settles ${b.signature} again.`);
     if (unknown.length || bookkeepingErrors.length) {
@@ -2001,7 +2160,7 @@ async function main() {
     const approved = keptApproval(stateDir, approvalKey);
     intent.minOut = heldToApproval(approved, intent.minOut);
     const result = await protectedSwap({
-      apiUrl, apiKey, rpc, wallet, intent, jupiterApiKey, orders: store,
+      apiUrl, apiKey, rpc, wallet, intent, jupiterApiKey, orders: store, archive,
       // Kept on disk before finalize, and removed once settled: if this process stops, the next run
       // settles it first, and nothing new is sent from this wallet while it may still land.
       pending: store,

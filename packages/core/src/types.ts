@@ -98,8 +98,8 @@ export type Policy = {
    * `sol`: a pair that neither token can carry the fee for (no SOL, USDC or USDT on it, and no
    * treasury account for its input) pays it in SOL from the wallet, before the swap: `feeBps` of
    * what the swap is worth in SOL, priced by whoever built the policy when it was built. The
-   * verifier cannot see a price, so this amount is checked by the builder's quote (the page) or
-   * against the agent's own price (the skill).
+   * verifier cannot see a price, so this amount is checked against the agent's own price (the
+   * skill), never taken on the builder's word.
    *
    * Null when the swap is fee-free: the treasury can receive nothing (test mode, no wallet yet), or
    * the swap could not be priced in SOL.
