@@ -82,15 +82,15 @@ revoke a wallet's keys; the wallet's owner then signs again for a new one.
 
 ## Fee
 
-0.3%, inside the transaction, taken the way Jupiter takes its own: in SOL first, then USDC, then
+0.25%, inside the transaction, taken the way Jupiter takes its own: in SOL first, then USDC, then
 USDT, on whichever side of the swap they are; otherwise in the input token. `amounts.feeMint` says
-which. On the input it is 0.3% of `amountIn`; on the output it is 0.3% of the enforced minimum, paid
+which. On the input it is 0.25% of `amountIn`; on the output it is 0.25% of the enforced minimum, paid
 after the minimum is checked, and `amounts.minOut` is what your wallet keeps after it. It is part of
 the message you sign, and Orientim signs only the exact message it built, so a transaction with the fee
-removed is not signed. The agent API and shipped skill both cap Orientim's fee at 0.3%.
+removed is not signed. The agent API and shipped skill both refuse an Orientim fee above 0.3%.
 
 A swap between two tokens neither of which can carry the fee (no SOL, USDC or USDT on it, and no
-treasury account for the input) pays it in SOL from your wallet, before the swap: 0.3% of what the
+treasury account for the input) pays it in SOL from your wallet, before the swap: 0.25% of what the
 swap is worth in SOL, as Jupiter prices it when prepare builds it. `amounts.feeMint` is then SOL,
 `policy.feeSide` is `sol` and `certificate.solFee` states it. The rules cannot see a price, so the
 skill's check requires a limit of your own for it (`maxSolFeeLamports`; `ownSolFeeLimit` asks Jupiter
@@ -313,7 +313,7 @@ one to ask") lists what to do with each code.
 | 409 | `output-balance-changed` | Your balance of the output token moved since prepare, so this request signed nothing. Check `signature` as above, then prepare again. |
 | 410 | `expired` | The transaction's lifetime passed before this finalize signed it. Check `signature` as above, then prepare again. |
 | 422 | `unsupported-token`, `no-route`, `bad-quote`, `insufficient-sol`, `insufficient-balance`, `simulation-failed`, `verification-failed`, `token-data-mismatch`, `output-account-restricted`, `input-account-restricted` | This swap cannot be built safely right now; `message` says why. |
-| 422 | `amount-too-small` | The amount is below the smallest swap Orientim takes, about 0.0034 SOL, or $0.84 of USDC or USDT (for a swap between two other tokens, its value in SOL). Swap a larger amount. Selling the whole balance of a token is allowed at any size. |
+| 422 | `amount-too-small` | The amount is below the smallest swap Orientim takes, about 0.004 SOL, or $1 of USDC or USDT (for a swap between two other tokens, its value in SOL). Swap a larger amount. Selling the whole balance of a token is allowed at any size. |
 | 426 | `skill-outdated` | This copy of the skill is older than Orientim serves (`minimum`). Download the current one; a swap already signed still finalizes. |
 | 429 | `rate-limited` | Too many requests for this key (per wallet for a self-serve key). Wait `Retry-After` seconds. |
 | 500 | `internal` | Something unexpected failed; nothing was signed by Orientim or sent. Retry later. |

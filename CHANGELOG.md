@@ -3,6 +3,11 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.7.9 (2026-09-29)
+
+- Orientim's fee is 0.25%; the check still refuses a fee above 0.3%. The smallest swap is about
+  0.004 SOL, or $1 of USDC or USDT. Documentation only: the skill's code is unchanged.
+
 ## 1.7.8 (2026-09-29)
 
 - A transaction that landed and failed on chain says why in `meaning`, read from the status your RPC
