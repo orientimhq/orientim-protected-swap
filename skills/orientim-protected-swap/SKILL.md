@@ -136,11 +136,11 @@ Run or adapt `examples/swap.ts`. Do not write the flow from scratch, and never d
 2. **Prepare.** `POST {ORIENTIM_API_URL}/api/v1/prepare` with
    `{ owner, inputMint, outputMint, amountIn, minOut }`. All amounts are integer strings in base
    units (5 USDC is `"5000000"`; SOL is 9 decimals, mint `So11111111111111111111111111111111111111112`).
-   `amountIn` includes Orientim's 0.3% fee when it is taken in the input token. In the order Jupiter prefers for its own, the
+   `amountIn` includes Orientim's fee (0.25%) when it is taken in the input token. In the order Jupiter prefers for its own, the
    fee is taken in SOL first, then USDC or USDT, on whichever side of the swap they are
    (`amounts.feeMint`); taken from the output, it comes out of what arrives, and `amounts.minOut` is
    what the wallet keeps after it. Your `minOut` means the same: what the wallet keeps. A swap between
-   two tokens neither of which can carry it pays the fee in SOL from the wallet, 0.3% of its value in
+   two tokens neither of which can carry it pays the fee in SOL from the wallet, 0.25% of its value in
    SOL (`policy.feeSide` is `sol`), so the wallet needs that SOL besides the token: without it the swap
    is refused (`insufficient-sol`). Hold the fee to a price of your own with `maxSolFeeLamports`
    (`ownSolFeeLimit` from `lib/orientim-verify.mjs` asks Jupiter; the example does it).
@@ -240,8 +240,8 @@ names the transaction (`signature`, `lastValidBlockHeight`); follow step 7 befor
 - `503 fee-unavailable`: Orientim cannot collect its fee on this swap right now (its treasury is not
   ready, or the pair cannot be priced in SOL), so it built nothing. Wait the `Retry-After` and try
   again; Orientim never builds a swap free instead.
-- `422 amount-too-small`: the amount is below the smallest swap Orientim takes, about 0.0034 SOL or
-  $0.84 of USDC or USDT at the 0.3% fee (a fee below 2,500 base units of USDC or USDT, or 10,000
+- `422 amount-too-small`: the amount is below the smallest swap Orientim takes, about 0.004 SOL or
+  $1 of USDC or USDT at the 0.25% fee (a fee below 2,500 base units of USDC or USDT, or 10,000
   lamports; for a swap between two other tokens, the fee's value in SOL). Swap a larger amount. Selling the whole
   balance of a token is allowed at any size, so a position that has lost its value can always be left
   (not SOL, and not below a fee that is nothing at all).

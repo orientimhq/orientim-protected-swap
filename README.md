@@ -24,7 +24,7 @@ seven rules (R1–R7), with every account read from your RPC, not from Orientim:
 - it never receives your wallet or any of your token accounts except the one that receives the output;
 - the transaction grants no new authority over your assets;
 - you receive at least the minimum you accepted, enforced on chain in the same transaction;
-- Orientim's fee is at most 0.3% and goes only to its pinned treasury.
+- Orientim's fee is 0.25% (never above 0.3%) and goes only to its pinned treasury.
 
 On top of the rules, the skill brings a price floor of its own from Jupiter (a minimum more than 20%
 below it is refused), refuses a price impact above your limit, simulates the swap on your RPC, holds
