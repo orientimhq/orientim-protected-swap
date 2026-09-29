@@ -3,6 +3,13 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.7.4 (2026-09-29)
+
+- Adds an opt-in Jupiter fast route-search request to the example, with the same owner floor,
+  independent verification, and exact-byte signing checks as standard routing.
+- Adds optional per-phase timing callbacks for quote, prepare, verification, signing and finalization.
+- Documents the existing v1 pilot as a separate opt-in requiring compatible RPCs and signers.
+
 ## 1.7.3 (2026-09-29)
 
 - Clarifies that direct API clients must verify the exact transaction before signing, maintain a

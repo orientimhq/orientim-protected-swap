@@ -123,7 +123,10 @@ Authorization: Bearer ori_...
 | `minOut` | required | A positive integer string in base units of the output: what your wallet must keep, after a fee taken from the output. Get this floor independently before prepare (`ownMinimum` asks Jupiter directly). For a large order, compare with another source as well. Supplying a number alone does not prove independent verification: check the exact transaction before signing. |
 | `acceptCostBps` | optional | Accept a protected route this many bps below the open market (see `costs-more`): a whole number, as a number or an integer string. |
 | `slippageBps` | optional | The route's slippage tolerance, chosen by the owner or bot: how far below the quote the swap may fill, a whole number from 10 to 1500 (0.1% to 15%). Default 50, or 300 on a Pump.fun bonding curve. The route is built at it; the skill's check holds the route to the number in your own intent, never to Orientim's answer. |
-| `version` | optional | `0`, the default. Leave it unset. |
+| `routingMode` | optional | `standard` (default) or `fast`. Fast requires the operator's `ORIENTIM_ENABLE_FAST_ROUTING=1` and is an opt-in Jupiter beta. It may reduce route-search time but can yield a worse quote or priority fee. The independent price floor, standard-route comparison, simulation, and exact-byte checks still apply. Compare measured latency, price and completion before using it in production. |
+| `version` | optional | `0` (default). `1` is a pilot only when the deployment enables `NEXT_PUBLIC_ORIENTIM_ENABLE_V1=1`, and only for bots whose signer and RPC support Solana v1. It may fit a larger transaction, not necessarily execute faster. |
+
+Successful prepare responses include a `Server-Timing` header with `prepare`, `initial`, `jupiter-build`, `simulation`, `verification`, and `local` durations in milliseconds. Jupiter build calls can overlap, so their summed duration need not equal prepare wall time. The skill's `prepareChecked` and `protectedSwap` also accept an optional `onTiming(phase, ms)` observer for the bot's own quote, API prepare, local verification, signing and finalization. Neither measurement changes approval or signing decisions; benchmark standard and fast on comparable orders and record quote quality and confirmed outcomes alongside latency.
 
 `200` response:
 

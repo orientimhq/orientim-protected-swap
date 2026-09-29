@@ -63,6 +63,7 @@ Read these first; they are what a coding agent most often gets wrong.
 The user provides these; never ask for them in chat, and never print or log them:
 
 - `ORIENTIM_API_URL`: Orientim's address, `https://orientim.com`
+- Routing is standard by default. `routingMode: "fast"` in an intent (or `--fast` in the example) requests Jupiter's beta fast route search only if the server operator enabled it. It can trade a shorter route search for a worse quote or priority fee. Keep the same independently obtained floor and all checks. `version: 1` (or `--v1`) is a separate opt-in pilot requiring server, RPC, and signer support; it may fit a larger transaction but is not a speed setting. The example's optional `onTiming(phase, ms)` reports phase durations without changing the signing decision.
 - `ORIENTIM_API_KEY`: `ori_...`, sent as `Authorization: Bearer <key>`. The wallet gets one itself, at once: `requestApiKey({ apiUrl, address, signMessage })` from `examples/swap.ts`, or `orientim-verify key-challenge` then `key`; both sign only Orientim's key message for that wallet. The key works for that wallet only
 - `SOLANA_RPC_URL`: the agent's **own** RPC. Never Orientim's: the verification is worth what the
   chain state it reads is worth.

@@ -96,6 +96,8 @@ export type Intent = {
    * at it, and the check holds the route to it; your own floor follows it (1.5% below, 2% on a curve).
    */
   slippageBps?: number;
+  /** Opt in to Jupiter's beta fast route search when the deployment enables it. */
+  routingMode?: 'standard' | 'fast';
   /**
    * The most this amount may move the market, in bps (default 500: 5%). Above it the swap is refused
    * before anything is prepared (`PriceImpactError`): the mark of thin liquidity, as when a token's
@@ -291,7 +293,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.7.3';
+export const SKILL_VERSION = '1.7.4';
 
 /** Each call to Orientim ends within `timeoutMs`: an answer that never comes is no answer. */
 async function call<T>(fetchImpl: Fetch, url: string, key: string, body: unknown, timeoutMs = 30_000): Promise<T> {
@@ -1368,6 +1370,9 @@ export async function ownFloor(
   intent: Intent,
   deps: { rpc: Rpc<SolanaRpcApi>; fetchImpl?: Fetch; jupiterApiKey?: string; requestTimeoutMs?: number; policy?: Pick<OwnerPolicy, 'allowUnknownPriceImpact'> },
 ): Promise<{ minOut: string; priceImpactBps: number | null }> {
+  if (intent.routingMode !== undefined && intent.routingMode !== 'standard' && intent.routingMode !== 'fast') {
+    throw new IntentError('routingMode must be standard or fast. Nothing was prepared.');
+  }
   if (intent.slippageBps !== undefined && !isSlippageBps(intent.slippageBps)) {
     throw new IntentError(`slippageBps must be a whole number of bps from ${MIN_SLIPPAGE_BPS} to ${MAX_SLIPPAGE_BPS}. Nothing was prepared.`);
   }
@@ -1408,15 +1413,24 @@ export type Checked = { prepared: Prepared; intent: Intent; notices?: string[]; 
 export async function prepareChecked(args: {
   apiUrl: string; apiKey: string; rpc: Rpc<SolanaRpcApi>; owner: string; intent: Omit<Intent, 'owner'>;
   fetchImpl?: Fetch; jupiterApiKey?: string; requestTimeoutMs?: number;
+  /** Optional diagnostics. Exceptions from this observer never change the signing decision. */
+  onTiming?: (phase: 'ownFloor' | 'apiPrepare' | 'localVerification' | 'tokenRisk' | 'sign' | 'finalize', ms: number) => void;
   /** The owner's limits: here, whether a swap may go on without a price impact from Jupiter. */
   policy?: Pick<OwnerPolicy, 'allowUnknownPriceImpact'>;
 }): Promise<Checked> {
   const fetchImpl = args.fetchImpl ?? fetch;
   const owner = args.owner;
   const { slippageBps } = args.intent;
+  let phaseStarted = performance.now();
+  const measured = (phase: Parameters<NonNullable<typeof args.onTiming>>[0]) => {
+    const now = performance.now();
+    try { args.onTiming?.(phase, Math.round(now - phaseStarted)); } catch { /* diagnostics cannot veto a swap */ }
+    phaseStarted = now;
+  };
   const own = await ownFloor({ ...args.intent, owner }, {
     rpc: args.rpc, fetchImpl, jupiterApiKey: args.jupiterApiKey, requestTimeoutMs: args.requestTimeoutMs, policy: args.policy,
   });
+  measured('ownFloor');
   const minOut = own.minOut;
   const intent: Intent = { ...args.intent, owner, minOut };
   const prepared = await call<Prepared>(fetchImpl, `${args.apiUrl}/api/v1/prepare`, args.apiKey, {
@@ -1424,13 +1438,17 @@ export async function prepareChecked(args: {
     ...(intent.minOut ? { minOut: intent.minOut } : {}),
     ...(intent.acceptCostBps ? { acceptCostBps: intent.acceptCostBps } : {}),
     ...(slippageBps !== undefined ? { slippageBps } : {}),
+    ...(intent.routingMode === 'fast' ? { routingMode: 'fast' } : {}),
     ...(intent.version !== undefined ? { version: intent.version } : {}),
   }, args.requestTimeoutMs);
+  measured('apiPrepare');
   // A fee in SOL from the wallet: held to a price of your own, asked of Jupiter here.
   await holdSolFee(intent, prepared, { fetchImpl, jupiterApiKey: args.jupiterApiKey });
   const problems = await checkPrepared(prepared, intent, args.rpc, { requestTimeoutMs: args.requestTimeoutMs });
   if (problems.length) throw new Error(`Not signing: ${problems.join('; ')}`);
+  measured('localVerification');
   const risk = await tokenRisk(args.rpc, [intent.inputMint, intent.outputMint], args.requestTimeoutMs ?? 10_000);
+  measured('tokenRisk');
   return { prepared: preparedData(prepared), intent, notices: noticesOf(risk), tokenRisk: risk };
 }
 
@@ -1650,6 +1668,8 @@ export async function resumeSigned(args: {
 export async function protectedSwap(args: {
   apiUrl: string; apiKey: string; rpc: Rpc<SolanaRpcApi>; wallet: WalletSigner; intent: Omit<Intent, 'owner'>;
   fetchImpl?: Fetch; pollMs?: number; jupiterApiKey?: string;
+  /** Optional per-phase durations; never receives keys, mints or transaction bytes. */
+  onTiming?: (phase: 'ownFloor' | 'apiPrepare' | 'localVerification' | 'tokenRisk' | 'sign' | 'finalize', ms: number) => void;
   /**
    * Called before finalize with what to keep (see `Signed`). Unattended, persist it durably here
    * (`createFileStore`): if this throws, nothing is finalized.
@@ -1697,7 +1717,10 @@ export async function protectedSwap(args: {
   const spend = { owner, inputMint: args.intent.inputMint, amountIn: args.intent.amountIn };
   if (args.policy) await checkPolicy(args.policy, spend, args.spends);
   const { prepared, notices = [], tokenRisk: risk } = await prepareChecked({ ...args, owner });
+  const signStarted = performance.now();
   const signedTransaction = await signAsWallet(args.wallet, prepared.transaction);
+  try { args.onTiming?.('sign', Math.round(performance.now() - signStarted)); } catch { /* diagnostics only */ }
+  const finalizeStarted = performance.now();
   const result = await finalizeSigned({
     ...args, prepared, signedTransaction,
     // Taken before finalize: the order, atomically when it is new, and the wallet's one pending
@@ -1740,6 +1763,7 @@ export async function protectedSwap(args: {
       await args.onSigned?.(kept);
     },
   });
+  try { args.onTiming?.('finalize', Math.round(performance.now() - finalizeStarted)); } catch { /* diagnostics only */ }
   // What arrived, read from the chain once the swap confirmed: never a reason to fail.
   const got = result.outcome === 'confirmed'
     ? await receivedFor(args.rpc, result.signature, prepared, { requestTimeoutMs: args.requestTimeoutMs, pollMs: args.pollMs })
@@ -1766,7 +1790,7 @@ async function main() {
   const need = (name: string) => process.env[name] ?? (console.error(`Set ${name}.`), process.exit(2));
   const [inputMint, outputMint, amountIn] = [flag('in'), flag('out'), flag('amount')];
   if (!inputMint || !outputMint || !amountIn) {
-    console.error('usage: node swap.ts --in <mint> --out <mint> --amount <base units> --id <order id> [--slippage-bps N] [--max-price-impact-bps N] [--min-out N] [--max-below-bps N] [--max-fee-bps N] [--max-route-cost-lamports N] [--accept-cost-bps N] [--v1] [--state <dir>] [--owner <address> --dry-run]');
+    console.error('usage: node swap.ts --in <mint> --out <mint> --amount <base units> --id <order id> [--slippage-bps N] [--max-price-impact-bps N] [--min-out N] [--max-below-bps N] [--max-fee-bps N] [--max-route-cost-lamports N] [--accept-cost-bps N] [--fast] [--v1] [--state <dir>] [--owner <address> --dry-run]');
     process.exit(2);
   }
   const apiUrl = need('ORIENTIM_API_URL').replace(/\/+$/, '');
@@ -1780,6 +1804,7 @@ async function main() {
     maxRouteCostLamports: flag('max-route-cost-lamports') ? Number(flag('max-route-cost-lamports')) : undefined,
     acceptCostBps: flag('accept-cost-bps'),
     version: process.argv.includes('--v1') ? 1 as const : undefined,
+    routingMode: process.argv.includes('--fast') ? 'fast' as const : undefined,
     id: flag('id'),
   };
   const jupiterApiKey = process.env.JUPITER_API_KEY || undefined;
@@ -1803,6 +1828,7 @@ async function main() {
       owner, inputMint, outputMint, amountIn, minOut,
       ...(intent.acceptCostBps ? { acceptCostBps: intent.acceptCostBps } : {}), ...(intent.version ? { version: 1 } : {}),
       ...(intent.slippageBps !== undefined ? { slippageBps: intent.slippageBps } : {}),
+      ...(intent.routingMode === 'fast' ? { routingMode: 'fast' } : {}),
     });
     const checked: Intent = { ...intent, owner, minOut };
     await holdSolFee(checked, prepared, { jupiterApiKey });
