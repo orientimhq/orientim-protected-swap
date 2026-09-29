@@ -47,7 +47,7 @@ Every request carries an API key:
 Authorization: Bearer ori_...
 ```
 
-Requests are limited to 60 a minute for each endpoint, counted per wallet for a self-serve key and per key for
+Requests are limited to 60 a minute for each endpoint by default (the operator may set another number), counted per wallet for a self-serve key and per key for
 a key issued by hand. A `429` carries `Retry-After`: the seconds until the count starts again.
 
 ### API access: a key for your wallet, at once
@@ -56,7 +56,7 @@ A key comes from the wallet itself, with no form: the wallet signs Orientim's me
 Solana text that names it, and gets a key bound to it. Signing moves nothing. The key prepares swaps
 for that wallet only (another `owner` is refused with `403 wrong-wallet`), so a leaked key is worth
 nothing for any other wallet; its limits count per wallet. It lasts 90 days; sign again for a new
-one. The wallet must hold at least 0.01 SOL.
+one. The wallet must hold at least 0.01 SOL by default; a refusal names the amount this deployment asks.
 
 ```http
 GET /api/v1/keys/challenge?wallet=<address>
@@ -303,10 +303,10 @@ have sent it, so check it before preparing again (see above). `price-moved` and 
 | 400 | `invalid-ticket` | The ticket was not issued to this API key, or was altered. |
 | 400 | `transaction-changed` | The message is not the one Orientim built. Sign the transaction exactly as returned. |
 | 400 | `wallet-changed-transaction` | Your wallet's signature is missing or does not match (`violations`). |
-| 401 | `unauthorized` | Missing or unknown API key. |
+| 401 | `unauthorized` | Missing, unknown, expired or revoked API key. A self-serve key is renewed by signing a new key challenge. |
 | 403 | `wrong-wallet` | The key belongs to another wallet: a self-serve key prepares swaps for its own wallet only. |
 | 404 | `not-enabled` | The agent API is not available. |
-| 409 | `price-moved` | The market cannot meet your `minOut`. `newMinOut` is what it supports now: with the user's approval, prepare again with it; or not. |
+| 409 | `price-moved` | The best route that fits in one protected transaction cannot meet your `minOut`: the price moved, or the route that meets it is too big (`message` says which; a smaller amount may meet it). `newMinOut` is what the route that fits supports: with the user's approval, prepare again with it; or not. |
 | 409 | `costs-more` | The route that fits in one protected transaction is `gapBps` below the open market. With the user's approval, prepare again with `acceptCostBps`. |
 | 409 | `output-balance-changed` | Your balance of the output token moved since prepare, so this request signed nothing. Check `signature` as above, then prepare again. |
 | 410 | `expired` | The transaction's lifetime passed before this finalize signed it. Check `signature` as above, then prepare again. |
@@ -315,7 +315,7 @@ have sent it, so check it before preparing again (see above). `price-moved` and 
 | 426 | `skill-outdated` | This copy of the skill is older than Orientim serves (`minimum`). Download the current one; a swap already signed still finalizes. |
 | 429 | `rate-limited` | Too many requests for this key (per wallet for a self-serve key). Wait `Retry-After` seconds. |
 | 500 | `internal` | Something unexpected failed; nothing was signed by Orientim or sent. Retry later. |
-| 503 | `busy`, `unavailable` | Jupiter or the network is overloaded or silent (from finalize: Orientim could not read whether the transaction was already sent). Wait `Retry-After` seconds and retry. |
+| 503 | `busy`, `unavailable` | Jupiter or Orientim's Solana RPC is rate limited, overloaded or silent (from finalize: Orientim could not read whether the transaction was already sent). Wait `Retry-After` seconds and retry. |
 | 503 | `fee-unavailable` | Orientim cannot collect its fee on this swap right now, so it built nothing. Wait `Retry-After` (60) seconds and retry. |
 | 503 | `paused` | Orientim has paused protected swaps. Your funds are not affected. A transaction already on chain is still reported by finalize. |
 | 503 | `route-format` | Jupiter changed its swap instruction and Orientim refuses what it cannot read. Nothing builds until Orientim is updated: wait `Retry-After` (300) seconds, not less. |
@@ -325,7 +325,7 @@ The key endpoints answer, besides `400 bad-request`:
 | HTTP | `code` | What to do |
 | --- | --- | --- |
 | 400 | `bad-signature` | The signature does not match the message, or the challenge expired, was not Orientim's, or names another site. Ask for a new challenge. |
-| 403 | `wallet-empty` | The wallet holds less than 0.01 SOL. Fund it, then ask again. |
+| 403 | `wallet-empty` | The wallet holds less than the amount `message` names (0.01 SOL by default). Fund it, then ask again. |
 | 429 | `rate-limited` | Too many challenges or keys from this address. Wait `Retry-After` seconds. |
 | 503 | `unavailable` | The wallet's balance could not be read. Wait `Retry-After` seconds and retry. |
 

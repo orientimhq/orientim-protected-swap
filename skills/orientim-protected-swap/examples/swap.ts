@@ -48,7 +48,7 @@ import {
 import type { Address, Rpc, SignatureBytes, SignatureDictionary, SolanaRpcApi, Transaction, TransactionPartialSigner } from '@solana/kit';
 import {
   DEFAULT_MAX_PRICE_IMPACT_BPS, feeLimitBps, inputTransferFee, isSlippageBps, MAX_BELOW_BPS, MAX_PRICE_IMPACT_BPS, MAX_SLIPPAGE_BPS, MIN_SLIPPAGE_BPS,
-  ownQuote, ownSolFeeLimit, pastProof,
+  isRpcFailure, ownQuote, ownSolFeeLimit, pastProof,
   noticesOf, provesNeverLanded, tokenRisk, verifyPrepared,
 } from '../lib/orientim-verify.mjs';
 import type { TokenRisk } from '../lib/orientim-verify.mjs';
@@ -163,11 +163,11 @@ export type ApiError = { status: number; code: string; message: string; body: Re
  * text is kept apart, cut to one short line, as `serverMessage`, and marked as untrusted.
  */
 export const ERROR_MEANINGS: Readonly<Record<string, string>> = {
-  'price-moved': 'The market no longer meets your minimum. Ask the user before preparing again with minOut set to newMinOut.',
+  'price-moved': 'The best route that fits in one protected transaction no longer meets your minimum: the price moved, or the route that meets it is too big. Ask the user before preparing again with minOut set to newMinOut, or try a smaller amount.',
   'costs-more': 'The protected route costs more than the open market. Ask the user; to accept, prepare again with acceptCostBps set to gapBps.',
   'output-balance-changed': 'Your balance of the output token changed since prepare, so nothing was signed. Settle what may still land, then prepare again.',
-  busy: 'Orientim is busy. Wait the Retry-After seconds, then try again.',
-  unavailable: 'Orientim is unavailable. Wait the Retry-After seconds, then try again.',
+  busy: "Jupiter or Orientim's Solana RPC is busy. Wait the Retry-After seconds, then try again.",
+  unavailable: "Orientim, Jupiter or Orientim's Solana RPC did not answer. Wait the Retry-After seconds, then try again.",
   'rate-limited': 'Too many requests. Wait the Retry-After seconds, then try again.',
   expired: 'The transaction expired before it was signed by Orientim. Settle what may still land, then prepare again.',
   'route-format': 'Jupiter changed its format and Orientim cannot read it yet. Wait at least the Retry-After seconds.',
@@ -179,12 +179,13 @@ export const ERROR_MEANINGS: Readonly<Record<string, string>> = {
   'wallet-changed-transaction': 'The wallet changed the transaction or did not sign it. Sign exactly what prepare returned.',
   'unsupported-token': 'This token cannot be swapped safely now.',
   'no-route': 'No protected route was found for this swap now.',
-  'insufficient-sol': 'The wallet does not hold enough SOL for this swap.',
-  'wallet-empty': 'The wallet holds less than 0.01 SOL, the least a wallet needs for an API key. Fund it, then ask again.',
+  'insufficient-sol': 'The wallet may not hold enough SOL for this swap: Orientim estimates the most it needs while it runs, including deposits that come back.',
+  'wallet-empty': 'The wallet holds less than the least a wallet needs for an API key (0.01 SOL unless Orientim set another amount). Fund it, then ask again.',
+  'bad-signature': "Orientim did not accept the signed key message: the signature does not match it, or the challenge expired or is not Orientim's. Ask for a new challenge and sign it.",
   'insufficient-balance': 'The wallet does not hold enough of the input token.',
   'simulation-failed': 'The swap failed in simulation, so nothing was built.',
   'bad-request': 'Orientim could not read the request.',
-  unauthorized: 'The API key was refused.',
+  unauthorized: 'The API key was refused: missing, unknown, expired or revoked. Get a new one for this wallet (requestApiKey, or orientim-verify key-challenge then key).',
   'not-found': 'Orientim does not know this request.',
   'wrong-wallet': 'This API key belongs to another wallet: a key prepares swaps for its own wallet only. Use this wallet\'s own key (requestApiKey, or orientim-verify key-challenge then key).',
   'invalid-ticket': 'Orientim did not issue this ticket to this API key. Finalize with the ticket prepare returned, under the same key.',
@@ -293,7 +294,25 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.7.4';
+export const SKILL_VERSION = '1.7.5';
+
+/** Seconds to wait from an answer's Retry-After header; null without one. */
+const retryAfterOf = (res: Response) => {
+  const after = Number(res.headers.get('retry-after'));
+  return Number.isFinite(after) && after > 0 ? after : null;
+};
+
+/** Orientim's answer as JSON. A page that is not JSON (a proxy's error page) is no answer from Orientim. */
+async function answerOf<T>(res: Response): Promise<{ error?: { code: string; message: string } } & T> {
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new OrientimApiError({
+      status: res.status, code: res.status >= 500 ? 'unavailable' : 'http', message: res.statusText, body: {}, retryAfter: retryAfterOf(res),
+    });
+  }
+}
 
 /** Each call to Orientim ends within `timeoutMs`: an answer that never comes is no answer. */
 async function call<T>(fetchImpl: Fetch, url: string, key: string, body: unknown, timeoutMs = 30_000): Promise<T> {
@@ -303,12 +322,11 @@ async function call<T>(fetchImpl: Fetch, url: string, key: string, body: unknown
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
   });
-  const json = (await res.json()) as { error?: { code: string; message: string } } & T;
+  const json = await answerOf<T>(res);
   if (!res.ok) {
-    const after = Number(res.headers.get('retry-after'));
     throw new OrientimApiError({
       status: res.status, code: json.error?.code ?? 'http', message: json.error?.message ?? res.statusText, body: json.error ?? {},
-      retryAfter: Number.isFinite(after) && after > 0 ? after : null,
+      retryAfter: retryAfterOf(res),
     });
   }
   return json;
@@ -335,8 +353,10 @@ export async function apiKeyChallenge(args: { apiUrl: string; address: string; f
   const res = await (args.fetchImpl ?? fetch)(`${base}/api/v1/keys/challenge?wallet=${encodeURIComponent(args.address)}`, {
     headers: { 'x-orientim-skill': SKILL_VERSION }, signal: AbortSignal.timeout(args.requestTimeoutMs ?? 30_000),
   });
-  const json = (await res.json()) as { message?: unknown; challenge?: unknown; error?: { code: string; message: string } };
-  if (!res.ok) throw new OrientimApiError({ status: res.status, code: json.error?.code ?? 'http', message: json.error?.message ?? res.statusText, body: json.error ?? {} });
+  const json = await answerOf<{ message?: unknown; challenge?: unknown }>(res);
+  if (!res.ok) {
+    throw new OrientimApiError({ status: res.status, code: json.error?.code ?? 'http', message: json.error?.message ?? res.statusText, body: json.error ?? {}, retryAfter: retryAfterOf(res) });
+  }
   if (!isApiKeyMessage(json.message, base, args.address) || typeof json.challenge !== 'string') {
     throw new Error('Orientim answered with a message that is not its API-key message for this wallet. Nothing was signed.');
   }
@@ -354,9 +374,9 @@ export async function redeemApiKey(args: {
     body: JSON.stringify({ message: args.message, challenge: args.challenge, signature }),
     signal: AbortSignal.timeout(args.requestTimeoutMs ?? 30_000),
   });
-  const json = (await res.json()) as { key?: string; wallet?: string; expiresAt?: string; error?: { code: string; message: string } };
+  const json = await answerOf<{ key?: string; wallet?: string; expiresAt?: string }>(res);
   if (!res.ok || typeof json.key !== 'string') {
-    throw new OrientimApiError({ status: res.status, code: json.error?.code ?? 'http', message: json.error?.message ?? res.statusText, body: json.error ?? {} });
+    throw new OrientimApiError({ status: res.status, code: json.error?.code ?? 'http', message: json.error?.message ?? res.statusText, body: json.error ?? {}, retryAfter: retryAfterOf(res) });
   }
   return { key: json.key, wallet: json.wallet ?? '', expiresAt: json.expiresAt ?? '' };
 }
@@ -701,7 +721,7 @@ export class PriceImpactError extends Error {
   readonly impactBps: number;
   readonly limitBps: number;
   constructor(impactBps: number, limitBps: number) {
-    super(`Price impact is ${(impactBps / 100).toFixed(2)}%, above the limit of ${(limitBps / 100).toFixed(2)}%: this amount would move the market too much. Nothing was prepared or signed.`);
+    super(`Price impact is ${(impactBps / 100).toFixed(2)}%, above the limit of ${(limitBps / 100).toFixed(2)}%: this amount would move the market too much. Nothing was sent.`);
     this.impactBps = impactBps;
     this.limitBps = limitBps;
   }
@@ -712,7 +732,9 @@ export class PriceImpactError extends Error {
  * price impact limit, a fee limit or a minimum). A usage error, not a refusal of this swap: the
  * example and `orientim-verify` exit 2. Nothing was prepared.
  */
-export class IntentError extends Error {}
+export class IntentError extends Error {
+  override name = 'IntentError';
+}
 
 /**
  * The command's own setup cannot be used: the owner's policy file, the state directory it names, or
@@ -737,7 +759,7 @@ const orderIsOpen = (r: OrderRecord | null): r is OrderRecord => !!r && (r.state
 
 /** Why a retry is refused by an order book that cannot take an order again atomically. */
 export const retryRefused = (id: string) =>
-  `Order ${id} was tried before, and this order book has no reclaimOrder, so two workers could both retry it. Give the retry a new id, or add reclaimOrder to the book. Nothing was prepared.`;
+  `Order ${id} was tried before, and this order book has no reclaimOrder, so two workers could both retry it. Add reclaimOrder to the book (createFileStore has it), then retry with the same id. Nothing was prepared.`;
 
 /** The wallet a kept record was signed by: named in it, or read from its transaction's fee payer. */
 function ownerOfRecord(s: Signed): string | null {
@@ -923,7 +945,7 @@ export function heldToApproval(approval: Approval | null, minOut: string | undef
     throw new ApprovalError('The user\'s approval from the dry run has expired: run the dry run again and ask the user again. Nothing was started.');
   }
   if (minOut !== undefined && BigInt(minOut) < BigInt(approval.minOut)) {
-    throw new ApprovalError(`--min-out ${minOut} is below the ${approval.minOut} the user approved after the dry run: run the dry run again and ask the user before accepting less. Nothing was started.`);
+    throw new ApprovalError(`The minimum ${minOut} (--min-out, or intent.minOut) is below the ${approval.minOut} the user approved after the dry run: run the dry run again and ask the user before accepting less. Nothing was started.`);
   }
   return minOut !== undefined && BigInt(minOut) > BigInt(approval.minOut) ? minOut : approval.minOut;
 }
@@ -951,7 +973,7 @@ export class PolicyError extends Error {
   readonly limit?: string;
   readonly spent?: string;
   constructor(code: PolicyError['code'], message: string, figures: { limit?: string; spent?: string } = {}) {
-    super(`${message} The limit is the owner's (ORIENTIM_POLICY); only the owner may change it. Nothing was prepared or sent.`);
+    super(`${message} The limit is the owner's (ORIENTIM_POLICY); only the owner may change it. Nothing was sent.`);
     this.code = code;
     Object.assign(this, figures);
   }
@@ -1032,7 +1054,11 @@ const FILE_MODE = 0o600;
  * by its owner only.
  */
 export function createFileStore(dir: string): PendingStore & OrderBook & SpendLog & { orderBySignature(signature: string): Promise<FoundOrder | null> } {
-  mkdirSync(dir, { recursive: true, mode: DIR_MODE });
+  try {
+    mkdirSync(dir, { recursive: true, mode: DIR_MODE });
+  } catch (e) {
+    throw new ConfigError(`The state directory ${dir} cannot be made (${(e as NodeJS.ErrnoException).code ?? (e as Error).message}); nothing was started. Fix it first.`);
+  }
   const file = (signature: string) => join(dir, `pending-${signature}.json`);
   // An id is the caller's text: its hash names the file, and the record keeps the id itself.
   const orderFile = (id: string) => join(dir, `order-${createHash('sha256').update(id).digest('hex').slice(0, 40)}.json`);
@@ -1212,7 +1238,10 @@ export async function resolvePending(
   const onChain = status && (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized')
     ? (status.err ? 'failed' as const : 'confirmed' as const) : null;
   if (!onChain && status) throw new Error(`The network has seen ${signature} but not settled it yet: wait and recover again. Nothing was changed.`);
-  if (!onChain && (view.coveredHeight === null || view.coveredHeight <= lastBlockOf(kept))) {
+  if (!onChain && view.coveredHeight === null) {
+    throw new Error(`Your RPC could not say whether ${signature} can still land: try again, or recover it. Nothing was changed.`);
+  }
+  if (!onChain && view.coveredHeight! <= lastBlockOf(kept)) {
     throw new Error(`${signature} can still land until block ${lastBlockOf(kept)}: recover it instead. Nothing was changed.`);
   }
   const settledAs = onChain ?? outcome;
@@ -1270,12 +1299,16 @@ export function acquireLock(dir: string, owner: string, staleMs = 10 * 60_000): 
   if (typeof owner !== 'string' || !BASE58.test(owner)) {
     throw new Error(`A lock is taken for a wallet address, not ${JSON.stringify(String(owner).slice(0, 60))}. Nothing was started.`);
   }
-  mkdirSync(dir, { recursive: true, mode: DIR_MODE });
+  const unwritable = (e: unknown) =>
+    new ConfigError(`The state directory ${dir} cannot be written (${(e as NodeJS.ErrnoException).code ?? (e as Error).message}); nothing was started. Fix it first.`);
+  try {
+    mkdirSync(dir, { recursive: true, mode: DIR_MODE });
+  } catch (e) {
+    throw unwritable(e);
+  }
   const path = join(dir, `lock-${owner}`);
   const token = randomUUID();
   const busy = () => new LockBusyError(owner, path);
-  const unwritable = (e: unknown) =>
-    new Error(`The state directory ${dir} cannot be written (${(e as NodeJS.ErrnoException).code ?? (e as Error).message}); nothing was started. Fix it first.`);
   const lockAt = (file: string): { token?: unknown; pid?: unknown; host?: unknown } | null => {
     try {
       // Only a regular file is a lock; a link or a directory is never followed, moved or removed.
@@ -1354,7 +1387,7 @@ export class FloorError extends Error {
   readonly minOut: string;
   readonly lowest: string;
   constructor(minOut: string, lowest: string) {
-    super(`The minimum ${minOut} is more than ${MAX_BELOW_BPS / 100}% below the market's own price; the lowest accepted is ${lowest}. Nothing was prepared or signed.`);
+    super(`The minimum ${minOut} is more than ${MAX_BELOW_BPS / 100}% below the market's own price; the lowest accepted is ${lowest}. Nothing was sent.`);
     this.minOut = minOut;
     this.lowest = lowest;
   }
@@ -1371,19 +1404,24 @@ export async function ownFloor(
   deps: { rpc: Rpc<SolanaRpcApi>; fetchImpl?: Fetch; jupiterApiKey?: string; requestTimeoutMs?: number; policy?: Pick<OwnerPolicy, 'allowUnknownPriceImpact'> },
 ): Promise<{ minOut: string; priceImpactBps: number | null }> {
   if (intent.routingMode !== undefined && intent.routingMode !== 'standard' && intent.routingMode !== 'fast') {
-    throw new IntentError('routingMode must be standard or fast. Nothing was prepared.');
+    throw new IntentError('routingMode must be standard or fast. Nothing was sent.');
   }
   if (intent.slippageBps !== undefined && !isSlippageBps(intent.slippageBps)) {
-    throw new IntentError(`slippageBps must be a whole number of bps from ${MIN_SLIPPAGE_BPS} to ${MAX_SLIPPAGE_BPS}. Nothing was prepared.`);
+    throw new IntentError(`slippageBps must be a whole number of bps from ${MIN_SLIPPAGE_BPS} to ${MAX_SLIPPAGE_BPS}. Nothing was sent.`);
   }
   const maxImpact = intent.maxPriceImpactBps ?? DEFAULT_MAX_PRICE_IMPACT_BPS;
   if (!(Number.isInteger(maxImpact) && maxImpact >= 0 && maxImpact <= MAX_PRICE_IMPACT_BPS)) {
-    throw new IntentError(`maxPriceImpactBps must be a whole number of bps from 0 to ${MAX_PRICE_IMPACT_BPS}. Nothing was prepared.`);
+    throw new IntentError(`maxPriceImpactBps must be a whole number of bps from 0 to ${MAX_PRICE_IMPACT_BPS}. Nothing was sent.`);
   }
   if (intent.maxFeeBps !== undefined && feeLimitBps(intent.maxFeeBps) !== intent.maxFeeBps) {
-    throw new IntentError(`maxFeeBps may be at most ${feeLimitBps()}, Orientim's pinned fee. Nothing was prepared.`);
+    throw new IntentError(`maxFeeBps must be a whole number of bps from 0 to ${feeLimitBps()}, Orientim's pinned fee. Nothing was sent.`);
   }
-  if (intent.minOut !== undefined && !/^\d{1,20}$/.test(intent.minOut)) throw new IntentError('minOut must be a whole number of base units, as a string. Nothing was prepared.');
+  if (intent.minOut !== undefined && !/^\d{1,20}$/.test(intent.minOut)) throw new IntentError('minOut must be a whole number of base units, as a string. Nothing was sent.');
+  for (const [name, v] of [
+    ['maxNetworkFeeLamports', intent.maxNetworkFeeLamports], ['maxRouteCostLamports', intent.maxRouteCostLamports], ['maxSolFeeLamports', intent.maxSolFeeLamports],
+  ] as const) {
+    if (v !== undefined && !(Number.isSafeInteger(v) && v >= 0)) throw new IntentError(`${name} must be a whole number of lamports. Nothing was sent.`);
+  }
   const own = await ownQuote({
     inputMint: intent.inputMint, outputMint: intent.outputMint, amountIn: intent.amountIn, taker: intent.owner,
     maxFeeBps: intent.maxFeeBps, maxBelowBps: intent.maxBelowBps, slippageBps: intent.slippageBps, apiKey: deps.jupiterApiKey, fetchImpl: deps.fetchImpl,
@@ -1445,7 +1483,12 @@ export async function prepareChecked(args: {
   // A fee in SOL from the wallet: held to a price of your own, asked of Jupiter here.
   await holdSolFee(intent, prepared, { fetchImpl, jupiterApiKey: args.jupiterApiKey });
   const problems = await checkPrepared(prepared, intent, args.rpc, { requestTimeoutMs: args.requestTimeoutMs });
-  if (problems.length) throw new Error(`Not signing: ${problems.join('; ')}`);
+  if (problems.length) {
+    const refused = new Error(`Not signing: ${problems.join('; ')}`);
+    // Your RPC did not answer: nothing is wrong with the transaction, and the check may run again.
+    if (problems.every(isRpcFailure)) refused.name = 'RpcUnavailableError';
+    throw refused;
+  }
   measured('localVerification');
   const risk = await tokenRisk(args.rpc, [intent.inputMint, intent.outputMint], args.requestTimeoutMs ?? 10_000);
   measured('tokenRisk');
@@ -1483,7 +1526,7 @@ export async function holdSolFee(
   if ((prepared.policy as { feeSide?: unknown } | undefined)?.feeSide !== 'sol') return;
   const given = intent.maxSolFeeLamports;
   if (given !== undefined && !(Number.isSafeInteger(given) && given >= 0)) {
-    throw new Error('maxSolFeeLamports must be a whole number of lamports. Nothing was signed.');
+    throw new IntentError('maxSolFeeLamports must be a whole number of lamports. Nothing was sent.');
   }
   const own = await ownSolFeeLimit({
     inputMint: intent.inputMint, amountIn: intent.amountIn, taker: intent.owner, maxFeeBps: intent.maxFeeBps, apiKey: deps.jupiterApiKey, fetchImpl: deps.fetchImpl,
@@ -1539,16 +1582,18 @@ export async function receivedFor(
 }
 
 /**
- * What arrived against the quote, net of a fee taken from the output: better, or
- * well below the quote and within the tolerance. Empty otherwise.
+ * What arrived against the quote, net of a fee taken from the output: better, or well below the
+ * quote, and whether that is within `tolerance` (such as `1%`). Empty otherwise.
  */
 export function fillAgainstQuote(received: bigint, expected: bigint, tolerance: string): string {
   if (expected <= 0n) return '';
   const bps = Number(((received - expected) * 10_000n) / expected);
   const pct = (b: number) => `${(Math.abs(b) / 100).toFixed(Math.abs(b) < 100 ? 2 : 1)}%`;
   if (bps >= 5) return `${pct(bps)} better than quoted.`;
-  if (bps <= -100 && tolerance) return `Filled ${pct(bps)} below the quote, within your ${tolerance} tolerance.`;
-  return '';
+  if (bps > -100) return '';
+  const allowed = /^(\d+(?:\.\d+)?)%$/.exec(tolerance.trim());
+  if (allowed && -bps <= Number(allowed[1]) * 100) return `Filled ${pct(bps)} below the quote, within your ${tolerance} tolerance.`;
+  return `Filled ${pct(bps)} below the quote.`;
 }
 
 /**
