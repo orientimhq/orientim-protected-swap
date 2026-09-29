@@ -1551,7 +1551,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.7.5";
+const SKILL_VERSION = "1.7.6";
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res) => {
 	const after = Number(res.headers.get("retry-after"));
@@ -3028,6 +3028,7 @@ async function main$1() {
 			signature: result.signature,
 			outcome: result.outcome,
 			refusal: result.refusal,
+			meaning: outcomeMeaning(result.outcome, result.refusal),
 			amounts: result.prepared.amounts,
 			...result.received ? { received: result.received } : {},
 			...result.notices.length ? { notices: result.notices } : {},
@@ -3047,6 +3048,23 @@ async function main$1() {
 function exitCodeOf(result) {
 	if (result.bookkeepingError || result.outcome === "unknown") return 3;
 	return result.outcome === "confirmed" ? 0 : 1;
+}
+/**
+* A swap's outcome in words, said beside `outcome` and `refusal` in the command's output (both
+* commands use this), with what to do next. `rejected` and `expired` are said only once the chain
+* shows the transaction can no longer land.
+*/
+function outcomeMeaning(outcome, refusal) {
+	const retry = "Nothing moved and no fee was paid. The order may be tried again with the same id.";
+	if (outcome === "confirmed") return "The swap landed. `received` is what arrived in the wallet, read on your RPC.";
+	if (outcome === "failed") return "The transaction landed but failed on chain, so no tokens moved; only the network fee was paid. The order may be tried again with the same id.";
+	if (outcome === "expired") return `The transaction did not land before it expired. ${retry}`;
+	if (outcome === "unknown") return "No outcome could be read in time: the swap may still land. Look up the signature (orientim-verify resolve, or resolvePending) before anything new from this wallet.";
+	if (refusal === "network") return `The network refused the transaction when it was sent (its own check failed at that moment, most often because the price moved beyond your slippage), and it can no longer land. ${retry}`;
+	if (refusal === "busy") return `Orientim was sending too many transactions and did not send this one, and it can no longer land. ${retry} Wait a few seconds first.`;
+	if (refusal === "paused") return `Orientim has paused swaps and did not send this one, and it can no longer land. ${retry} Try later.`;
+	const meaning = refusal && Object.hasOwn(ERROR_MEANINGS, refusal) ? ERROR_MEANINGS[refusal] : void 0;
+	return `Orientim did not send the transaction${meaning ? ` (${meaning})` : ""}, and it can no longer land. ${retry}`;
 }
 /**
 * The command's line for an error: its code, the skill's words and, for Orientim's errors, their data
@@ -3801,6 +3819,7 @@ async function runCommand(command, input, deps) {
 					signature: result.signature,
 					outcome: result.outcome,
 					...result.refusal ? { refusal: result.refusal } : {},
+					meaning: outcomeMeaning(result.outcome, result.refusal),
 					amounts: prepared.amounts,
 					...received !== null ? { received: received.toString() } : {},
 					...resumed ? { resumed: true } : {},

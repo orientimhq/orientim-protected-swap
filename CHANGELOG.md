@@ -3,6 +3,13 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.7.6 (2026-09-29)
+
+- The example's result and `orientim-verify finalize` carry `meaning`: the outcome and `refusal` in
+  words, with what to do next. A transaction the RPC's preflight refused (`rejected`, `refusal`
+  `network`) says that the network's own check failed at send time, most often a price that moved,
+  that nothing moved and no fee was paid, and that the order may be tried again with the same id.
+
 ## 1.7.5 (2026-09-29)
 
 - An RPC that does not answer during the check is `error.code` `unavailable`, with `retryAfter`,
