@@ -16,6 +16,8 @@ the agent runs Orientim's full verifier on the exact bytes, with chain state rea
 compromised Orientim server, relay or impostor URL can refuse or delay a swap, but cannot make the
 wallet sign one that moves more than the approved amount, or one priced below a floor you got
 yourself. **Without it, you are trusting Orientim's server with the whole wallet.** Never skip it.
+An API key and the optional `x-orientim-skill` header do not prove this check ran. A direct API
+client must run the verifier before its signer accepts the bytes.
 
 ## For agents: before any swap
 
@@ -137,7 +139,7 @@ Run or adapt `examples/swap.ts`. Do not write the flow from scratch, and never d
    two tokens neither of which can carry it pays the fee in SOL from the wallet, 0.3% of its value in
    SOL (`policy.feeSide` is `sol`); hold it to a price of your own with `maxSolFeeLamports`
    (`ownSolFeeLimit` from `lib/orientim-verify.mjs` asks Jupiter; the example does it).
-   Set `slippageBps` (10 to 1500) for the route's tolerance, as a person does on the page; without it,
+   Set `slippageBps` (10 to 1500) for the route's tolerance, as the owner or bot chooses; without it,
    0.5%, or 3% on a Pump.fun curve. The price impact of your own quote is held to `maxPriceImpactBps`
    (default 500): above it the swap is refused before anything is prepared (`PriceImpactError`), and
    only the user or the agent's owner may raise it. A quote from Jupiter without a price impact is
@@ -328,7 +330,7 @@ It needs Node 22.18 or later and `npm ci` in this folder, and reads `SOLANA_RPC_
 Every exit 3 carries `recoveryRequired: true`. `sent: false` says only that this call sent nothing,
 never that an earlier call for the same order did not: act on the exit code and `recoveryRequired`.
 
-`slippageBps` and `maxPriceImpactBps` are optional, and the same as on the page: without them the
+`slippageBps` and `maxPriceImpactBps` are optional: without them the
 tolerance is automatic (0.5%, or 3% on a Pump.fun curve) and a price impact above 5% is refused.
 
 `message` is the transaction's message in base64: sign those bytes with the wallet's ed25519 key and
