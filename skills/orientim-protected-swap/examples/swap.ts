@@ -304,7 +304,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.8.0';
+export const SKILL_VERSION = '1.8.1';
 
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res: Response) => {
@@ -1006,7 +1006,7 @@ export type Approval = { owner: string; inputMint: string; outputMint: string; a
 export const APPROVAL_MS = 10 * 60_000;
 type ApprovalKey = Pick<Approval, 'owner' | 'inputMint' | 'outputMint' | 'amountIn'>;
 /** An amount as one spelling: "05000000" and "5000000" are the same amount, and find the same approval. */
-const sameAmount = (amount: string) => (/^\d{1,20}$/.test(amount) ? BigInt(amount).toString() : amount);
+const sameAmount = (amount: string) => (/^\d{1,64}$/.test(amount) ? BigInt(amount).toString() : amount);
 const approvalFile = (dir: string, k: ApprovalKey) =>
   join(dir, `approval-${createHash('sha256').update(`${k.owner}:${k.inputMint}:${k.outputMint}:${sameAmount(k.amountIn)}`).digest('hex').slice(0, 40)}.json`);
 
