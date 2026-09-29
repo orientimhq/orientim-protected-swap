@@ -3,6 +3,14 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.7.3 (2026-09-29)
+
+- Clarifies that direct API clients must verify the exact transaction before signing, maintain a
+  durable order book across all workers, and enforce owner limits at a separate signer when the
+  agent must not control the key.
+- Updates the API reference for the required positive `minOut` and the 30 bps production fee cap.
+- Removes references to the retired browser swap page from the skill instructions and source comments.
+
 ## 1.7.2 (2026-09-28)
 
 - The check of what stays under the one-time key reads every balance after the swap from the

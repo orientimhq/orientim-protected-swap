@@ -91,7 +91,7 @@ export type Intent = {
   /** A gap to the open market the user already accepted, from a `costs-more` answer (bps, as a string). */
   acceptCostBps?: string;
   /**
-   * The route's slippage tolerance, as a person chooses it on the page: how far below the quote the
+   * The route's slippage tolerance, as the owner or bot chooses it: how far below the quote the
    * swap may fill, 10 to 1500 bps. Unset: 0.5%, or 3% on a Pump.fun bonding curve. The route is built
    * at it, and the check holds the route to it; your own floor follows it (1.5% below, 2% on a curve).
    */
@@ -99,7 +99,7 @@ export type Intent = {
   /**
    * The most this amount may move the market, in bps (default 500: 5%). Above it the swap is refused
    * before anything is prepared (`PriceImpactError`): the mark of thin liquidity, as when a token's
-   * pool is being drained. The page asks a person at the same point.
+   * pool is being drained. Show this to the owner before an interactive swap.
    */
   maxPriceImpactBps?: number;
   /** 1 for a v1 transaction, where the deployment offers it; 0 (the default) otherwise. */
@@ -291,7 +291,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.7.2';
+export const SKILL_VERSION = '1.7.3';
 
 /** Each call to Orientim ends within `timeoutMs`: an answer that never comes is no answer. */
 async function call<T>(fetchImpl: Fetch, url: string, key: string, body: unknown, timeoutMs = 30_000): Promise<T> {
@@ -1521,7 +1521,7 @@ export async function receivedFor(
 }
 
 /**
- * What arrived against the quote, net of a fee taken from the output, as the page says it: better, or
+ * What arrived against the quote, net of a fee taken from the output: better, or
  * well below the quote and within the tolerance. Empty otherwise.
  */
 export function fillAgainstQuote(received: bigint, expected: bigint, tolerance: string): string {

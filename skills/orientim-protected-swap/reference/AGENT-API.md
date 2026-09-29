@@ -11,6 +11,8 @@ with the one-time key, and sends it. Orientim never holds your key or your funds
 Calls may carry `x-orientim-skill: <version>`, as the skill does. When a change old copies of the skill
 cannot follow requires it, prepare answers an older version with `426 skill-outdated` and the
 `minimum` it serves; finalize is never refused for it, so a swap already signed always completes.
+The header is optional and can be supplied by any client. Neither it nor an API key proves that
+independent verification ran.
 
 **Verify before you sign.** Orientim's server builds the transaction your wallet signs. Run Orientim's
 verifier on it, with chain state from your own RPC, before signing: the skill below does it
@@ -85,7 +87,7 @@ USDT, on whichever side of the swap they are; otherwise in the input token. `amo
 which. On the input it is 0.3% of `amountIn`; on the output it is 0.3% of the enforced minimum, paid
 after the minimum is checked, and `amounts.minOut` is what your wallet keeps after it. It is part of
 the message you sign, and Orientim signs only the exact message it built, so a transaction with the fee
-removed is not signed. The verifier refuses anything above 1%.
+removed is not signed. The agent API and shipped skill both cap Orientim's fee at 0.3%.
 
 A swap between two tokens neither of which can carry the fee (no SOL, USDC or USDT on it, and no
 treasury account for the input) pays it in SOL from your wallet, before the swap: 0.3% of what the
@@ -118,9 +120,9 @@ Authorization: Bearer ori_...
 | `owner` | required | The wallet that pays and receives. It signs first. |
 | `inputMint`, `outputMint` | required | Mint addresses. SOL is `So11111111111111111111111111111111111111112`. |
 | `amountIn` | required | Base units, as a string (`"5000000"` is 5 USDC). It includes the fee when the fee is taken in the input token; see Fee. |
-| `minOut` | optional | Your own floor, in base units of the output: what your wallet must keep, after a fee taken from the output. Orientim never enforces less than this. Without it, the floor is the route's quote less your `slippageBps`, or 0.5% (3% on a Pump.fun bonding curve) when you set none, which is Orientim's word: the skill's check refuses to sign without a floor of your own, and `ownMinimum` gets one from Jupiter directly. For a large order, take it from a source independent of Jupiter as well (an oracle, another aggregator, limits of your own). |
+| `minOut` | required | A positive integer string in base units of the output: what your wallet must keep, after a fee taken from the output. Get this floor independently before prepare (`ownMinimum` asks Jupiter directly). For a large order, compare with another source as well. Supplying a number alone does not prove independent verification: check the exact transaction before signing. |
 | `acceptCostBps` | optional | Accept a protected route this many bps below the open market (see `costs-more`): a whole number, as a number or an integer string. |
-| `slippageBps` | optional | The route's slippage tolerance, as a person chooses it on the page: how far below the quote the swap may fill, a whole number from 10 to 1500 (0.1% to 15%). Default 50, or 300 on a Pump.fun bonding curve. The route is built at it; the skill's check holds the route to the number in your own intent, never to Orientim's answer. |
+| `slippageBps` | optional | The route's slippage tolerance, chosen by the owner or bot: how far below the quote the swap may fill, a whole number from 10 to 1500 (0.1% to 15%). Default 50, or 300 on a Pump.fun bonding curve. The route is built at it; the skill's check holds the route to the number in your own intent, never to Orientim's answer. |
 | `version` | optional | `0`, the default. Leave it unset. |
 
 `200` response:
@@ -182,19 +184,20 @@ evidence, and holds the amounts stated to the policy the bytes are checked again
 `amounts.feeBps` is 0 when the swap is fee-free. `amounts.priceImpactPct` is `null` when Jupiter
 did not state it: unknown, never none (the skill refuses such a swap unless the owner's policy says
 `allowUnknownPriceImpact`). `tokens` says what each mint allows its issuer: to freeze balances, to
-mint more, or to move and burn them from any wallet (`permanentDelegate`, a Token-2022 extension). The page warns people about each, and the skill reads the same
+mint more, or to move and burn them from any wallet (`permanentDelegate`, a Token-2022 extension). The prepare response states each notice, and the skill reads the same
 from your RPC (`tokenRisk`, and `tokenNotices` in words, which leave out SOL, USDC and USDT: they keep
 these powers by design). A read that fails is `unavailable`, never "no risk".
 
-### The same protection as the page
+### Protection across agent integrations
 
-Every channel runs the same checks: the page, the API with the skill, and the command line for bots.
+The skill and command line run the independent checks below. A client using the API directly must
+run them itself before signing.
 
-- **Slippage tolerance.** `slippageBps` is the page's setting, 0.1% to 15%. Without it, 0.5%, or 3%
+- **Slippage tolerance.** `slippageBps` is the owner's or bot's setting, 0.1% to 15%. Without it, 0.5%, or 3%
   on a Pump.fun curve. Your own floor follows it: 1.5% below it, or 2% on a curve.
 - **Price impact.** How far this amount moves the market, from your own quote (`ownQuote`). Above
   `maxPriceImpactBps` (default 5%, at most 20%) the skill refuses before anything is prepared, with
-  `PriceImpactError`. The page asks a person at the same point. A large impact is the mark of thin
+  `PriceImpactError`. Show this to the owner before an interactive swap. A large impact is the mark of thin
   liquidity, as when a token's pool is being drained.
 - **Your floor's own limit.** The skill asks Jupiter for its price on every swap and refuses a
   `minOut` more than 20% below it before anything is prepared (`FloorError`, `floor-too-low` from the
@@ -323,6 +326,28 @@ The key endpoints answer, besides `400 bad-request`:
 | 429 | `rate-limited` | Too many challenges or keys from this address. Wait `Retry-After` seconds. |
 | 503 | `unavailable` | The wallet's balance could not be read. Wait `Retry-After` seconds and retry. |
 
+## Direct API integration contract
+
+The API key grants access, not proof that your bot checked the transaction. The optional skill-version
+header is a compatibility hint, not attestation. A bot using `prepare` and `finalize` directly must:
+
+1. Set a positive `minOut` from its own price source and run `checkPrepared` or
+   `orientim-verify check` on the exact prepare response with its own RPC before a signer sees it.
+2. Give every trading decision one stable order id. Persist the decision, transaction bytes, ticket,
+   wallet signature and last valid block height before finalize. A repeated prepare is a new swap,
+   even if its body is identical.
+3. Serialize swaps per wallet with a durable lock shared by every worker. On restart or an unknown
+   finalize result, recover the signed transaction by signature and wait until it confirms or expires
+   before preparing anything for that order again. Reserve daily spending atomically across workers.
+4. Keep the signing key outside the agent if the agent must be unable to spend without these checks.
+   The signing service must enforce the owner's own wallet, mint, amount and daily limits before
+   signing, and return the signed transaction unsent. A key file readable by the agent offers no
+   protection against that agent choosing a different signing path.
+
+The shipped skill and command line provide local order state and wallet locks. A deployment with
+workers on several machines needs a shared atomic store or a signer that serializes and limits them.
+Keep an agent wallet funded only for the work it is allowed to do.
+
 ## What Orientim can and cannot do with your swap
 
 - It never has your key, and after your wallet signs, no byte of the message can change without
@@ -339,7 +364,6 @@ The key endpoints answer, besides `400 bad-request`:
   route opened, and rent that does not come back beyond your limit. Orientim derives a key only for its
   ticket's finalize, repeated or not, and never logs the nonces it derives from.
 - It keeps no state (no database): two prepares for the same order are two different transactions
-  to it. One swap per order is kept by your order book (the skill's `OrderBook`, shared by every
-  worker that may take the order), not by Orientim.
+  to it. One swap per order is kept by your order book, not by Orientim.
 - It can refuse or delay: a signed transaction it holds back simply expires, in about 40 seconds.
 - It sees the addresses and amounts of the swaps you ask for, as any swap API does.

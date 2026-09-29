@@ -2,7 +2,7 @@
  * The agent's own check of a prepared swap, before its wallet signs.
  *
  * Orientim's server built the transaction; the agent must not take its word for what it does. This
- * runs Orientim's full verifier (`@orientim/verifier`, the same rules the page applies, R1–R7) on the exact
+ * runs Orientim's full verifier (`@orientim/verifier`, rules R1–R7) on the exact
  * bytes, against chain state the agent reads from ITS OWN RPC, and against a policy the agent holds
  * to its own intent and limits. A compromised server, relay, DNS or impostor URL can then refuse or
  * delay a swap, never make the agent sign one that moves anything but the approved amount.
@@ -38,12 +38,12 @@ export const ORIENTIM_TREASURY = 'ARzSA3sZGhf5t4UnYrmB3TWyZ5m3Wo1nA9zWBcoiTqLE';
 
 /** What the agent asked for, and the most it accepts. */
 /**
- * The tolerance an agent may choose for its route, as a person may on the page: 0.1% to 15%. Without
+ * The tolerance an agent may choose for its route: 0.1% to 15%. Without
  * a choice Orientim builds at 0.5%, or 3% on a Pump.fun bonding curve.
  */
 export const MIN_SLIPPAGE_BPS = 10;
 export const MAX_SLIPPAGE_BPS = 1_500;
-/** Above this price impact an agent refuses unless its owner allows more: the page asks a person there. */
+/** Above this price impact an agent refuses unless its owner allows more. */
 export const DEFAULT_MAX_PRICE_IMPACT_BPS = 500;
 /**
  * Hard limits no intent, flag or JSON field can raise. An agent sets its own
@@ -439,7 +439,7 @@ const QUIET_MINTS = new Set<string>([WSOL_MINT, USDC_MINT, 'Es9vMFrzaCERmJfrF4H2
 
 /**
  * What the agent should know about the tokens themselves, read from the mint accounts on its own RPC:
- * an issuer that can freeze balances, or mint more. The same notes the page shows people. Orientim
+ * an issuer that can freeze balances, or mint more. The prepare response carries the same notes. Orientim
  * protects the wallet, not the value of what is bought. Never fails: an unreadable mint gives no note.
  */
 /** What a mint lets its issuer do, read on your RPC. `wellKnown`: SOL, USDC or USDT, which keep these powers by design. */
