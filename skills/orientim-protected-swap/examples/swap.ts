@@ -180,7 +180,7 @@ export const ERROR_MEANINGS: Readonly<Record<string, string>> = {
   'transaction-changed': 'The signed transaction differs from the one prepared. Sign exactly what prepare returned.',
   'wallet-changed-transaction': 'The wallet changed the transaction or did not sign it. Sign exactly what prepare returned.',
   'unsupported-token': 'This token cannot be swapped safely now.',
-  'no-route': 'No protected route was found for this swap now.',
+  'no-route': 'No protected route was found for this swap now. Try a smaller amount, or once more a little later; if it is refused again, stop: the token may have no liquidity left, or its route does not fit in one transaction.',
   'insufficient-sol': 'The wallet may not hold enough SOL for this swap: Orientim estimates the most it needs while it runs, including deposits that come back.',
   'wallet-empty': 'The wallet holds less than the least a wallet needs for an API key (0.01 SOL unless Orientim set another amount). Fund it, then ask again.',
   'bad-signature': "Orientim did not accept the signed key message: the signature does not match it, or the challenge expired or is not Orientim's. Ask for a new challenge and sign it.",
@@ -296,7 +296,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.7.7';
+export const SKILL_VERSION = '1.7.8';
 
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res: Response) => {
@@ -608,7 +608,7 @@ export async function confirm(
   rpc: Rpc<SolanaRpcApi>,
   signature: string,
   lastValidBlockHeight: bigint,
-  opts: { signedTransaction?: string; pollMs?: number; maxWaitMs?: number; requestTimeoutMs?: number; earliestHeight?: bigint } = {},
+  opts: { signedTransaction?: string; pollMs?: number; maxWaitMs?: number; requestTimeoutMs?: number; earliestHeight?: bigint; onFailed?: (err: unknown) => void } = {},
 ): Promise<Outcome> {
   const pollMs = opts.pollMs ?? 1_000;
   const deadline = Date.now() + (opts.maxWaitMs ?? 180_000);
@@ -616,6 +616,7 @@ export async function confirm(
   const settled = (s: { confirmationStatus?: string | null } | null | undefined) =>
     !!s && (s.confirmationStatus === 'confirmed' || s.confirmationStatus === 'finalized');
   const earliest = opts.earliestHeight;
+  const failed = (err: unknown) => { opts.onFailed?.(err); return 'failed' as const; };
   let pastLifetime = false;
   let empty = 0;
   let unprovable = 0;
@@ -625,7 +626,7 @@ export async function confirm(
     try {
       if (!pastLifetime) {
         const [status] = (await rpc.getSignatureStatuses([signature as never], { searchTransactionHistory: false }).send(bounded())).value;
-        if (settled(status)) return status!.err ? 'failed' : 'confirmed';
+        if (settled(status)) return status!.err ? failed(status!.err) : 'confirmed';
         if ((await rpc.getBlockHeight({ commitment: 'confirmed' }).send(bounded())) > lastValidBlockHeight) pastLifetime = true;
         else if (opts.signedTransaction && Date.now() - lastSend > 3_000) {
           lastSend = Date.now();
@@ -634,7 +635,7 @@ export async function confirm(
       } else {
         // It can no longer be included: one coherent view of the full history.
         const { status: late, view } = await lookUp(rpc, signature, bounded);
-        if (settled(late)) return late!.err ? 'failed' : 'confirmed';
+        if (settled(late)) return late!.err ? failed(late!.err) : 'confirmed';
         if (!late && earliest !== undefined && provesNeverLanded(view, lastValidBlockHeight, earliest) && ++empty >= 2) return 'expired';
         // Past the window in which "no record" proves anything, waiting longer proves nothing either.
         const over = view.coveredHeight !== null && view.coveredHeight > lastValidBlockHeight;
@@ -1662,7 +1663,7 @@ const ERROR_NAME = /^[A-Za-z]{3,40}$/;
  * The simulation's error behind a refusal by the network's own check, in words, or undefined when
  * it is not one of the shapes a simulation gives. The error came from Orientim, so it is read only
  * as those shapes and the program it names is taken from the transaction you signed, never from
- * the answer.
+ * the answer. `failureCause` reads the error of a transaction that landed and failed the same way.
  */
 export function networkCause(raw: string, transaction: Transaction): string | undefined {
   let err: unknown;
@@ -1701,6 +1702,19 @@ export function networkCause(raw: string, transaction: Transaction): string | un
 }
 
 /**
+ * Why a transaction that landed failed, in words, from the error your RPC gave with its status, or
+ * undefined when it is not a shape the chain gives. Read as `networkCause` reads a simulation's.
+ */
+export function failureCause(err: unknown, transaction: Transaction): string | undefined {
+  try {
+    const raw = JSON.stringify(err, (_, v) => typeof v === 'bigint' ? (v <= BigInt(Number.MAX_SAFE_INTEGER) && v >= 0n ? Number(v) : undefined) : v);
+    return typeof raw === 'string' ? networkCause(raw, transaction) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Finalize asked for a kept swap, then its outcome read on your RPC. Asked once more when no answer
  * came back, or none that reads (the same bytes can land only once). A refusal (4xx) is not asked
  * again: it says this request sent nothing, and the chain says the rest.
@@ -1724,12 +1738,15 @@ async function askAndConfirm(
   // Bytes from the server are re-broadcast only when they are this very transaction, signed by E.
   const bytes = done?.signedTransaction && await isThisTransaction(done.signedTransaction, mine, temporaryAuthority)
     ? done.signedTransaction : undefined;
+  let chainError: unknown;
   const outcome = await confirm(args.rpc, signature, signed.lastValidBlockHeight, {
     signedTransaction: bytes, pollMs: args.pollMs, maxWaitMs: args.maxWaitMs, requestTimeoutMs: args.requestTimeoutMs, earliestHeight: signed.signedHeight,
+    onFailed: err => { chainError = err; },
   });
   // Kept or not, the caller decides what to do with a pending record: an unknown outcome stays pending.
   const refusal = refused ? refused.code : done?.status === 'rejected' ? safeCode(done.refusal ?? 'network') : undefined;
-  const cause = refusal === 'network' && done?.transactionError ? networkCause(done.transactionError, mine) : undefined;
+  const cause = outcome === 'failed' ? failureCause(chainError, mine)
+    : refusal === 'network' && done?.transactionError ? networkCause(done.transactionError, mine) : undefined;
   // Refused by Orientim, and the chain shows it can no longer land: that refusal is what happened.
   if (outcome === 'expired' && refusal) return { signature, outcome: 'rejected', refusal, ...(cause ? { cause } : {}) };
   return { signature, outcome, ...(refusal ? { refusal } : {}), ...(cause ? { cause } : {}) };
@@ -2025,7 +2042,7 @@ export function exitCodeOf(result: { outcome: Outcome | 'rejected'; bookkeepingE
 export function outcomeMeaning(outcome: Outcome | 'rejected', refusal?: string, cause?: string): string {
   const retry = 'Nothing moved and no fee was paid. The order may be tried again with the same id.';
   if (outcome === 'confirmed') return 'The swap landed. `received` is what arrived in the wallet, read on your RPC.';
-  if (outcome === 'failed') return 'The transaction landed but failed on chain, so no tokens moved; only the network fee was paid. The order may be tried again with the same id.';
+  if (outcome === 'failed') return `The transaction landed but failed on chain${cause ? `: ${cause}` : ''}, so no tokens moved; only the network fee was paid. The order may be tried again with the same id.`;
   if (outcome === 'expired') return `The transaction did not land before it expired. ${retry}`;
   if (outcome === 'unknown') return 'No outcome could be read in time: the swap may still land. Look up the signature (orientim-verify resolve, or resolvePending) before anything new from this wallet.';
   if (refusal === 'network') {

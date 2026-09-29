@@ -84,10 +84,12 @@ The user provides these; never ask for them in chat, and never print or log them
   changes the transaction is refused. One that can only sign and send cannot be used: Orientim signs last.
 - `ORIENTIM_POLICY` (optional, recommended for agents and unattended bots): path to the owner's limits,
   a JSON file the owner writes and keeps where the agent cannot edit it. `maxAmountIn` is the most one
-  swap may spend of each input mint; a mint it does not list is not swapped from at all.
+  swap may spend of each input mint; a mint it does not list is not swapped from at all, selling
+  included: list every token the agent may need to sell back, not only the ones it pays with.
   `maxAmountInPerDay` is the most all swaps from one wallet signed in the last 24 hours may spend
   together (a swap counts once signed, whether it lands or not, and whether or not a policy was set
-  when it was made: every swap kept in the state directory counts). Base units, as strings:
+  when it was made: every swap kept in the state directory counts). A retry of a failed or expired
+  swap is signed again, so it counts again: retries of a volatile token spend the day's budget. Base units, as strings:
 
   ```json
   { "maxAmountIn": { "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "50000000" },
@@ -139,7 +141,8 @@ Run or adapt `examples/swap.ts`. Do not write the flow from scratch, and never d
    (`amounts.feeMint`); taken from the output, it comes out of what arrives, and `amounts.minOut` is
    what the wallet keeps after it. Your `minOut` means the same: what the wallet keeps. A swap between
    two tokens neither of which can carry it pays the fee in SOL from the wallet, 0.3% of its value in
-   SOL (`policy.feeSide` is `sol`); hold it to a price of your own with `maxSolFeeLamports`
+   SOL (`policy.feeSide` is `sol`), so the wallet needs that SOL besides the token: without it the swap
+   is refused (`insufficient-sol`). Hold the fee to a price of your own with `maxSolFeeLamports`
    (`ownSolFeeLimit` from `lib/orientim-verify.mjs` asks Jupiter; the example does it).
    Set `slippageBps` (10 to 1500) for the route's tolerance, as the owner or bot chooses; without it,
    0.5%, or 3% on a Pump.fun curve. The price impact of your own quote is held to `maxPriceImpactBps`
@@ -166,6 +169,8 @@ Run or adapt `examples/swap.ts`. Do not write the flow from scratch, and never d
    - rent the route keeps (`costs.routeRentLamports` less `costs.routeRefundLamports`), accepted only
      up to your `maxRouteCostLamports`, 0.001 SOL unless you set it (the example's
      `--max-route-cost-lamports`). A Pump.fun bonding curve keeps about 0.00013 SOL of every buy.
+     This cap and the network fee cap are amounts, not shares of the swap: on a swap of a few dollars
+     they allow several percent, so set both lower for small swaps.
    - optionally, one ceiling for all the SOL the swap costs and does not return
      (`maxSolCostLamports`): the network fee, rent the route keeps, and Orientim's fee whenever it is
      in SOL, whether taken from SOL sold, from SOL bought or from the wallet (`solFeeOf`). The SOL the
@@ -202,7 +207,10 @@ Run or adapt `examples/swap.ts`. Do not write the flow from scratch, and never d
    `unknown`, check the signature before anything else. Both the example's result and `finalize` say the
    outcome in words as `meaning` (for `rejected` with `refusal` `network`: the network's own check refused
    it at send time, and `meaning` names why when the network said, such as a price that moved beyond your
-   slippage; nothing moved and no fee was paid).
+   slippage; nothing moved and no fee was paid). For `failed`, `meaning` also names why the transaction
+   failed on chain when your RPC's status says it, such as a price that moved beyond your slippage.
+   Proving that a `rejected` transaction can no longer land takes about a minute after it was sent:
+   the wait is what keeps the same order from being swapped twice.
 
 ## Handling errors
 
@@ -232,8 +240,9 @@ names the transaction (`signature`, `lastValidBlockHeight`); follow step 7 befor
 - `503 fee-unavailable`: Orientim cannot collect its fee on this swap right now (its treasury is not
   ready, or the pair cannot be priced in SOL), so it built nothing. Wait the `Retry-After` and try
   again; Orientim never builds a swap free instead.
-- `422 amount-too-small`: the amount is below the smallest swap Orientim takes, about $1 (a fee below
-  2,500 base units of USDC or USDT, or 10,000 lamports). Swap a larger amount. Selling the whole
+- `422 amount-too-small`: the amount is below the smallest swap Orientim takes, about 0.0034 SOL or
+  $0.84 of USDC or USDT at the 0.3% fee (a fee below 2,500 base units of USDC or USDT, or 10,000
+  lamports; for a swap between two other tokens, the fee's value in SOL). Swap a larger amount. Selling the whole
   balance of a token is allowed at any size, so a position that has lost its value can always be left
   (not SOL, and not below a fee that is nothing at all).
 - `426 skill-outdated`: this copy of the skill is older than Orientim serves (`minimum`).
@@ -259,6 +268,31 @@ lets it go above your cap (`maxNetworkFeeLamports`, 0.001 SOL unless you set it)
 `notices.networkBusy` in a prepared swap (`checked.prepared.notices.networkBusy` in the answer of
 `orientim-verify prepare`) means the network fee is at its limit: the swap may land
 late or expire (an expired swap costs nothing).
+
+A token with almost no liquidity may not be sellable with the skill at all: a price impact above 20%
+and a minimum more than 20% below the market are refused whatever the owner's settings
+(`MAX_PRICE_IMPACT_BPS`, `MAX_BELOW_BPS`). An owner who accepts that loss changes these constants in
+their own copy, knowingly; everything else is still checked.
+
+### A bot with no one to ask
+
+`price-moved` and `costs-more` need a person's yes. A bot that runs alone keeps to this:
+
+- Every order has an id of its own, the same on every attempt. Run `recover` first; exit 3 means stop
+  and alert.
+- `price-moved`: wait a few seconds and prepare again with the minimum from your own fresh price, at
+  most three times, then alert the owner. Never accept `newMinOut` by itself.
+- `costs-more`: do not accept it; alert the owner or try a much smaller amount.
+- `busy`, `unavailable`, `rate-limited`: wait the `Retry-After`, a bounded number of times.
+- `no-route`: try once more, then treat the token as not sellable now and alert.
+- `unsupported-token`, `input-account-restricted`, `amount-too-small`, `insufficient-sol`,
+  `insufficient-balance`: nothing a retry changes; alert.
+- `mint-not-allowed`, `amount-over-limit`, `daily-limit`, `price-impact-high`, `floor-too-low`: the
+  owner's limits; alert, never work around them.
+- "Not signing: ...": a security alarm. Stop and alert; never retry blindly.
+- After `rejected`, `expired` or `failed`, retry with the same id, a bounded number of times (each
+  signed retry counts against a daily limit). After `unknown` do nothing new until the chain settles
+  it, and never use a new id to get past it.
 
 ## Rules
 
