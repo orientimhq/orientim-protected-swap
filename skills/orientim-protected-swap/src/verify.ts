@@ -45,6 +45,30 @@ export const MIN_SLIPPAGE_BPS = 10;
 export const MAX_SLIPPAGE_BPS = 1_500;
 /** Above this price impact an agent refuses unless its owner allows more. */
 export const DEFAULT_MAX_PRICE_IMPACT_BPS = 500;
+/** The tolerance Orientim builds at when none is chosen: 0.5%, or 3% on a Pump.fun bonding curve. */
+export const DEFAULT_SLIPPAGE_BPS = 50;
+export const CURVE_SLIPPAGE_BPS = 300;
+/**
+ * `slippageBps: "auto"`: the tolerance Jupiter estimates for this trade (its RTSE), held from 0.5% to
+ * 3%, and 3% on a Pump.fun curve; never above an owner's `maxSlippageBps`.
+ */
+export const AUTO_MIN_SLIPPAGE_BPS = 50;
+export const AUTO_MAX_SLIPPAGE_BPS = 300;
+
+/**
+ * Jupiter's estimate of the tolerance a trade needs, from an answer asked with `slippageBps=rtse`:
+ * how far its threshold sits below its quote, in bps, held from `AUTO_MIN_SLIPPAGE_BPS` to
+ * `AUTO_MAX_SLIPPAGE_BPS`. An answer without a usable threshold gives the least.
+ */
+export function autoSlippageBps(r: { outAmount?: string; otherAmountThreshold?: string }): number {
+  if (!/^\d{1,20}$/.test(r.outAmount ?? '') || !/^\d{1,20}$/.test(r.otherAmountThreshold ?? '')) return AUTO_MIN_SLIPPAGE_BPS;
+  const out = BigInt(r.outAmount!);
+  const threshold = BigInt(r.otherAmountThreshold!);
+  if (out <= 0n || threshold <= 0n || threshold >= out) return AUTO_MIN_SLIPPAGE_BPS;
+  // Rounded to the nearest bps: the threshold itself was rounded down from the quote.
+  const bps = Number(((out - threshold) * 20_000n + out) / (2n * out));
+  return Math.min(AUTO_MAX_SLIPPAGE_BPS, Math.max(AUTO_MIN_SLIPPAGE_BPS, bps));
+}
 /**
  * Hard limits no intent, flag or JSON field can raise. An agent sets its own
  * limits, and an agent can be misled: a page, an issue or a token name that tells it to "set the
@@ -369,6 +393,18 @@ export type OwnQuoteArgs = {
    */
   slippageBps?: number;
   /**
+   * Ask Jupiter how much tolerance this trade needs (`autoSlippageBps`) instead of `slippageBps`:
+   * the answer's `slippageBps` is then that estimate, and the floor follows it as it follows a chosen one.
+   */
+  autoSlippage?: boolean;
+  /**
+   * The owner's ceilings (`OwnerPolicy`): the route's tolerance never above `maxSlippageBps` (a
+   * default or an estimate above it is lowered to it; the answer's `slippageBps` then says so), and
+   * the floor never further below the price than `maxBelowBps` (a default further below is raised
+   * to it). A chosen tolerance or `maxBelowBps` above them is the caller's to refuse.
+   */
+  ceilings?: { maxSlippageBps?: number; maxBelowBps?: number };
+  /**
    * The transfer fee the input token charges now (`inputTransferFee`), if any: such a token keeps a
    * cut of the transfer into the temporary account, so the route is priced for what arrives there.
    * Without it, the floor of a taxing token would sit above what any honest route can deliver.
@@ -405,7 +441,11 @@ export async function ownMinimum(args: OwnQuoteArgs & { maxPriceImpactBps?: numb
  * route trades on a Pump.fun bonding curve. A large price impact is the mark of thin liquidity, as
  * when a token's pool is drained: the check refuses it (`DEFAULT_MAX_PRICE_IMPACT_BPS`).
  */
-export async function ownQuote(args: OwnQuoteArgs): Promise<{ minOut: string; outAmount: string; priceImpactBps: number | null; curve: boolean }> {
+export async function ownQuote(args: OwnQuoteArgs): Promise<{
+  minOut: string; outAmount: string; priceImpactBps: number | null; curve: boolean;
+  /** The tolerance to build the route at, when it is not Orientim's default: chosen, estimated, or the owner's ceiling. */
+  slippageBps?: number;
+}> {
   if (args.maxBelowBps !== undefined && !(Number.isInteger(args.maxBelowBps) && args.maxBelowBps >= 0 && args.maxBelowBps <= MAX_BELOW_BPS)) {
     throw usageError(`maxBelowBps must be a whole number of bps from 0 to ${MAX_BELOW_BPS}: a floor further below the market is not accepted. Nothing was sent.`);
   }
@@ -414,7 +454,8 @@ export async function ownQuote(args: OwnQuoteArgs): Promise<{ minOut: string; ou
   const routed = args.inputTax ? afterFee - transferFeeOn(afterFee, args.inputTax) : afterFee;
   const url = new URL(args.jupiterUrl ?? 'https://api.jup.ag/swap/v2/build');
   const query = {
-    inputMint: args.inputMint, outputMint: args.outputMint, amount: routed.toString(), taker: args.taker, slippageBps: '50', maxAccounts: '64',
+    inputMint: args.inputMint, outputMint: args.outputMint, amount: routed.toString(), taker: args.taker,
+    slippageBps: args.autoSlippage ? 'rtse' : '50', maxAccounts: '64',
   };
   for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
   const res = await (args.fetchImpl ?? fetch)(url.toString(), {
@@ -422,14 +463,24 @@ export async function ownQuote(args: OwnQuoteArgs): Promise<{ minOut: string; ou
   });
   if (!res.ok) throw new Error(jupiterRefusal(res.status, 'your own price', args.apiKey));
   const r = (await res.json()) as {
-    inputMint?: string; outputMint?: string; inAmount?: string; outAmount?: string; priceImpactPct?: string | number;
+    inputMint?: string; outputMint?: string; inAmount?: string; outAmount?: string; otherAmountThreshold?: string; priceImpactPct?: string | number;
     swapInstruction?: { accounts?: { pubkey: string }[] };
   };
   if (r.inputMint !== args.inputMint || r.outputMint !== args.outputMint || r.inAmount !== routed.toString() || !/^\d{1,20}$/.test(r.outAmount ?? '')) {
     throw new Error('Jupiter answered for another trade when asked for your own price');
   }
   const curve = r.swapInstruction?.accounts?.some(a => a.pubkey === PUMP_CURVE_PROGRAM) ?? false;
-  const below = BigInt(args.maxBelowBps ?? (args.slippageBps !== undefined ? args.slippageBps + (curve ? 200 : 150) : (curve ? 500 : 200)));
+  // The tolerance: chosen, or estimated on "auto" (3% on a curve, as Orientim's default there), and
+  // never above the owner's ceiling. Undefined leaves Orientim's default, which is within it.
+  const ceiling = args.ceilings?.maxSlippageBps;
+  let slippage = args.slippageBps ?? (args.autoSlippage ? (curve ? CURVE_SLIPPAGE_BPS : autoSlippageBps(r)) : undefined);
+  if (ceiling !== undefined) {
+    const effective = slippage ?? (curve ? CURVE_SLIPPAGE_BPS : DEFAULT_SLIPPAGE_BPS);
+    if (effective > ceiling) slippage = ceiling;
+  }
+  const defaultBelow = slippage !== undefined ? slippage + (curve ? 200 : 150) : (curve ? 500 : 200);
+  const belowCeiling = args.ceilings?.maxBelowBps;
+  const below = BigInt(args.maxBelowBps ?? (belowCeiling !== undefined && defaultBelow > belowCeiling ? belowCeiling : Math.min(defaultBelow, MAX_BELOW_BPS)));
   // The price impact is a hard limit: an answer without it, or with one that is not a number, is
   // refused rather than read as none, unless the owner said to go on without it.
   const impact = typeof r.priceImpactPct === 'number' || (typeof r.priceImpactPct === 'string' && r.priceImpactPct.trim() !== '')
@@ -442,6 +493,7 @@ export async function ownQuote(args: OwnQuoteArgs): Promise<{ minOut: string; ou
     outAmount: r.outAmount!,
     priceImpactBps: !Number.isFinite(impact) ? null : impact > 0 ? Math.round(impact * 10_000) : 0,
     curve,
+    ...(slippage !== undefined ? { slippageBps: slippage } : {}),
   };
 }
 

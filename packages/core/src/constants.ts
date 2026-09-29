@@ -61,9 +61,8 @@ export const MAX_TAKER_RENT_LAMPORTS = 5_000_000n; // 0.005 SOL
 export const MAX_ROUTE_SLIPPAGE_BPS = 50;
 export const MAX_CURVE_SLIPPAGE_BPS = 300;
 /**
- * The most tolerance a person may choose (the page's slippage setting, or an agent's `slippageBps`):
- * 15%. The page asks the verifier for the person's own choice, and the agent API and the skill's
- * check for the number in the agent's own intent, never for more than this. Without a choice,
+ * The most tolerance an agent or its owner may choose (`slippageBps`): 15%. The agent API and the
+ * skill's check ask the verifier for the number in the agent's own intent, never for more than this. Without a choice,
  * routes keep the two ceilings above.
  */
 export const MAX_CHOSEN_SLIPPAGE_BPS = 1_500;

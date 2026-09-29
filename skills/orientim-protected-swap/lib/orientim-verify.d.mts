@@ -12,6 +12,14 @@ export declare const MIN_SLIPPAGE_BPS: 10;
 export declare const MAX_SLIPPAGE_BPS: 1500;
 /** Above this price impact an agent refuses unless its owner allows more. */
 export declare const DEFAULT_MAX_PRICE_IMPACT_BPS: 500;
+/** The tolerance Orientim builds at when none is chosen: 0.5%, or 3% on a Pump.fun bonding curve. */
+export declare const DEFAULT_SLIPPAGE_BPS: 50;
+export declare const CURVE_SLIPPAGE_BPS: 300;
+/** `slippageBps: "auto"`: Jupiter's estimate for the trade, held from 0.5% to 3% (3% on a curve). */
+export declare const AUTO_MIN_SLIPPAGE_BPS: 50;
+export declare const AUTO_MAX_SLIPPAGE_BPS: 300;
+/** Jupiter's estimate of the tolerance a trade needs, from an answer asked with `slippageBps=rtse`, held from 0.5% to 3%. */
+export function autoSlippageBps(r: { outAmount?: string; otherAmountThreshold?: string }): number;
 /** Hard limits no intent can raise: the floor at most this far below Jupiter's price, bps. */
 export declare const MAX_BELOW_BPS: 2000;
 /** The most price impact any intent may accept, bps. */
@@ -92,6 +100,13 @@ export type OwnQuoteArgs = {
   maxFeeBps?: number; maxBelowBps?: number; jupiterUrl?: string; apiKey?: string; fetchImpl?: typeof fetch;
   /** The tolerance the agent chose: without `maxBelowBps`, the floor sits that far below the price, and 1.5% more (2% on a curve). */
   slippageBps?: number;
+  /** Ask Jupiter how much tolerance this trade needs (`autoSlippageBps`); the answer's `slippageBps` is then that estimate. */
+  autoSlippage?: boolean;
+  /**
+   * The owner's ceilings: the route's tolerance never above `maxSlippageBps` (a default or estimate
+   * above it is lowered to it), the floor never further below the price than `maxBelowBps`.
+   */
+  ceilings?: { maxSlippageBps?: number; maxBelowBps?: number };
   /** The input token's transfer fee now (`inputTransferFee`): the route is priced for what arrives. */
   inputTax?: { bps: number; maximum: bigint } | null;
   /** Only the owner's word: accept an answer without a price impact (then `priceImpactBps` is null). Otherwise it is refused. */
@@ -107,7 +122,11 @@ export type OwnQuoteArgs = {
 export function ownMinimum(args: OwnQuoteArgs & { maxPriceImpactBps?: number }): Promise<string>;
 
 /** Jupiter's price, asked for directly: the agent's own floor, the price impact in bps (null only when allowed and unknown), and whether the route is a Pump.fun curve. */
-export function ownQuote(args: OwnQuoteArgs): Promise<{ minOut: string; outAmount: string; priceImpactBps: number | null; curve: boolean }>;
+export function ownQuote(args: OwnQuoteArgs): Promise<{
+  minOut: string; outAmount: string; priceImpactBps: number | null; curve: boolean;
+  /** The tolerance to build the route at, when it is not Orientim's default: chosen, estimated, or the owner's ceiling. */
+  slippageBps?: number;
+}>;
 
 /** What a mint lets its issuer do, read on your RPC. `wellKnown`: SOL, USDC or USDT, which keep these powers by design. */
 export type TokenPowers = { freezeAuthority: boolean; mintAuthority: boolean; permanentDelegate: boolean; wellKnown: boolean };

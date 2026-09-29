@@ -122,7 +122,7 @@ Authorization: Bearer ori_...
 | `amountIn` | required | Base units, as a string (`"5000000"` is 5 USDC). It includes the fee when the fee is taken in the input token; see Fee. |
 | `minOut` | required | A positive integer string in base units of the output: what your wallet must keep, after a fee taken from the output. Get this floor independently before prepare (`ownMinimum` asks Jupiter directly). For a large order, compare with another source as well. Supplying a number alone does not prove independent verification: check the exact transaction before signing. |
 | `acceptCostBps` | optional | Accept a protected route this many bps below the open market (see `costs-more`): a whole number, as a number or an integer string. |
-| `slippageBps` | optional | The route's slippage tolerance, chosen by the owner or bot: how far below the quote the swap may fill, a whole number from 10 to 1500 (0.1% to 15%). Default 50, or 300 on a Pump.fun bonding curve. The route is built at it; the skill's check holds the route to the number in your own intent, never to Orientim's answer. |
+| `slippageBps` | optional | The route's slippage tolerance, chosen by the owner or bot: how far below the quote the swap may fill, a whole number from 10 to 1500 (0.1% to 15%). Default 50, or 300 on a Pump.fun bonding curve. The route is built at it; the skill's check holds the route to the number in your own intent, never to Orientim's answer. The API takes a number: the skill's `"auto"` asks Jupiter for the trade's own tolerance first and sends that number. |
 | `routingMode` | optional | `standard` (default) or `fast`. Fast requires the operator's `ORIENTIM_ENABLE_FAST_ROUTING=1` and is an opt-in Jupiter beta. It may reduce route-search time but can yield a worse quote or priority fee. The independent price floor, standard-route comparison, simulation, and exact-byte checks still apply. Compare measured latency, price and completion before using it in production. |
 | `version` | optional | `0` (default). `1` is a pilot only when the deployment enables `NEXT_PUBLIC_ORIENTIM_ENABLE_V1=1`, and only for bots whose signer and RPC support Solana v1. It may fit a larger transaction, not necessarily execute faster. |
 
@@ -156,7 +156,7 @@ Successful prepare responses include a `Server-Timing` header with `prepare`, `i
 }
 ```
 
-All amounts are strings in base units. The transaction lives 150 blocks, about 40 seconds at
+All amounts are strings in base units. The transaction lives 150 blocks, about a minute at
 today's block times (until `lastValidBlockHeight`; `blocksLeft` is what was left when prepare
 answered). Verify, sign and finalize promptly; with fewer than 30 blocks left, prepare again instead.
 
@@ -197,7 +197,9 @@ The skill and command line run the independent checks below. A client using the 
 run them itself before signing.
 
 - **Slippage tolerance.** `slippageBps` is the owner's or bot's setting, 0.1% to 15%. Without it, 0.5%, or 3%
-  on a Pump.fun curve. Your own floor follows it: 1.5% below it, or 2% on a curve.
+  on a Pump.fun curve; `"auto"` in the skill is Jupiter's estimate for the trade, 0.5% to 3%. Your own floor
+  follows it: 1.5% below it, or 2% on a curve. The owner's policy may cap it (`maxSlippageBps`), and cap how
+  far below the market the floor may sit and the price impact (`maxBelowBps`, `maxPriceImpactBps`).
 - **Price impact.** How far this amount moves the market, from your own quote (`ownQuote`). Above
   `maxPriceImpactBps` (default 5%, at most 20%) the skill refuses before anything is prepared, with
   `PriceImpactError`. Show this to the owner before an interactive swap. A large impact is the mark of thin
@@ -370,5 +372,5 @@ Keep an agent wallet funded only for the work it is allowed to do.
   ticket's finalize, repeated or not, and never logs the nonces it derives from.
 - It keeps no state (no database): two prepares for the same order are two different transactions
   to it. One swap per order is kept by your order book, not by Orientim.
-- It can refuse or delay: a signed transaction it holds back simply expires, in about 40 seconds.
+- It can refuse or delay: a signed transaction it holds back simply expires, in about a minute.
 - It sees the addresses and amounts of the swaps you ask for, as any swap API does.

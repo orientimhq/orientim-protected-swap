@@ -56,9 +56,8 @@ const ABSOLUTE_MAX_NETWORK_FEE_LAMPORTS = 1000000n;
 */
 const MAX_TAKER_RENT_LAMPORTS = 5000000n;
 /**
-* The most tolerance a person may choose (the page's slippage setting, or an agent's `slippageBps`):
-* 15%. The page asks the verifier for the person's own choice, and the agent API and the skill's
-* check for the number in the agent's own intent, never for more than this. Without a choice,
+* The most tolerance an agent or its owner may choose (`slippageBps`): 15%. The agent API and the
+* skill's check ask the verifier for the number in the agent's own intent, never for more than this. Without a choice,
 * routes keep the two ceilings above.
 */
 const MAX_CHOSEN_SLIPPAGE_BPS = 1500;
@@ -1042,6 +1041,28 @@ const MIN_SLIPPAGE_BPS = 10;
 const MAX_SLIPPAGE_BPS = 1500;
 /** Above this price impact an agent refuses unless its owner allows more. */
 const DEFAULT_MAX_PRICE_IMPACT_BPS = 500;
+/** The tolerance Orientim builds at when none is chosen: 0.5%, or 3% on a Pump.fun bonding curve. */
+const DEFAULT_SLIPPAGE_BPS = 50;
+const CURVE_SLIPPAGE_BPS = 300;
+/**
+* `slippageBps: "auto"`: the tolerance Jupiter estimates for this trade (its RTSE), held from 0.5% to
+* 3%, and 3% on a Pump.fun curve; never above an owner's `maxSlippageBps`.
+*/
+const AUTO_MIN_SLIPPAGE_BPS = 50;
+const AUTO_MAX_SLIPPAGE_BPS = 300;
+/**
+* Jupiter's estimate of the tolerance a trade needs, from an answer asked with `slippageBps=rtse`:
+* how far its threshold sits below its quote, in bps, held from `AUTO_MIN_SLIPPAGE_BPS` to
+* `AUTO_MAX_SLIPPAGE_BPS`. An answer without a usable threshold gives the least.
+*/
+function autoSlippageBps(r) {
+	if (!/^\d{1,20}$/.test(r.outAmount ?? "") || !/^\d{1,20}$/.test(r.otherAmountThreshold ?? "")) return 50;
+	const out = BigInt(r.outAmount);
+	const threshold = BigInt(r.otherAmountThreshold);
+	if (out <= 0n || threshold <= 0n || threshold >= out) return 50;
+	const bps = Number(((out - threshold) * 20000n + out) / (2n * out));
+	return Math.min(300, Math.max(50, bps));
+}
 /**
 * Hard limits no intent, flag or JSON field can raise. An agent sets its own
 * limits, and an agent can be misled: a page, an issue or a token name that tells it to "set the
@@ -1303,7 +1324,7 @@ async function ownQuote(args) {
 		outputMint: args.outputMint,
 		amount: routed.toString(),
 		taker: args.taker,
-		slippageBps: "50",
+		slippageBps: args.autoSlippage ? "rtse" : "50",
 		maxAccounts: "64"
 	};
 	for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
@@ -1315,14 +1336,22 @@ async function ownQuote(args) {
 	const r = await res.json();
 	if (r.inputMint !== args.inputMint || r.outputMint !== args.outputMint || r.inAmount !== routed.toString() || !/^\d{1,20}$/.test(r.outAmount ?? "")) throw new Error("Jupiter answered for another trade when asked for your own price");
 	const curve = r.swapInstruction?.accounts?.some((a) => a.pubkey === PUMP_CURVE_PROGRAM) ?? false;
-	const below = BigInt(args.maxBelowBps ?? (args.slippageBps !== void 0 ? args.slippageBps + (curve ? 200 : 150) : curve ? 500 : 200));
+	const ceiling = args.ceilings?.maxSlippageBps;
+	let slippage = args.slippageBps ?? (args.autoSlippage ? curve ? 300 : autoSlippageBps(r) : void 0);
+	if (ceiling !== void 0) {
+		if ((slippage ?? (curve ? 300 : 50)) > ceiling) slippage = ceiling;
+	}
+	const defaultBelow = slippage !== void 0 ? slippage + (curve ? 200 : 150) : curve ? 500 : 200;
+	const belowCeiling = args.ceilings?.maxBelowBps;
+	const below = BigInt(args.maxBelowBps ?? (belowCeiling !== void 0 && defaultBelow > belowCeiling ? belowCeiling : Math.min(defaultBelow, 2e3)));
 	const impact = typeof r.priceImpactPct === "number" || typeof r.priceImpactPct === "string" && r.priceImpactPct.trim() !== "" ? Number(r.priceImpactPct) : NaN;
 	if (!Number.isFinite(impact) && !args.allowUnknownImpact) throw new Error("Jupiter answered without a price impact when asked for your own price: how much this amount moves the market is unknown");
 	return {
 		minOut: (BigInt(r.outAmount) * (10000n - below) / 10000n).toString(),
 		outAmount: r.outAmount,
 		priceImpactBps: !Number.isFinite(impact) ? null : impact > 0 ? Math.round(impact * 1e4) : 0,
-		curve
+		curve,
+		...slippage !== void 0 ? { slippageBps: slippage } : {}
 	};
 }
 /** Stablecoins and SOL keep authorities by design; a note on every swap of them would teach agents to skip notes. */
@@ -1422,4 +1451,4 @@ async function ownSolFeeLimit(args) {
 	return Number(limit);
 }
 //#endregion
-export { DEFAULT_MAX_PRICE_IMPACT_BPS, MAX_BELOW_BPS, MAX_FEE_BPS, MAX_PRICE_IMPACT_BPS, MAX_SLIPPAGE_BPS, MIN_SLIPPAGE_BPS, ORIENTIM_TREASURY, STATUS_CACHE_BLOCKS, feeLimitBps, inputTransferFee, isRpcFailure, isSlippageBps, noticesOf, ownMinimum, ownQuote, ownSolFeeLimit, pastProof, provesNeverLanded, solFeeOf, tokenNotices, tokenRisk, verifyPrepared };
+export { AUTO_MAX_SLIPPAGE_BPS, AUTO_MIN_SLIPPAGE_BPS, CURVE_SLIPPAGE_BPS, DEFAULT_MAX_PRICE_IMPACT_BPS, DEFAULT_SLIPPAGE_BPS, MAX_BELOW_BPS, MAX_FEE_BPS, MAX_PRICE_IMPACT_BPS, MAX_SLIPPAGE_BPS, MIN_SLIPPAGE_BPS, ORIENTIM_TREASURY, STATUS_CACHE_BLOCKS, autoSlippageBps, feeLimitBps, inputTransferFee, isRpcFailure, isSlippageBps, noticesOf, ownMinimum, ownQuote, ownSolFeeLimit, pastProof, provesNeverLanded, solFeeOf, tokenNotices, tokenRisk, verifyPrepared };

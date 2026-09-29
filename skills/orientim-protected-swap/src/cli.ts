@@ -84,6 +84,8 @@ export type CliDeps = {
   store?: PendingStore & OrderBook & Partial<SpendLog> & { orderBySignature?(signature: string): Promise<FoundOrder | null> };
   /** The owner's limits (`ORIENTIM_POLICY`): per swap and per day, whatever the intent says. */
   policy?: OwnerPolicy;
+  /** An RPC with the full history the owner names (`ORIENTIM_ARCHIVE_RPC_URL`): a second proof of expiry. */
+  archive?: Rpc<SolanaRpcApi>;
 };
 
 export type CliResult = { code: number; output: Record<string, unknown> };
@@ -259,8 +261,11 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
       // The owner's limits hold here too, counted against the swaps this state directory kept.
       if (deps.policy) await checkPolicy(deps.policy, intent, spendsOf(store));
       // The same floor as prepare: Jupiter's own price, whatever the intent says.
+      if (intent.slippageBps === 'auto') return usage('check needs intent.slippageBps as the number of bps the swap was prepared with, not "auto".');
       const own = await ownFloor(intent, { rpc: deps.rpc, fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey, requestTimeoutMs: deps.requestTimeoutMs, policy: deps.policy });
       intent.minOut = own.minOut;
+      // Without a tolerance of its own, the owner's ceiling (if any) is what the route is held to.
+      if (own.slippageBps !== undefined) intent.slippageBps = own.slippageBps;
       const priceImpactBps = own.priceImpactBps;
       // A fee in SOL: never above the skill's own limit, whatever the intent says.
       await holdSolFee(intent, prepared, { fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey });
@@ -288,7 +293,7 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
       } catch (e) {
         return { code: 3, output: { ok: false, ...(e instanceof LockBusyError ? { busy: true } : {}), error: `${messageOf(e)} Nothing was settled; run recover again once it is done.` } };
       }
-      const { settled, unknown, bookkeepingErrors } = await recoverPending(store, deps.rpc, { pollMs: deps.pollMs, maxWaitMs: deps.maxWaitMs, orders: store });
+      const { settled, unknown, bookkeepingErrors } = await recoverPending(store, deps.rpc, { pollMs: deps.pollMs, maxWaitMs: deps.maxWaitMs, orders: store, archive: deps.archive });
       // What stays kept (an unknown outcome, or a record that could not be updated) is settled again next time.
       const open = unknown.length > 0 || bookkeepingErrors.length > 0;
       return {
@@ -529,6 +534,7 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
         signedAs = kept.signature;
         const result = await resumeSigned({
           ...api, rpc: deps.rpc, signed: kept, fetchImpl: deps.fetchImpl, pollMs: deps.pollMs, maxWaitMs: deps.maxWaitMs, requestTimeoutMs: deps.requestTimeoutMs,
+          archive: deps.archive,
         });
         return settle(result, kept.intentId ?? intent.id, true);
       }
@@ -551,8 +557,10 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
       // even prepare's output. The floor is held to Jupiter's own price and the hard limits again,
       // and a fee in SOL to the skill's own limit, and to what the user approved after a dry run.
       intent.minOut = heldToApproval(keptApproval(deps.stateDir, approvalKeyOf({ ...intent, owner: prepared.wallet })), intent.minOut);
+      if (intent.slippageBps === 'auto') return { code: 2, output: { ok: false, sent: false, error: 'finalize needs checked.intent.slippageBps as prepare returned it, a number, not "auto". Nothing was sent.' } };
       const own = await ownFloor(intent, { rpc: deps.rpc, fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey, requestTimeoutMs: deps.requestTimeoutMs, policy: deps.policy });
       intent.minOut = own.minOut;
+      if (own.slippageBps !== undefined) intent.slippageBps = own.slippageBps;
       await holdSolFee(intent, prepared, { fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey });
       const problems = await checkPrepared(prepared, intent, deps.rpc, { requestTimeoutMs: deps.requestTimeoutMs });
       if (problems.length && problems.every(isRpcFailure)) return unavailableRefusal(new Error(problems.join('; ')), false);
@@ -573,7 +581,7 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
       }
       const result = await finalizeSigned({
         ...api, rpc: deps.rpc, prepared, signedTransaction: wire, fetchImpl: deps.fetchImpl,
-        pollMs: deps.pollMs, maxWaitMs: deps.maxWaitMs, requestTimeoutMs: deps.requestTimeoutMs,
+        pollMs: deps.pollMs, maxWaitMs: deps.maxWaitMs, requestTimeoutMs: deps.requestTimeoutMs, archive: deps.archive,
         // Kept on disk before finalize: if this process stops, `recover` settles it first. The swap is
         // kept before the order is taken, as the example does, so a run that stops between the two
         // leaves a kept swap `recover` settles, never an order pending with nothing kept. The order is
@@ -697,6 +705,7 @@ export async function main(): Promise<void> {
   print(await runCli(command, input, {
     // The key commands read nothing from a chain.
     rpc: createSolanaRpc(rpcUrl ?? 'http://127.0.0.1:1'),
+    ...(process.env.ORIENTIM_ARCHIVE_RPC_URL ? { archive: createSolanaRpc(process.env.ORIENTIM_ARCHIVE_RPC_URL) } : {}),
     apiUrl: process.env.ORIENTIM_API_URL,
     apiKey: process.env.ORIENTIM_API_KEY,
     jupiterApiKey: process.env.JUPITER_API_KEY || undefined,

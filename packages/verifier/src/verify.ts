@@ -361,7 +361,7 @@ const OWN_CLEANUP: Slot[] = ['minOutCheck', 'harvestEIn', 'harvestIntermediate',
  */
 export type VerifyOptions = {
   /**
-   * The tolerance the person chose on the page, or an agent in its own intent (`slippageBps`), in bps,
+   * The tolerance an agent chose in its own intent (`slippageBps`), in bps,
    * for a route of any kind; at most MAX_CHOSEN_SLIPPAGE_BPS (15%). Unset, a route may carry 0.5%, or
    * 3% on a Pump.fun bonding curve. It is always the caller's own choice, never Orientim's answer.
    */
@@ -404,7 +404,7 @@ export async function verify(transaction: Transaction, policy: Policy, snapshot:
   // feeBps of the amount, before the swap; on the output, feeBps of the enforced minimum, after it,
   // and only in SOL, USDC or USDT. A pair without SOL pays in SOL from the wallet instead (`sol`),
   // before the swap, at a price the verifier cannot see: that amount is the policy's own statement,
-  // held to a price by the page that built it or by the agent's own (the skill).
+  // held to a price of the agent's own (the skill).
   if (p.feeSide !== null && p.feeSide !== 'input' && p.feeSide !== 'output' && p.feeSide !== 'sol') fail('R2', 'the policy names no fee side Orientim knows');
   if ((p.treasury === null) !== (p.feeSide === null)) fail('R2', 'the policy has a treasury without a fee side, or the other way round');
   if (p.feeSide === 'output' && !FEE_TOKENS.includes(p.outputMint)) fail('R2', 'a fee on the output is taken only in SOL, USDC or USDT');
