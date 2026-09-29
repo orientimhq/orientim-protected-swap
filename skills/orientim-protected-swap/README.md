@@ -16,6 +16,8 @@ npm ci               # the one dependency, @solana/kit 8.3.0, as the lockfile pi
   `SKILL.md`). The bot signs one message with its own key; the command does the rest.
 - **The API itself**: `reference/AGENT-API.md`.
 
+Route search is standard by default. An intent may request `routingMode: "fast"` when the server enables Jupiter's beta fast mode; compare latency and quote quality before using it for unattended orders. `version: 1` is a separate opt-in pilot for compatible RPCs and signers. The same verification runs before signing in both cases.
+
 You need an API key from Orientim (`ORIENTIM_API_KEY`) and an RPC of your own (`SOLANA_RPC_URL`). The key
 comes at once: connect the agent's wallet on orientim.com/developers#access and sign one message, or run
 `orientim-verify key-challenge`, then `key` (see `SKILL.md`). Never put a wallet key in a prompt, a

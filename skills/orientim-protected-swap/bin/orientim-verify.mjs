@@ -1541,7 +1541,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.7.3";
+const SKILL_VERSION = "1.7.4";
 /** Each call to Orientim ends within `timeoutMs`: an answer that never comes is no answer. */
 async function call(fetchImpl, url, key, body, timeoutMs = 3e4) {
 	const res = await fetchImpl(url, {
@@ -2457,6 +2457,7 @@ var FloorError = class extends Error {
 * the market. The price impact is held to `maxPriceImpactBps`, itself at most `MAX_PRICE_IMPACT_BPS`.
 */
 async function ownFloor(intent, deps) {
+	if (intent.routingMode !== void 0 && intent.routingMode !== "standard" && intent.routingMode !== "fast") throw new IntentError("routingMode must be standard or fast. Nothing was prepared.");
 	if (intent.slippageBps !== void 0 && !isSlippageBps(intent.slippageBps)) throw new IntentError(`slippageBps must be a whole number of bps from 10 to ${MAX_SLIPPAGE_BPS}. Nothing was prepared.`);
 	const maxImpact = intent.maxPriceImpactBps ?? 500;
 	if (!(Number.isInteger(maxImpact) && maxImpact >= 0 && maxImpact <= 2e3)) throw new IntentError(`maxPriceImpactBps must be a whole number of bps from 0 to ${MAX_PRICE_IMPACT_BPS}. Nothing was prepared.`);
@@ -2497,7 +2498,15 @@ async function prepareChecked(args) {
 	const fetchImpl = args.fetchImpl ?? fetch;
 	const owner = args.owner;
 	const { slippageBps } = args.intent;
-	const minOut = (await ownFloor({
+	let phaseStarted = performance.now();
+	const measured = (phase) => {
+		const now = performance.now();
+		try {
+			args.onTiming?.(phase, Math.round(now - phaseStarted));
+		} catch {}
+		phaseStarted = now;
+	};
+	const own = await ownFloor({
 		...args.intent,
 		owner
 	}, {
@@ -2506,7 +2515,9 @@ async function prepareChecked(args) {
 		jupiterApiKey: args.jupiterApiKey,
 		requestTimeoutMs: args.requestTimeoutMs,
 		policy: args.policy
-	})).minOut;
+	});
+	measured("ownFloor");
+	const minOut = own.minOut;
 	const intent = {
 		...args.intent,
 		owner,
@@ -2520,15 +2531,19 @@ async function prepareChecked(args) {
 		...intent.minOut ? { minOut: intent.minOut } : {},
 		...intent.acceptCostBps ? { acceptCostBps: intent.acceptCostBps } : {},
 		...slippageBps !== void 0 ? { slippageBps } : {},
+		...intent.routingMode === "fast" ? { routingMode: "fast" } : {},
 		...intent.version !== void 0 ? { version: intent.version } : {}
 	}, args.requestTimeoutMs);
+	measured("apiPrepare");
 	await holdSolFee(intent, prepared, {
 		fetchImpl,
 		jupiterApiKey: args.jupiterApiKey
 	});
 	const problems = await checkPrepared(prepared, intent, args.rpc, { requestTimeoutMs: args.requestTimeoutMs });
 	if (problems.length) throw new Error(`Not signing: ${problems.join("; ")}`);
+	measured("localVerification");
 	const risk = await tokenRisk(args.rpc, [intent.inputMint, intent.outputMint], args.requestTimeoutMs ?? 1e4);
+	measured("tokenRisk");
 	return {
 		prepared: preparedData(prepared),
 		intent,
@@ -2725,7 +2740,12 @@ async function protectedSwap(args) {
 		...args,
 		owner
 	});
+	const signStarted = performance.now();
 	const signedTransaction = await signAsWallet(args.wallet, prepared.transaction);
+	try {
+		args.onTiming?.("sign", Math.round(performance.now() - signStarted));
+	} catch {}
+	const finalizeStarted = performance.now();
 	const result = await finalizeSigned({
 		...args,
 		prepared,
@@ -2775,6 +2795,9 @@ async function protectedSwap(args) {
 			await args.onSigned?.(kept);
 		}
 	});
+	try {
+		args.onTiming?.("finalize", Math.round(performance.now() - finalizeStarted));
+	} catch {}
 	const got = result.outcome === "confirmed" ? await receivedFor(args.rpc, result.signature, prepared, {
 		requestTimeoutMs: args.requestTimeoutMs,
 		pollMs: args.pollMs
@@ -2811,7 +2834,7 @@ async function main$1() {
 		flag("amount")
 	];
 	if (!inputMint || !outputMint || !amountIn) {
-		console.error("usage: node swap.ts --in <mint> --out <mint> --amount <base units> --id <order id> [--slippage-bps N] [--max-price-impact-bps N] [--min-out N] [--max-below-bps N] [--max-fee-bps N] [--max-route-cost-lamports N] [--accept-cost-bps N] [--v1] [--state <dir>] [--owner <address> --dry-run]");
+		console.error("usage: node swap.ts --in <mint> --out <mint> --amount <base units> --id <order id> [--slippage-bps N] [--max-price-impact-bps N] [--min-out N] [--max-below-bps N] [--max-fee-bps N] [--max-route-cost-lamports N] [--accept-cost-bps N] [--fast] [--v1] [--state <dir>] [--owner <address> --dry-run]");
 		process.exit(2);
 	}
 	const apiUrl = need("ORIENTIM_API_URL").replace(/\/+$/, "");
@@ -2829,6 +2852,7 @@ async function main$1() {
 		maxRouteCostLamports: flag("max-route-cost-lamports") ? Number(flag("max-route-cost-lamports")) : void 0,
 		acceptCostBps: flag("accept-cost-bps"),
 		version: process.argv.includes("--v1") ? 1 : void 0,
+		routingMode: process.argv.includes("--fast") ? "fast" : void 0,
 		id: flag("id")
 	};
 	const jupiterApiKey = process.env.JUPITER_API_KEY || void 0;
@@ -2861,7 +2885,8 @@ async function main$1() {
 			minOut,
 			...intent.acceptCostBps ? { acceptCostBps: intent.acceptCostBps } : {},
 			...intent.version ? { version: 1 } : {},
-			...intent.slippageBps !== void 0 ? { slippageBps: intent.slippageBps } : {}
+			...intent.slippageBps !== void 0 ? { slippageBps: intent.slippageBps } : {},
+			...intent.routingMode === "fast" ? { routingMode: "fast" } : {}
 		});
 		const checked = {
 			...intent,
