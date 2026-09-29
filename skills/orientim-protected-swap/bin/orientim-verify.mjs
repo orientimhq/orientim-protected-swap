@@ -1416,7 +1416,7 @@ const ERROR_MEANINGS = {
 	"transaction-changed": "The signed transaction differs from the one prepared. Sign exactly what prepare returned.",
 	"wallet-changed-transaction": "The wallet changed the transaction or did not sign it. Sign exactly what prepare returned.",
 	"unsupported-token": "This token cannot be swapped safely now.",
-	"no-route": "No protected route was found for this swap now.",
+	"no-route": "No protected route was found for this swap now. Try a smaller amount, or once more a little later; if it is refused again, stop: the token may have no liquidity left, or its route does not fit in one transaction.",
 	"insufficient-sol": "The wallet may not hold enough SOL for this swap: Orientim estimates the most it needs while it runs, including deposits that come back.",
 	"wallet-empty": "The wallet holds less than the least a wallet needs for an API key (0.01 SOL unless Orientim set another amount). Fund it, then ask again.",
 	"bad-signature": "Orientim did not accept the signed key message: the signature does not match it, or the challenge expired or is not Orientim's. Ask for a new challenge and sign it.",
@@ -1551,7 +1551,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.7.7";
+const SKILL_VERSION = "1.7.8";
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res) => {
 	const after = Number(res.headers.get("retry-after"));
@@ -1845,6 +1845,10 @@ async function confirm(rpc, signature, lastValidBlockHeight, opts = {}) {
 	const bounded = () => ({ abortSignal: AbortSignal.timeout(Math.max(1, Math.min(opts.requestTimeoutMs ?? 1e4, deadline - Date.now()))) });
 	const settled = (s) => !!s && (s.confirmationStatus === "confirmed" || s.confirmationStatus === "finalized");
 	const earliest = opts.earliestHeight;
+	const failed = (err) => {
+		opts.onFailed?.(err);
+		return "failed";
+	};
 	let pastLifetime = false;
 	let empty = 0;
 	let unprovable = 0;
@@ -1853,7 +1857,7 @@ async function confirm(rpc, signature, lastValidBlockHeight, opts = {}) {
 		try {
 			if (!pastLifetime) {
 				const [status] = (await rpc.getSignatureStatuses([signature], { searchTransactionHistory: false }).send(bounded())).value;
-				if (settled(status)) return status.err ? "failed" : "confirmed";
+				if (settled(status)) return status.err ? failed(status.err) : "confirmed";
 				if (await rpc.getBlockHeight({ commitment: "confirmed" }).send(bounded()) > lastValidBlockHeight) pastLifetime = true;
 				else if (opts.signedTransaction && Date.now() - lastSend > 3e3) {
 					lastSend = Date.now();
@@ -1865,7 +1869,7 @@ async function confirm(rpc, signature, lastValidBlockHeight, opts = {}) {
 				}
 			} else {
 				const { status: late, view } = await lookUp(rpc, signature, bounded);
-				if (settled(late)) return late.err ? "failed" : "confirmed";
+				if (settled(late)) return late.err ? failed(late.err) : "confirmed";
 				if (!late && earliest !== void 0 && provesNeverLanded(view, lastValidBlockHeight, earliest) && ++empty >= 2) return "expired";
 				const over = view.coveredHeight !== null && view.coveredHeight > lastValidBlockHeight;
 				if (!late && over && (earliest === void 0 || pastProof(view, earliest)) && ++unprovable >= 2) return "unknown";
@@ -2719,7 +2723,7 @@ const ERROR_NAME = /^[A-Za-z]{3,40}$/;
 * The simulation's error behind a refusal by the network's own check, in words, or undefined when
 * it is not one of the shapes a simulation gives. The error came from Orientim, so it is read only
 * as those shapes and the program it names is taken from the transaction you signed, never from
-* the answer.
+* the answer. `failureCause` reads the error of a transaction that landed and failed the same way.
 */
 function networkCause(raw, transaction) {
 	let err;
@@ -2755,6 +2759,18 @@ function networkCause(raw, transaction) {
 	return named ? `${where} failed with ${named}` : `${where} failed with its own error code ${custom}`;
 }
 /**
+* Why a transaction that landed failed, in words, from the error your RPC gave with its status, or
+* undefined when it is not a shape the chain gives. Read as `networkCause` reads a simulation's.
+*/
+function failureCause(err, transaction) {
+	try {
+		const raw = JSON.stringify(err, (_, v) => typeof v === "bigint" ? v <= BigInt(Number.MAX_SAFE_INTEGER) && v >= 0n ? Number(v) : void 0 : v);
+		return typeof raw === "string" ? networkCause(raw, transaction) : void 0;
+	} catch {
+		return;
+	}
+}
+/**
 * Finalize asked for a kept swap, then its outcome read on your RPC. Asked once more when no answer
 * came back, or none that reads (the same bytes can land only once). A refusal (4xx) is not asked
 * again: it says this request sent nothing, and the chain says the rest.
@@ -2774,15 +2790,19 @@ async function askAndConfirm(args, signed, mine, temporaryAuthority) {
 		else if (attempt === 0) await wait(args.pollMs ?? 1e3);
 	}
 	const bytes = done?.signedTransaction && await isThisTransaction(done.signedTransaction, mine, temporaryAuthority) ? done.signedTransaction : void 0;
+	let chainError;
 	const outcome = await confirm(args.rpc, signature, signed.lastValidBlockHeight, {
 		signedTransaction: bytes,
 		pollMs: args.pollMs,
 		maxWaitMs: args.maxWaitMs,
 		requestTimeoutMs: args.requestTimeoutMs,
-		earliestHeight: signed.signedHeight
+		earliestHeight: signed.signedHeight,
+		onFailed: (err) => {
+			chainError = err;
+		}
 	});
 	const refusal = refused ? refused.code : done?.status === "rejected" ? safeCode(done.refusal ?? "network") : void 0;
-	const cause = refusal === "network" && done?.transactionError ? networkCause(done.transactionError, mine) : void 0;
+	const cause = outcome === "failed" ? failureCause(chainError, mine) : refusal === "network" && done?.transactionError ? networkCause(done.transactionError, mine) : void 0;
 	if (outcome === "expired" && refusal) return {
 		signature,
 		outcome: "rejected",
@@ -3102,7 +3122,7 @@ function exitCodeOf(result) {
 function outcomeMeaning(outcome, refusal, cause) {
 	const retry = "Nothing moved and no fee was paid. The order may be tried again with the same id.";
 	if (outcome === "confirmed") return "The swap landed. `received` is what arrived in the wallet, read on your RPC.";
-	if (outcome === "failed") return "The transaction landed but failed on chain, so no tokens moved; only the network fee was paid. The order may be tried again with the same id.";
+	if (outcome === "failed") return `The transaction landed but failed on chain${cause ? `: ${cause}` : ""}, so no tokens moved; only the network fee was paid. The order may be tried again with the same id.`;
 	if (outcome === "expired") return `The transaction did not land before it expired. ${retry}`;
 	if (outcome === "unknown") return "No outcome could be read in time: the swap may still land. Look up the signature (orientim-verify resolve, or resolvePending) before anything new from this wallet.";
 	if (refusal === "network") return `The network refused the transaction when it was sent${cause ? `: ${cause}` : " (its own check failed at that moment, most often because the price moved beyond your slippage)"}, and it can no longer land. ${retry}`;

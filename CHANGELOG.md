@@ -3,6 +3,17 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.7.8 (2026-09-29)
+
+- A transaction that landed and failed on chain says why in `meaning`, read from the status your RPC
+  gave and the transaction you signed: Jupiter's slippage error (6001) is "the price moved beyond
+  your slippage"; other errors name the instruction, its program and the code.
+- `no-route` says when to stop: try a smaller amount or once more later, and stop if it is refused
+  again.
+- SKILL.md: the smallest swap in numbers (about 0.0034 SOL, or $0.84 of USDC or USDT), tokens to
+  sell must be in the policy, retries count against a daily limit, the cost caps are amounts, the
+  20% bounds, what a bot with no one to ask does with each code, and the wait after `rejected`.
+
 ## 1.7.7 (2026-09-29)
 
 - When the network's own check refuses a transaction at send time, `meaning` names the reason it

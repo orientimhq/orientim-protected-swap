@@ -296,6 +296,8 @@ signed and sent nothing. From finalize, once the ticket and message check out, t
 the transaction (`signature`, `lastValidBlockHeight`): an earlier finalize of the same ticket may
 have sent it, so check it before preparing again (see above). `price-moved` and `costs-more` carry
 `requiresApproval: true`: a worse price or a costlier route is the user's decision, not a retry.
+A bot that runs with no one to ask never accepts them by itself; the skill's SKILL.md ("A bot with no
+one to ask") lists what to do with each code.
 
 | HTTP | `code` | What to do |
 | --- | --- | --- |
@@ -311,7 +313,7 @@ have sent it, so check it before preparing again (see above). `price-moved` and 
 | 409 | `output-balance-changed` | Your balance of the output token moved since prepare, so this request signed nothing. Check `signature` as above, then prepare again. |
 | 410 | `expired` | The transaction's lifetime passed before this finalize signed it. Check `signature` as above, then prepare again. |
 | 422 | `unsupported-token`, `no-route`, `bad-quote`, `insufficient-sol`, `insufficient-balance`, `simulation-failed`, `verification-failed`, `token-data-mismatch`, `output-account-restricted`, `input-account-restricted` | This swap cannot be built safely right now; `message` says why. |
-| 422 | `amount-too-small` | The amount is below the smallest swap Orientim takes, about $1. Swap a larger amount. Selling the whole balance of a token is allowed at any size. |
+| 422 | `amount-too-small` | The amount is below the smallest swap Orientim takes, about 0.0034 SOL, or $0.84 of USDC or USDT (for a swap between two other tokens, its value in SOL). Swap a larger amount. Selling the whole balance of a token is allowed at any size. |
 | 426 | `skill-outdated` | This copy of the skill is older than Orientim serves (`minimum`). Download the current one; a swap already signed still finalizes. |
 | 429 | `rate-limited` | Too many requests for this key (per wallet for a self-serve key). Wait `Retry-After` seconds. |
 | 500 | `internal` | Something unexpected failed; nothing was signed by Orientim or sent. Retry later. |
