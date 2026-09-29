@@ -1411,7 +1411,7 @@ const ERROR_MEANINGS = {
 	"route-format": "Jupiter changed its format and Orientim cannot read it yet. Wait at least the Retry-After seconds.",
 	paused: "Orientim has paused swaps; funds are not affected. Try later.",
 	"fee-unavailable": "Orientim cannot collect its fee on this swap right now, so it built nothing. Wait the Retry-After seconds.",
-	"amount-too-small": "The amount is below the smallest swap Orientim takes. Swap a larger amount.",
+	"amount-too-small": "The amount is below the smallest swap Orientim takes. Swap a larger amount, or sell your whole balance of the token, which is allowed at any size.",
 	"skill-outdated": "This copy of the skill is too old. Replace the skill folder with the current one.",
 	"transaction-changed": "The signed transaction differs from the one prepared. Sign exactly what prepare returned.",
 	"wallet-changed-transaction": "The wallet changed the transaction or did not sign it. Sign exactly what prepare returned.",
@@ -1551,7 +1551,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.7.6";
+const SKILL_VERSION = "1.7.7";
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res) => {
 	const after = Number(res.headers.get("retry-after"));
@@ -2712,6 +2712,48 @@ async function finalizeSigned(args) {
 		prepared
 	};
 }
+/** Jupiter's swap program: its own error 6001 is the slippage limit being exceeded. */
+const JUPITER_SWAP_PROGRAM = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4";
+const ERROR_NAME = /^[A-Za-z]{3,40}$/;
+/**
+* The simulation's error behind a refusal by the network's own check, in words, or undefined when
+* it is not one of the shapes a simulation gives. The error came from Orientim, so it is read only
+* as those shapes and the program it names is taken from the transaction you signed, never from
+* the answer.
+*/
+function networkCause(raw, transaction) {
+	let err;
+	try {
+		if (raw.length > 300) return void 0;
+		err = JSON.parse(raw);
+	} catch {
+		return;
+	}
+	if (typeof err === "string") {
+		if (!ERROR_NAME.test(err)) return void 0;
+		if (err === "BlockhashNotFound") return "the network no longer knew the transaction's blockhash (it had expired)";
+		if (err === "InsufficientFundsForFee") return "the wallet could not pay the network fee";
+		return `the network's check failed with ${err}`;
+	}
+	const failed = err?.InstructionError;
+	if (!Array.isArray(failed) || failed.length !== 2 || !Number.isInteger(failed[0]) || failed[0] < 0 || failed[0] > 64) return void 0;
+	const [index, detail] = failed;
+	const custom = detail?.Custom;
+	const named = typeof detail === "string" && ERROR_NAME.test(detail) ? detail : void 0;
+	if (named === void 0 && !(Number.isInteger(custom) && custom >= 0 && custom < 2 ** 32)) return void 0;
+	let program;
+	try {
+		const message = getCompiledTransactionMessageDecoder().decode(transaction.messageBytes);
+		const instruction = message.instructions?.[index];
+		program = instruction ? message.staticAccounts[instruction.programAddressIndex] : void 0;
+	} catch {
+		program = void 0;
+	}
+	if (program === JUPITER_SWAP_PROGRAM && custom === 6001) return "the price moved beyond your slippage tolerance (Jupiter error 6001, the route now gives less than your minimum)";
+	const where = program ? `instruction ${index} (program ${program})` : `instruction ${index}`;
+	if (named === "InsufficientFunds") return `${where} reported insufficient funds for what it moves`;
+	return named ? `${where} failed with ${named}` : `${where} failed with its own error code ${custom}`;
+}
 /**
 * Finalize asked for a kept swap, then its outcome read on your RPC. Asked once more when no answer
 * came back, or none that reads (the same bytes can land only once). A refusal (4xx) is not asked
@@ -2740,15 +2782,18 @@ async function askAndConfirm(args, signed, mine, temporaryAuthority) {
 		earliestHeight: signed.signedHeight
 	});
 	const refusal = refused ? refused.code : done?.status === "rejected" ? safeCode(done.refusal ?? "network") : void 0;
+	const cause = refusal === "network" && done?.transactionError ? networkCause(done.transactionError, mine) : void 0;
 	if (outcome === "expired" && refusal) return {
 		signature,
 		outcome: "rejected",
-		refusal
+		refusal,
+		...cause ? { cause } : {}
 	};
 	return {
 		signature,
 		outcome,
-		...refusal ? { refusal } : {}
+		...refusal ? { refusal } : {},
+		...cause ? { cause } : {}
 	};
 }
 /**
@@ -3028,7 +3073,7 @@ async function main$1() {
 			signature: result.signature,
 			outcome: result.outcome,
 			refusal: result.refusal,
-			meaning: outcomeMeaning(result.outcome, result.refusal),
+			meaning: outcomeMeaning(result.outcome, result.refusal, result.cause),
 			amounts: result.prepared.amounts,
 			...result.received ? { received: result.received } : {},
 			...result.notices.length ? { notices: result.notices } : {},
@@ -3054,13 +3099,13 @@ function exitCodeOf(result) {
 * commands use this), with what to do next. `rejected` and `expired` are said only once the chain
 * shows the transaction can no longer land.
 */
-function outcomeMeaning(outcome, refusal) {
+function outcomeMeaning(outcome, refusal, cause) {
 	const retry = "Nothing moved and no fee was paid. The order may be tried again with the same id.";
 	if (outcome === "confirmed") return "The swap landed. `received` is what arrived in the wallet, read on your RPC.";
 	if (outcome === "failed") return "The transaction landed but failed on chain, so no tokens moved; only the network fee was paid. The order may be tried again with the same id.";
 	if (outcome === "expired") return `The transaction did not land before it expired. ${retry}`;
 	if (outcome === "unknown") return "No outcome could be read in time: the swap may still land. Look up the signature (orientim-verify resolve, or resolvePending) before anything new from this wallet.";
-	if (refusal === "network") return `The network refused the transaction when it was sent (its own check failed at that moment, most often because the price moved beyond your slippage), and it can no longer land. ${retry}`;
+	if (refusal === "network") return `The network refused the transaction when it was sent${cause ? `: ${cause}` : " (its own check failed at that moment, most often because the price moved beyond your slippage)"}, and it can no longer land. ${retry}`;
 	if (refusal === "busy") return `Orientim was sending too many transactions and did not send this one, and it can no longer land. ${retry} Wait a few seconds first.`;
 	if (refusal === "paused") return `Orientim has paused swaps and did not send this one, and it can no longer land. ${retry} Try later.`;
 	const meaning = refusal && Object.hasOwn(ERROR_MEANINGS, refusal) ? ERROR_MEANINGS[refusal] : void 0;
@@ -3819,7 +3864,7 @@ async function runCommand(command, input, deps) {
 					signature: result.signature,
 					outcome: result.outcome,
 					...result.refusal ? { refusal: result.refusal } : {},
-					meaning: outcomeMeaning(result.outcome, result.refusal),
+					meaning: outcomeMeaning(result.outcome, result.refusal, result.cause),
 					amounts: prepared.amounts,
 					...received !== null ? { received: received.toString() } : {},
 					...resumed ? { resumed: true } : {},

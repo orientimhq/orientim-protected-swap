@@ -201,7 +201,8 @@ Run or adapt `examples/swap.ts`. Do not write the flow from scratch, and never d
    transaction can no longer land, and `unknown` when no outcome could be read in time; after
    `unknown`, check the signature before anything else. Both the example's result and `finalize` say the
    outcome in words as `meaning` (for `rejected` with `refusal` `network`: the network's own check refused
-   it at send time, most often a price that moved; nothing moved and no fee was paid).
+   it at send time, and `meaning` names why when the network said, such as a price that moved beyond your
+   slippage; nothing moved and no fee was paid).
 
 ## Handling errors
 
@@ -232,7 +233,9 @@ names the transaction (`signature`, `lastValidBlockHeight`); follow step 7 befor
   ready, or the pair cannot be priced in SOL), so it built nothing. Wait the `Retry-After` and try
   again; Orientim never builds a swap free instead.
 - `422 amount-too-small`: the amount is below the smallest swap Orientim takes, about $1 (a fee below
-  2,500 base units of USDC or USDT, or 10,000 lamports). Swap a larger amount.
+  2,500 base units of USDC or USDT, or 10,000 lamports). Swap a larger amount. Selling the whole
+  balance of a token is allowed at any size, so a position that has lost its value can always be left
+  (not SOL, and not below a fee that is nothing at all).
 - `426 skill-outdated`: this copy of the skill is older than Orientim serves (`minimum`).
   Replace the skill folder with the current one; a swap already signed still finalizes.
 - `400 transaction-changed` / `wallet-changed-transaction`: the signed transaction differs from the

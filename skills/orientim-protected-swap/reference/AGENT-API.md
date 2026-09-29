@@ -262,7 +262,7 @@ one-time key and sends it once. Run one swap per output token at a time.
 | --- | --- |
 | `sent` | The RPC accepted it, or it is already on chain. Confirm it on chain; re-broadcast `signedTransaction` until it confirms or `lastValidBlockHeight` passes. It can land only once. |
 | `unknown` | The connection failed after the request left. It may have been forwarded: check the signature before doing anything else. |
-| `rejected` | This request never broadcast it (`refusal`: `network` is the RPC's preflight, usually a price that moved). No `signedTransaction` is returned. |
+| `rejected` | This request never broadcast it (`refusal`: `network` is the RPC's preflight, usually a price that moved; `transactionError` is then the simulation's error as JSON, e.g. `{"InstructionError":[3,{"Custom":6001}]}`, when there is one). No `signedTransaction` is returned. |
 
 Finalizing the same ticket again, after an answer that never arrived, answers for the same
 transaction: while it is not on chain it is sent again (the same bytes can land only once), and
@@ -311,7 +311,7 @@ have sent it, so check it before preparing again (see above). `price-moved` and 
 | 409 | `output-balance-changed` | Your balance of the output token moved since prepare, so this request signed nothing. Check `signature` as above, then prepare again. |
 | 410 | `expired` | The transaction's lifetime passed before this finalize signed it. Check `signature` as above, then prepare again. |
 | 422 | `unsupported-token`, `no-route`, `bad-quote`, `insufficient-sol`, `insufficient-balance`, `simulation-failed`, `verification-failed`, `token-data-mismatch`, `output-account-restricted`, `input-account-restricted` | This swap cannot be built safely right now; `message` says why. |
-| 422 | `amount-too-small` | The amount is below the smallest swap Orientim takes, about $1. Swap a larger amount. |
+| 422 | `amount-too-small` | The amount is below the smallest swap Orientim takes, about $1. Swap a larger amount. Selling the whole balance of a token is allowed at any size. |
 | 426 | `skill-outdated` | This copy of the skill is older than Orientim serves (`minimum`). Download the current one; a swap already signed still finalizes. |
 | 429 | `rate-limited` | Too many requests for this key (per wallet for a self-serve key). Wait `Retry-After` seconds. |
 | 500 | `internal` | Something unexpected failed; nothing was signed by Orientim or sent. Retry later. |

@@ -447,7 +447,7 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
     const intent: Intent = ownOrError;
     // The chain's answer is the result; a record that could not be updated is said beside it, with
     // the signature, never in its place.
-    const settle = async (result: { signature: string; outcome: string; refusal?: string }, orderId: string | undefined, resumed: boolean): Promise<CliResult> => {
+    const settle = async (result: { signature: string; outcome: string; refusal?: string; cause?: string }, orderId: string | undefined, resumed: boolean): Promise<CliResult> => {
       let bookkeepingError: string | undefined;
       try {
         // Only this attempt's own order: a newer attempt that holds it is never written over.
@@ -468,7 +468,7 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
         output: {
           ok: result.outcome === 'confirmed', signature: result.signature, outcome: result.outcome,
           ...(result.refusal ? { refusal: result.refusal } : {}),
-          meaning: outcomeMeaning(result.outcome as Parameters<typeof outcomeMeaning>[0], result.refusal), amounts: prepared.amounts,
+          meaning: outcomeMeaning(result.outcome as Parameters<typeof outcomeMeaning>[0], result.refusal, result.cause), amounts: prepared.amounts,
           ...(received !== null ? { received: received.toString() } : {}),
           ...(resumed ? { resumed: true } : {}),
           ...(bookkeepingError ? { bookkeepingError } : {}),
