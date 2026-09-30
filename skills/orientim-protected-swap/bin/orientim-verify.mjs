@@ -1651,7 +1651,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.8.5";
+const SKILL_VERSION = "1.8.6";
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res) => {
 	const after = Number(res.headers.get("retry-after"));
@@ -1672,6 +1672,11 @@ async function answerOf(res) {
 		});
 	}
 }
+/**
+* How long a prepare is waited for: longer than Orientim takes at most to answer one (45 s), so a slow
+* build still ends in its answer rather than a second prepare.
+*/
+const PREPARE_WAIT_MS = 6e4;
 /** Each call to Orientim ends within `timeoutMs`: an answer that never comes is no answer. */
 async function call(fetchImpl, url, key, body, timeoutMs = 3e4) {
 	const res = await fetchImpl(url, {
@@ -1941,12 +1946,19 @@ function temporaryAuthorityOf(signedTransaction) {
 /** A list this long may be cut: it proves nothing about what is not on it. */
 const ARCHIVE_PAGE = 1e3;
 /**
+* How far before the end of its lifetime a transaction could have landed, in blocks: its lifetime is
+* 150 blocks, and this is twice that, to spare. The archive's history must reach back this far.
+*/
+const ARCHIVE_REACH_BLOCKS = 300n;
+/**
 * The second proof that a transaction never landed, from an RPC with the chain's full history that
 * the owner named (`ORIENTIM_ARCHIVE_RPC_URL`): its finalized height is past the lifetime, it has no
 * status for the signature, and the one-time key E, which no other transaction of Orientim's signs,
 * lists no such signature at a slot at least as late. Its confirmed status, if it has one, is the
 * outcome instead. Null when it proves nothing. Used when your RPC does not answer, or can no longer
-* prove it (`confirm`). An archive that trims its history proves nothing: name only one that keeps all of it.
+* prove it (`confirm`). An archive whose history does not reach back to every block the transaction
+* could have landed in (its first available block, read here) proves nothing: an RPC that trims its
+* history is asked and found too short, never taken at its word.
 */
 async function archiveOutcome(archive, signature, temporaryAuthority, lastValidBlockHeight, bounded) {
 	const { value: [status] } = await archive.getSignatureStatuses([signature], { searchTransactionHistory: true }).send(bounded());
@@ -1957,6 +1969,14 @@ async function archiveOutcome(archive, signature, temporaryAuthority, lastValidB
 	const finalized = await archive.getEpochInfo({ commitment: "finalized" }).send(bounded());
 	const height = finalized.blockHeight;
 	if (height === void 0 || BigInt(height) <= lastValidBlockHeight) return null;
+	const first = await archive.getFirstAvailableBlock().send(bounded());
+	const oldestHeight = (await archive.getBlock(BigInt(first), {
+		commitment: "finalized",
+		transactionDetails: "none",
+		rewards: false,
+		maxSupportedTransactionVersion: 0
+	}).send(bounded()))?.blockHeight;
+	if (oldestHeight === void 0 || oldestHeight === null || BigInt(oldestHeight) > lastValidBlockHeight - ARCHIVE_REACH_BLOCKS) return null;
 	const listed = await archive.getSignaturesForAddress(temporaryAuthority, {
 		commitment: "finalized",
 		minContextSlot: BigInt(finalized.absoluteSlot),
@@ -2796,7 +2816,7 @@ async function prepareChecked(args) {
 		...slippageBps !== void 0 ? { slippageBps } : {},
 		...intent.routingMode === "fast" ? { routingMode: "fast" } : {},
 		...intent.version !== void 0 ? { version: intent.version } : {}
-	}, args.requestTimeoutMs);
+	}, args.requestTimeoutMs ?? PREPARE_WAIT_MS);
 	measured("apiPrepare");
 	await holdSolFee(intent, prepared, {
 		fetchImpl,
@@ -3218,7 +3238,7 @@ async function main$1() {
 			...intent.version ? { version: 1 } : {},
 			...own.slippageBps !== void 0 ? { slippageBps: own.slippageBps } : {},
 			...intent.routingMode === "fast" ? { routingMode: "fast" } : {}
-		});
+		}, PREPARE_WAIT_MS);
 		const checked = withTolerance({
 			...intent,
 			owner,
