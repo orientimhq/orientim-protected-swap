@@ -1084,8 +1084,48 @@ const usageError = (message) => Object.assign(new Error(message), { name: "Inten
 * be run again once the RPC answers.
 */
 const isRpcFailure = (problem) => /^the (chain state could not be read from|swap could not be simulated on) your RPC/.test(problem);
-/** Jupiter refused for too many requests: without a key of its own, the agent shares the keyless limit. */
-const jupiterRefusal = (status, asked, apiKey) => `Jupiter answered ${status} when asked for ${asked}` + (status === 429 && !apiKey ? " (without JUPITER_API_KEY Jupiter allows very few requests: set one, from portal.jup.ag)" : "");
+/**
+* Jupiter refused: said with its status, "(busy)" for a failure upstream that says nothing about the
+* trade, and Jupiter's own error code when it gives one (never its prose). For too many requests
+* without a key of its own, the agent shares the keyless limit.
+*/
+const jupiterRefusal = (status, asked, apiKey, busy = false, code = null) => `Jupiter answered ${status}${busy && status === 400 ? " (busy)" : ""}${code ? ` (${code})` : ""} when asked for ${asked}` + (status === 429 && !apiKey ? " (without JUPITER_API_KEY Jupiter allows very few requests: set one, from portal.jup.ag)" : "");
+/**
+* A 400 from Jupiter that wraps a transient failure upstream ("quote failed", "pool has not been
+* updated in a while"), as Orientim's server reads it too: it says nothing about the trade.
+*/
+const JUPITER_TRANSIENT_400 = /quote failed|not been updated|failed to get quotes?|timed? ?out|try again/i;
+/** Jupiter's own error code from an error body, when it is one (letters, digits, underscores). */
+function jupiterErrorCode(body) {
+	try {
+		const json = JSON.parse(body);
+		const code = json?.errorCode ?? json?.code;
+		return typeof code === "string" && /^[A-Za-z0-9_]{1,60}$/.test(code) ? code : null;
+	} catch {
+		return null;
+	}
+}
+/**
+* One question to Jupiter, asked again twice, a moment apart, when the answer says nothing about the
+* trade (429, a 5xx, a transient 400): a pool refreshing upstream must not read as a refusal of the
+* swap. Any other answer that is not a success is refused at once, with Jupiter's code.
+*/
+async function askJupiter(url, asked, apiKey, fetchImpl) {
+	for (let attempt = 0;; attempt++) {
+		const res = await (fetchImpl ?? fetch)(url, {
+			headers: apiKey ? { "x-api-key": apiKey } : {},
+			signal: AbortSignal.timeout(15e3)
+		});
+		if (res.ok) return res.json();
+		const body = await res.text().catch(() => "");
+		const busy = res.status === 429 || res.status >= 500 || res.status === 400 && JUPITER_TRANSIENT_400.test(body);
+		if (busy && attempt < 2) {
+			await new Promise((r) => setTimeout(r, 400 * 2 ** attempt));
+			continue;
+		}
+		throw new Error(jupiterRefusal(res.status, asked, apiKey, busy, jupiterErrorCode(body)));
+	}
+}
 /**
 * Orientim's fee in lamports when it is in SOL, whichever side it is taken from: from SOL the swap
 * sells (`feeSide` input), from SOL it buys (output), or from the wallet for a pair that cannot carry
@@ -1338,12 +1378,7 @@ async function ownQuote(args) {
 		maxAccounts: "64"
 	};
 	for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
-	const res = await (args.fetchImpl ?? fetch)(url.toString(), {
-		headers: args.apiKey ? { "x-api-key": args.apiKey } : {},
-		signal: AbortSignal.timeout(15e3)
-	});
-	if (!res.ok) throw new Error(jupiterRefusal(res.status, "your own price", args.apiKey));
-	const r = await res.json();
+	const r = await askJupiter(url.toString(), "your own price", args.apiKey, args.fetchImpl);
 	if (r.inputMint !== args.inputMint || r.outputMint !== args.outputMint || r.inAmount !== routed.toString() || !/^\d{1,20}$/.test(r.outAmount ?? "")) throw new Error("Jupiter answered for another trade when asked for your own price");
 	const curve = r.swapInstruction?.accounts?.some((a) => a.pubkey === PUMP_CURVE_PROGRAM) ?? false;
 	const ceiling = args.ceilings?.maxSlippageBps;
@@ -1448,12 +1483,7 @@ async function ownSolFeeLimit(args) {
 		maxAccounts: "64"
 	};
 	for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
-	const res = await (args.fetchImpl ?? fetch)(url.toString(), {
-		headers: args.apiKey ? { "x-api-key": args.apiKey } : {},
-		signal: AbortSignal.timeout(15e3)
-	});
-	if (!res.ok) throw new Error(jupiterRefusal(res.status, "the value of your swap in SOL", args.apiKey));
-	const r = await res.json();
+	const r = await askJupiter(url.toString(), "the value of your swap in SOL", args.apiKey, args.fetchImpl);
 	if (r.inputMint !== args.inputMint || r.outputMint !== query.outputMint || r.inAmount !== args.amountIn || !/^\d{1,20}$/.test(r.outAmount ?? "")) throw new Error("Jupiter answered for another trade when asked for the value of your swap in SOL");
 	const fee = BigInt(r.outAmount) * BigInt(feeLimitBps(args.maxFeeBps)) / 10000n;
 	const limit = fee + fee / 50n;

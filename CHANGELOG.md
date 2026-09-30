@@ -3,6 +3,16 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.8.3 (2026-09-30)
+
+- The agent's own price is asked of Jupiter again, twice, a moment apart, when Jupiter answers 429,
+  a 5xx, or a 400 that wraps a failure upstream ("quote failed", "pool has not been updated"), as
+  Orientim's server already does. Before, such a 400 stopped the swap at once with no reason given;
+  on mainnet it hit swaps of $5k to $100k and sales of Pump.fun tokens (found by the mainnet
+  simulation matrix). Still busy after three asks, it is said as `Jupiter answered 400 (busy)`, and
+  `orientim-verify` answers `unavailable` (try again), not a refusal. Any other refusal is said at
+  once with Jupiter's own error code, such as `COULD_NOT_FIND_ANY_ROUTE`, and none of its prose.
+
 ## 1.8.2 (2026-09-30)
 
 - The owner's `maxSlippageBps` is held on the bytes the wallet signs, for every Jupiter route in
