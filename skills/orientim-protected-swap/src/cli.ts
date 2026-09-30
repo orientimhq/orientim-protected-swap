@@ -160,7 +160,8 @@ function unavailable(e: unknown): boolean {
     || (e instanceof TypeError && /fetch failed/i.test(e.message))
     // Your RPC answered 429 or 5xx: busy or down, not a verdict on the swap.
     || (isSolanaError(e, SOLANA_ERROR__RPC__TRANSPORT_HTTP_ERROR) && [429, 500, 502, 503, 504].includes(Number(e.context.statusCode)))
-    || /^Jupiter answered (429|5\d\d)\b/.test(e.message);
+    // Jupiter busy or refreshing upstream, after the skill asked it again: not a verdict on the swap.
+    || /^Jupiter answered (429|5\d\d\b|400 \(busy\))/.test(e.message);
 }
 const unavailableRefusal = (e: unknown, sent?: false): CliResult => ({
   code: 1,
