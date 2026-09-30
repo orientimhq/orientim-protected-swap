@@ -304,7 +304,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.8.3';
+export const SKILL_VERSION = '1.8.4';
 
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res: Response) => {
@@ -1545,6 +1545,7 @@ export async function ownFloor(
   if (intent.routingMode !== undefined && intent.routingMode !== 'standard' && intent.routingMode !== 'fast') {
     throw new IntentError('routingMode must be standard or fast. Nothing was sent.');
   }
+  if (intent.inputMint === intent.outputMint) throw new IntentError('inputMint and outputMint are the same token: there is nothing to swap. Nothing was sent.');
   const auto = intent.slippageBps === 'auto';
   if (intent.slippageBps !== undefined && !auto && !isSlippageBps(intent.slippageBps)) {
     throw new IntentError(`slippageBps must be "auto" or a whole number of bps from ${MIN_SLIPPAGE_BPS} to ${MAX_SLIPPAGE_BPS}. Nothing was sent.`);

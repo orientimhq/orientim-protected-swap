@@ -18,7 +18,10 @@
  * Bundled into ../lib/orientim-verify.mjs by tools/build-skill.ts (only @solana/kit stays external), so
  * the skill works on its own; CI rebuilds it and fails if the committed file differs.
  */
-import { fetchAddressesForLookupTables, getCompiledTransactionMessageDecoder, getTransactionDecoder } from '@solana/kit';
+import {
+  fetchAddressesForLookupTables, getCompiledTransactionMessageDecoder, getTransactionDecoder, isSolanaError,
+  SOLANA_ERROR__JSON_RPC__SERVER_ERROR_MIN_CONTEXT_SLOT_NOT_REACHED,
+} from '@solana/kit';
 import type { Address, Rpc, SolanaRpcApi, Transaction } from '@solana/kit';
 import { findAssociatedTokenPda } from '@solana-program/token';
 import { JUPITER_PROGRAM, PUMP_AMM_PROGRAM, PUMP_CURVE_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, USDC_MINT, WSOL_MINT } from '@orientim/core/constants';
@@ -104,17 +107,31 @@ const jupiterRefusal = (status: number, asked: string, apiKey?: string, busy = f
  * A 400 from Jupiter that wraps a transient failure upstream ("quote failed", "pool has not been
  * updated in a while"), as Orientim's server reads it too: it says nothing about the trade.
  */
-const JUPITER_TRANSIENT_400 = /quote failed|not been updated|failed to get quotes?|timed? ?out|try again/i;
+const JUPITER_TRANSIENT_400 = /quote failed|not been updated|failed to get quotes?|timed? ?out|try again|oracle|stale|expired|temporarily unavailable|no matching liquidity|"500: /i;
 
-/** Jupiter's own error code from an error body, when it is one (letters, digits, underscores). */
+/**
+ * Jupiter's refusals that say something about the trade itself, named when Jupiter gives no code of
+ * its own: no route, a token it cannot trade, the same token on both sides.
+ */
+const JUPITER_REFUSALS: [RegExp, string][] = [
+  [/no routes? found|could not find any route/i, 'NO_ROUTES_FOUND'],
+  [/missing token program|not tradable|token not found/i, 'TOKEN_NOT_TRADABLE'],
+  [/cannot be same as/i, 'SAME_MINT'],
+];
+
+/**
+ * Jupiter's own error code from an error body, when it is one (letters, digits, underscores), or the
+ * skill's name for a refusal Jupiter states only in words (`JUPITER_REFUSALS`). Never Jupiter's prose.
+ */
 function jupiterErrorCode(body: string): string | null {
   try {
     const json = JSON.parse(body) as { errorCode?: unknown; code?: unknown };
     const code = json?.errorCode ?? json?.code;
-    return typeof code === 'string' && /^[A-Za-z0-9_]{1,60}$/.test(code) ? code : null;
+    if (typeof code === 'string' && /^[A-Za-z0-9_]{1,60}$/.test(code)) return code;
   } catch {
-    return null;
+    // not JSON: the words alone
   }
+  return JUPITER_REFUSALS.find(([said]) => said.test(body))?.[1] ?? null;
 }
 
 /**
@@ -127,8 +144,10 @@ async function askJupiter(url: string, asked: string, apiKey: string | undefined
     const res = await (fetchImpl ?? fetch)(url, { headers: apiKey ? { 'x-api-key': apiKey } : {}, signal: AbortSignal.timeout(15_000) });
     if (res.ok) return res.json();
     const body = await res.text().catch(() => '');
-    const busy = res.status === 429 || res.status >= 500 || (res.status === 400 && JUPITER_TRANSIENT_400.test(body));
-    if (busy && attempt < 2) {
+    // A market's oracle behind for a moment is transient; a refusal of the trade itself is not.
+    const busy = res.status === 429 || res.status >= 500
+      || (res.status === 400 && JUPITER_TRANSIENT_400.test(body) && !JUPITER_REFUSALS.some(([said]) => said.test(body)));
+    if (busy && attempt < 3) {
       await new Promise(r => setTimeout(r, 400 * 2 ** attempt));
       continue;
     }
@@ -410,12 +429,23 @@ async function leftUnderKey(
   try {
     // Every account's balance after the swap comes from `postBalances`, matched to the accounts the
     // transaction names: `accounts.addresses` is limited to two on some providers.
-    const { value } = await rpc
+    // A node behind the snapshot's slot says so: it catches up in a slot or two, so it is asked again.
+    const simulate = () => rpc
       .simulateTransaction(wire as never, {
         encoding: 'base64', sigVerify: false, replaceRecentBlockhash: true, commitment: 'confirmed',
         ...((snapshot.slot ?? 0n) > 0n ? { minContextSlot: snapshot.slot } : {}),
       })
       .send({ abortSignal: AbortSignal.timeout(timeoutMs) });
+    let answer: Awaited<ReturnType<typeof simulate>> | undefined;
+    for (let attempt = 0; answer === undefined; attempt++) {
+      try {
+        answer = await simulate();
+      } catch (e) {
+        if (attempt >= 4 || !isSolanaError(e, SOLANA_ERROR__JSON_RPC__SERVER_ERROR_MIN_CONTEXT_SLOT_NOT_REACHED)) throw e;
+        await new Promise(r => setTimeout(r, 400));
+      }
+    }
+    const { value } = answer;
     if (value.err) return [`the swap fails in simulation on your RPC: ${JSON.stringify(value.err, (_, v) => (typeof v === 'bigint' ? v.toString() : v))}`];
     const balances = balancesAfterSimulation(transaction, value as never, snapshot.lookupTables);
     if (typeof balances === 'string') return [`the simulation on your RPC cannot show what the one-time key holds after the swap: ${balances}`];

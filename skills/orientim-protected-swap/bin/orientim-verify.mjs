@@ -1039,16 +1039,27 @@ const jupiterRefusal = (status, asked, apiKey, busy = false, code = null) => `Ju
 * A 400 from Jupiter that wraps a transient failure upstream ("quote failed", "pool has not been
 * updated in a while"), as Orientim's server reads it too: it says nothing about the trade.
 */
-const JUPITER_TRANSIENT_400 = /quote failed|not been updated|failed to get quotes?|timed? ?out|try again/i;
-/** Jupiter's own error code from an error body, when it is one (letters, digits, underscores). */
+const JUPITER_TRANSIENT_400 = /quote failed|not been updated|failed to get quotes?|timed? ?out|try again|oracle|stale|expired|temporarily unavailable|no matching liquidity|"500: /i;
+/**
+* Jupiter's refusals that say something about the trade itself, named when Jupiter gives no code of
+* its own: no route, a token it cannot trade, the same token on both sides.
+*/
+const JUPITER_REFUSALS = [
+	[/no routes? found|could not find any route/i, "NO_ROUTES_FOUND"],
+	[/missing token program|not tradable|token not found/i, "TOKEN_NOT_TRADABLE"],
+	[/cannot be same as/i, "SAME_MINT"]
+];
+/**
+* Jupiter's own error code from an error body, when it is one (letters, digits, underscores), or the
+* skill's name for a refusal Jupiter states only in words (`JUPITER_REFUSALS`). Never Jupiter's prose.
+*/
 function jupiterErrorCode(body) {
 	try {
 		const json = JSON.parse(body);
 		const code = json?.errorCode ?? json?.code;
-		return typeof code === "string" && /^[A-Za-z0-9_]{1,60}$/.test(code) ? code : null;
-	} catch {
-		return null;
-	}
+		if (typeof code === "string" && /^[A-Za-z0-9_]{1,60}$/.test(code)) return code;
+	} catch {}
+	return JUPITER_REFUSALS.find(([said]) => said.test(body))?.[1] ?? null;
 }
 /**
 * One question to Jupiter, asked again twice, a moment apart, when the answer says nothing about the
@@ -1063,8 +1074,8 @@ async function askJupiter(url, asked, apiKey, fetchImpl) {
 		});
 		if (res.ok) return res.json();
 		const body = await res.text().catch(() => "");
-		const busy = res.status === 429 || res.status >= 500 || res.status === 400 && JUPITER_TRANSIENT_400.test(body);
-		if (busy && attempt < 2) {
+		const busy = res.status === 429 || res.status >= 500 || res.status === 400 && JUPITER_TRANSIENT_400.test(body) && !JUPITER_REFUSALS.some(([said]) => said.test(body));
+		if (busy && attempt < 3) {
 			await new Promise((r) => setTimeout(r, 400 * 2 ** attempt));
 			continue;
 		}
@@ -1259,13 +1270,21 @@ async function underKeyOf(key) {
 async function leftUnderKey(wire, transaction, underKey, snapshot, rpc, timeoutMs = 1e4, fresh = []) {
 	const opened = fresh.filter((a) => !underKey.includes(a));
 	try {
-		const { value } = await rpc.simulateTransaction(wire, {
+		const simulate = () => rpc.simulateTransaction(wire, {
 			encoding: "base64",
 			sigVerify: false,
 			replaceRecentBlockhash: true,
 			commitment: "confirmed",
 			...(snapshot.slot ?? 0n) > 0n ? { minContextSlot: snapshot.slot } : {}
 		}).send({ abortSignal: AbortSignal.timeout(timeoutMs) });
+		let answer;
+		for (let attempt = 0; answer === void 0; attempt++) try {
+			answer = await simulate();
+		} catch (e) {
+			if (attempt >= 4 || !isSolanaError(e, SOLANA_ERROR__JSON_RPC__SERVER_ERROR_MIN_CONTEXT_SLOT_NOT_REACHED)) throw e;
+			await new Promise((r) => setTimeout(r, 400));
+		}
+		const { value } = answer;
 		if (value.err) return [`the swap fails in simulation on your RPC: ${JSON.stringify(value.err, (_, v) => typeof v === "bigint" ? v.toString() : v)}`];
 		const balances = balancesAfterSimulation(transaction, value, snapshot.lookupTables);
 		if (typeof balances === "string") return [`the simulation on your RPC cannot show what the one-time key holds after the swap: ${balances}`];
@@ -1614,7 +1633,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.8.3";
+const SKILL_VERSION = "1.8.4";
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res) => {
 	const after = Number(res.headers.get("retry-after"));
@@ -2652,6 +2671,7 @@ var FloorError = class extends Error {
 */
 async function ownFloor(intent, deps) {
 	if (intent.routingMode !== void 0 && intent.routingMode !== "standard" && intent.routingMode !== "fast") throw new IntentError("routingMode must be standard or fast. Nothing was sent.");
+	if (intent.inputMint === intent.outputMint) throw new IntentError("inputMint and outputMint are the same token: there is nothing to swap. Nothing was sent.");
 	const auto = intent.slippageBps === "auto";
 	if (intent.slippageBps !== void 0 && !auto && !isSlippageBps(intent.slippageBps)) throw new IntentError(`slippageBps must be "auto" or a whole number of bps from 10 to ${MAX_SLIPPAGE_BPS}. Nothing was sent.`);
 	const owner = deps.policy ?? {};
