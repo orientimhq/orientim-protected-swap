@@ -269,7 +269,7 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
       const priceImpactBps = own.priceImpactBps;
       // A fee in SOL: never above the skill's own limit, whatever the intent says.
       await holdSolFee(intent, prepared, { fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey });
-      const problems = await checkPrepared(prepared, intent, deps.rpc, { requestTimeoutMs: deps.requestTimeoutMs });
+      const problems = await checkPrepared(prepared, intent, deps.rpc, { requestTimeoutMs: deps.requestTimeoutMs, slippageCeilingBps: deps.policy?.maxSlippageBps });
       if (problems.length && problems.every(isRpcFailure)) return unavailableRefusal(new Error(problems.join('; ')));
       return { code: problems.length ? 1 : 0, output: { ok: problems.length === 0, problems, yourFloor: intent.minOut, priceImpactBps } };
     } catch (e) {
@@ -562,7 +562,7 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
       intent.minOut = own.minOut;
       if (own.slippageBps !== undefined) intent.slippageBps = own.slippageBps;
       await holdSolFee(intent, prepared, { fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey });
-      const problems = await checkPrepared(prepared, intent, deps.rpc, { requestTimeoutMs: deps.requestTimeoutMs });
+      const problems = await checkPrepared(prepared, intent, deps.rpc, { requestTimeoutMs: deps.requestTimeoutMs, slippageCeilingBps: deps.policy?.maxSlippageBps });
       if (problems.length && problems.every(isRpcFailure)) return unavailableRefusal(new Error(problems.join('; ')), false);
       if (problems.length) return { code: 1, output: { ok: false, sent: false, problems } };
       let wire = typeof signedTransaction === 'string' ? signedTransaction : '';

@@ -3,6 +3,18 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.8.2 (2026-09-30)
+
+- The owner's `maxSlippageBps` is held on the bytes the wallet signs, for every Jupiter route in
+  them. Before, an agent whose own quote was an ordinary route (0.5% by default, within the
+  ceiling) could be handed a route on a Pump.fun curve, which the check allowed at its own default
+  (3%, tightened to about 2% by the agent's floor), above the owner's ceiling. Such a route is now
+  refused before the wallet signs; ask for a `slippageBps` or `"auto"` within the ceiling to trade
+  a curve token. Found by an outside audit; the fuzz now draws the agent's quote and the final
+  route independently.
+- The transaction's lifetime is stated as about 40 seconds again: at today's block times (about
+  270 ms a slot, as the canary measures it) 150 blocks last about 41 seconds. 1.8.0 said a minute.
+
 ## 1.8.1 (2026-09-30)
 
 - A dry run's approval is found for an amount written with leading zeros past 20 digits too (found

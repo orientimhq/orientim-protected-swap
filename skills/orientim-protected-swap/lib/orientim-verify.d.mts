@@ -60,6 +60,11 @@ export type AgentLimits = {
    */
   slippageBps?: number;
   /**
+   * The owner's ceiling on the route's tolerance (`maxSlippageBps` in the owner's policy): no Jupiter
+   * route in the signed bytes may carry more, whatever the default for its kind. From the owner's file only.
+   */
+  maxSlippageCeilingBps?: number;
+  /**
    * The most rent the route may keep, in lamports: what the wallet sends for a market's account,
    * less what closing it returns in the same transaction (default 0.001 SOL). A Pump.fun bonding
    * curve keeps about 0.00013 SOL of every buy for growing its own account.

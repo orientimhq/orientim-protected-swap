@@ -129,7 +129,7 @@ export type Prepared = {
   wallet: string;
   temporaryAuthority: string;
   lastValidBlockHeight: string;
-  /** Blocks left in the transaction's life when prepare answered (150 at most, about a minute). */
+  /** Blocks left in the transaction's life when prepare answered (150 at most, about 40 s). */
   blocksLeft?: string;
   /**
    * `fee` is in `feeMint`: SOL first, then USDC or USDT, on whichever side; otherwise the input token.
@@ -304,7 +304,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.8.1';
+export const SKILL_VERSION = '1.8.2';
 
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res: Response) => {
@@ -414,7 +414,11 @@ const wait = (ms: number) => new Promise(r => setTimeout(r, ms));
  * asked for; then the full verifier on the exact bytes, with chain state from `rpc`, which must be
  * your own RPC. Returns the problems found; sign only when there are none.
  */
-export async function checkPrepared(p: Prepared, intent: Intent, rpc: Rpc<SolanaRpcApi>, opts: { requestTimeoutMs?: number } = {}): Promise<string[]> {
+export async function checkPrepared(
+  p: Prepared, intent: Intent, rpc: Rpc<SolanaRpcApi>,
+  /** `slippageCeilingBps`: the owner's `maxSlippageBps`, held on the signed bytes (never from the intent). */
+  opts: { requestTimeoutMs?: number; slippageCeilingBps?: number } = {},
+): Promise<string[]> {
   // Every number in the answer is checked here, before the wallet signs, including those only shown
   // once the swap is sent: nothing Orientim sends can make the report of a sent swap fail, and a
   // report that fails invites a second swap.
@@ -497,12 +501,15 @@ export async function checkPrepared(p: Prepared, intent: Intent, rpc: Rpc<Solana
   // The answer's own claims are not evidence: what the bytes do is decided by the verifier.
   // "auto" is resolved to a number before prepare (`ownFloor`): the route is held to that number.
   if (intent.slippageBps === 'auto') return [...problems, 'slippageBps is "auto": check against the number of bps the swap was prepared with'];
-  problems.push(...await verifyPrepared(p, { ...intent, slippageBps: intent.slippageBps, minOut: intent.minOut ?? '' }, rpc, opts));
+  problems.push(...await verifyPrepared(p, {
+    ...intent, slippageBps: intent.slippageBps, minOut: intent.minOut ?? '',
+    ...(opts.slippageCeilingBps !== undefined ? { maxSlippageCeilingBps: opts.slippageCeilingBps } : {}),
+  }, rpc, { requestTimeoutMs: opts.requestTimeoutMs }));
   return problems;
 }
 
 /**
- * The transaction lives 150 blocks, about a minute. Finalize only with this many
+ * The transaction lives 150 blocks, about 40 s. Finalize only with this many
  * left, so that it can still land; otherwise prepare again.
  */
 export const MIN_BLOCKS_TO_FINALIZE = 30n;
@@ -1641,7 +1648,7 @@ export async function prepareChecked(args: {
   measured('apiPrepare');
   // A fee in SOL from the wallet: held to a price of your own, asked of Jupiter here.
   await holdSolFee(intent, prepared, { fetchImpl, jupiterApiKey: args.jupiterApiKey });
-  const problems = await checkPrepared(prepared, intent, args.rpc, { requestTimeoutMs: args.requestTimeoutMs });
+  const problems = await checkPrepared(prepared, intent, args.rpc, { requestTimeoutMs: args.requestTimeoutMs, slippageCeilingBps: args.policy?.maxSlippageBps });
   if (problems.length) {
     const refused = new Error(`Not signing: ${problems.join('; ')}`);
     // Your RPC did not answer: nothing is wrong with the transaction, and the check may run again.
@@ -2102,7 +2109,7 @@ async function main() {
     });
     const checked: Intent = withTolerance({ ...intent, owner, minOut }, own.slippageBps);
     await holdSolFee(checked, prepared, { jupiterApiKey });
-    const problems = await checkPrepared(prepared, checked, rpc);
+    const problems = await checkPrepared(prepared, checked, rpc, { slippageCeilingBps: policy?.maxSlippageBps });
     const risk = await tokenRisk(rpc, [inputMint, outputMint]);
     // Shown as the real swap shows it: only the fields the skill knows, and only data.
     const shownData = preparedData(prepared);
