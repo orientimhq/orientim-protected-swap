@@ -88,14 +88,14 @@ const MAX_ACCOUNTS_PER_CALL = 100;
 const decodeBase64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 /**
 * A read that must not be older than `minContextSlot`: a node behind it says so, and is asked again
-* a few times (it catches up in a slot or two) before the read fails.
+* for about four and a half seconds (it usually catches up in a slot or two) before the read fails.
 */
 async function notOlderThan(read, minContextSlot) {
 	for (let attempt = 0;; attempt++) try {
 		return await read();
 	} catch (e) {
-		if (minContextSlot === void 0 || attempt >= 4 || !isSolanaError(e, SOLANA_ERROR__JSON_RPC__SERVER_ERROR_MIN_CONTEXT_SLOT_NOT_REACHED)) throw e;
-		await new Promise((r) => setTimeout(r, 400));
+		if (minContextSlot === void 0 || attempt >= 5 || !isSolanaError(e, SOLANA_ERROR__JSON_RPC__SERVER_ERROR_MIN_CONTEXT_SLOT_NOT_REACHED)) throw e;
+		await new Promise((r) => setTimeout(r, 300 * (attempt + 1)));
 	}
 }
 /**
@@ -1258,6 +1258,19 @@ async function underKeyOf(key) {
 		...cashback
 	];
 }
+/** The wait before a failed simulation is asked once more (about three slots). */
+const SIMULATION_RETRY_MS = 1200;
+/**
+* The program that failed in a simulation and its error code, from the logs: only an address and a
+* number, never a program's own words (a route's program writes its logs, and they reach the agent).
+*/
+function failingProgram(logs) {
+	for (const line of logs ?? []) {
+		const m = /^Program ([1-9A-HJ-NP-Za-km-z]{32,44}) failed: custom program error: 0x([0-9a-f]{1,8})$/i.exec(line);
+		if (m) return ` (program ${m[1]}, error ${parseInt(m[2], 16)})`;
+	}
+	return "";
+}
 /**
 * What stays behind after the swap, simulated on the agent's own RPC: under the one-time key, in the
 * account each Pump.fun market opens in its name, and in any other account the route opens. Every
@@ -1277,15 +1290,20 @@ async function leftUnderKey(wire, transaction, underKey, snapshot, rpc, timeoutM
 			commitment: "confirmed",
 			...(snapshot.slot ?? 0n) > 0n ? { minContextSlot: snapshot.slot } : {}
 		}).send({ abortSignal: AbortSignal.timeout(timeoutMs) });
-		let answer;
-		for (let attempt = 0; answer === void 0; attempt++) try {
-			answer = await simulate();
-		} catch (e) {
-			if (attempt >= 4 || !isSolanaError(e, SOLANA_ERROR__JSON_RPC__SERVER_ERROR_MIN_CONTEXT_SLOT_NOT_REACHED)) throw e;
-			await new Promise((r) => setTimeout(r, 400));
+		const settled = async () => {
+			for (let attempt = 0;; attempt++) try {
+				return await simulate();
+			} catch (e) {
+				if (attempt >= 4 || !isSolanaError(e, SOLANA_ERROR__JSON_RPC__SERVER_ERROR_MIN_CONTEXT_SLOT_NOT_REACHED)) throw e;
+				await new Promise((r) => setTimeout(r, 400));
+			}
+		};
+		let { value } = await settled();
+		if (value.err) {
+			await new Promise((r) => setTimeout(r, SIMULATION_RETRY_MS));
+			({value} = await settled());
 		}
-		const { value } = answer;
-		if (value.err) return [`the swap fails in simulation on your RPC: ${JSON.stringify(value.err, (_, v) => typeof v === "bigint" ? v.toString() : v)}`];
+		if (value.err) return [`the swap fails in simulation on your RPC, twice: ${JSON.stringify(value.err, (_, v) => typeof v === "bigint" ? v.toString() : v)}${failingProgram(value.logs)}`];
 		const balances = balancesAfterSimulation(transaction, value, snapshot.lookupTables);
 		if (typeof balances === "string") return [`the simulation on your RPC cannot show what the one-time key holds after the swap: ${balances}`];
 		const heldAfter = (a) => {
@@ -1633,7 +1651,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.8.4";
+const SKILL_VERSION = "1.8.5";
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res) => {
 	const after = Number(res.headers.get("retry-after"));

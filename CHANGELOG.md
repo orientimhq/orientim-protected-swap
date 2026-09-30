@@ -3,6 +3,14 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.8.5 (2026-09-30)
+
+- A route that fails in the check's simulation is simulated once more, 1.2 seconds later, and only
+  a simulation that succeeds is read. On mainnet, routes of $50k to $100k through markets whose
+  maker sets the price each slot failed once and passed a moment later (found by the simulation
+  matrix). A route that fails twice is refused as before, now naming the program that failed and
+  its error code, from the simulation's logs; never a program's own words, which the route writes.
+
 ## 1.8.4 (2026-09-30)
 
 - Jupiter's 400s that wrap a market whose price feed is behind for a moment ("Oracle price out of

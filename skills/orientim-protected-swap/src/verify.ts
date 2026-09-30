@@ -412,6 +412,21 @@ async function underKeyOf(key: Address): Promise<Address[]> {
   return [key, ...markets, ...cashback];
 }
 
+/** The wait before a failed simulation is asked once more (about three slots). */
+const SIMULATION_RETRY_MS = 1_200;
+
+/**
+ * The program that failed in a simulation and its error code, from the logs: only an address and a
+ * number, never a program's own words (a route's program writes its logs, and they reach the agent).
+ */
+function failingProgram(logs: readonly string[] | null | undefined): string {
+  for (const line of logs ?? []) {
+    const m = /^Program ([1-9A-HJ-NP-Za-km-z]{32,44}) failed: custom program error: 0x([0-9a-f]{1,8})$/i.exec(line);
+    if (m) return ` (program ${m[1]}, error ${parseInt(m[2], 16)})`;
+  }
+  return '';
+}
+
 /**
  * What stays behind after the swap, simulated on the agent's own RPC: under the one-time key, in the
  * account each Pump.fun market opens in its name, and in any other account the route opens. Every
@@ -436,17 +451,27 @@ async function leftUnderKey(
         ...((snapshot.slot ?? 0n) > 0n ? { minContextSlot: snapshot.slot } : {}),
       })
       .send({ abortSignal: AbortSignal.timeout(timeoutMs) });
-    let answer: Awaited<ReturnType<typeof simulate>> | undefined;
-    for (let attempt = 0; answer === undefined; attempt++) {
-      try {
-        answer = await simulate();
-      } catch (e) {
-        if (attempt >= 4 || !isSolanaError(e, SOLANA_ERROR__JSON_RPC__SERVER_ERROR_MIN_CONTEXT_SLOT_NOT_REACHED)) throw e;
-        await new Promise(r => setTimeout(r, 400));
+    const settled = async () => {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await simulate();
+        } catch (e) {
+          if (attempt >= 4 || !isSolanaError(e, SOLANA_ERROR__JSON_RPC__SERVER_ERROR_MIN_CONTEXT_SLOT_NOT_REACHED)) throw e;
+          await new Promise(r => setTimeout(r, 400));
+        }
       }
+    };
+    // A route that fails now may pass a moment later: a market whose price is set each slot by its
+    // maker, or a price that moved past the tolerance and back. It is simulated once more, and only a
+    // simulation that succeeds is read; one that fails twice is refused.
+    let { value } = await settled();
+    if (value.err) {
+      await new Promise(r => setTimeout(r, SIMULATION_RETRY_MS));
+      ({ value } = await settled());
     }
-    const { value } = answer;
-    if (value.err) return [`the swap fails in simulation on your RPC: ${JSON.stringify(value.err, (_, v) => (typeof v === 'bigint' ? v.toString() : v))}`];
+    if (value.err) {
+      return [`the swap fails in simulation on your RPC, twice: ${JSON.stringify(value.err, (_, v) => (typeof v === 'bigint' ? v.toString() : v))}${failingProgram(value.logs)}`];
+    }
     const balances = balancesAfterSimulation(transaction, value as never, snapshot.lookupTables);
     if (typeof balances === 'string') return [`the simulation on your RPC cannot show what the one-time key holds after the swap: ${balances}`];
     // An account the transaction does not name cannot change in it: it holds what the snapshot read,
