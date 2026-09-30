@@ -24,7 +24,7 @@ import { findAssociatedTokenPda } from '@solana-program/token';
 import { JUPITER_PROGRAM, PUMP_AMM_PROGRAM, PUMP_CURVE_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, USDC_MINT, WSOL_MINT } from '@orientim/core/constants';
 import type { ChainSnapshot, Policy } from '@orientim/core/types';
 import { balancesAfterSimulation, readAccounts } from '@orientim/solana';
-import { hasPermanentDelegate, hasTransferFee, routeAccountFor, transferFeeOf, transferFeeOn, verify } from '@orientim/verifier';
+import { hasPermanentDelegate, hasTransferFee, jupiterRouteArgs, routeAccountFor, transferFeeOf, transferFeeOn, verify } from '@orientim/verifier';
 import type { TransferFee } from '@orientim/verifier';
 
 /** When "no record" proves a transaction never landed; `confirm` in the example uses them. */
@@ -123,6 +123,13 @@ export type AgentLimits = {
    * comes from the agent's own intent, never from Orientim's answer.
    */
   slippageBps?: number;
+  /**
+   * The owner's ceiling on the route's tolerance, in bps (`OwnerPolicy.maxSlippageBps`): no Jupiter
+   * route in the transaction may carry more, whatever the default for its kind. It holds on the bytes
+   * that are signed, so a route that turns out to trade on a Pump.fun curve (3% by default) is held
+   * to it even when the agent's own quote was an ordinary route. From the owner's file only.
+   */
+  maxSlippageCeilingBps?: number;
   /**
    * The most rent the route may keep, in lamports: what the wallet sends for a market's account,
    * less what closing it returns in the same transaction (default 0.001 SOL). A Pump.fun bonding
@@ -299,6 +306,8 @@ export async function verifyPrepared(
   // The route's tolerance is the agent's own choice, or the verifier's defaults: never the server's.
   const verdict = await verify(transaction, p, snapshot, limits.slippageBps !== undefined ? { maxSlippageBps: limits.slippageBps } : {});
   for (const v of verdict.violations) problems.push(`${v.rule}: ${v.detail}`);
+  // The owner's ceiling, on the bytes that are signed: every Jupiter route, whatever its kind.
+  if (limits.maxSlippageCeilingBps !== undefined) problems.push(...routesAboveCeiling(transaction.messageBytes, limits.maxSlippageCeilingBps));
   if (limits.maxSolCostLamports !== undefined && verdict.networkFeeLamports !== undefined) {
     const solCost = verdict.networkFeeLamports + routeCost + solFeeOf(p);
     if (solCost > BigInt(limits.maxSolCostLamports)) {
@@ -313,6 +322,24 @@ export async function verifyPrepared(
   // Simulated on state not older than the snapshot just read.
   problems.push(...await leftUnderKey(prepared.transaction, transaction, underKey, snapshot, rpc, timeoutMs, fresh));
   return problems;
+}
+
+/**
+ * Every Jupiter route in the message that tolerates more than the owner's `ceiling`, as problems. A
+ * program is always a static account, so no lookup table can hide the route from this reading.
+ */
+function routesAboveCeiling(messageBytes: Transaction['messageBytes'], ceiling: number): string[] {
+  if (!isSlippageBps(ceiling)) return [`the owner's maxSlippageBps must be a whole number of bps from ${MIN_SLIPPAGE_BPS} to ${MAX_SLIPPAGE_BPS}`];
+  const compiled = getCompiledTransactionMessageDecoder().decode(messageBytes) as unknown as {
+    staticAccounts: Address[]; instructions: { programAddressIndex: number; data?: Uint8Array }[];
+  };
+  return compiled.instructions
+    .filter(ix => compiled.staticAccounts[ix.programAddressIndex] === JUPITER_PROGRAM)
+    .map(ix => jupiterRouteArgs(ix.data ?? new Uint8Array()))
+    .filter(args => !args || args.slippageBps > ceiling)
+    .map(args => (args
+      ? `the Jupiter route tolerates ${args.slippageBps} bps, above the owner's limit of ${ceiling} (maxSlippageBps)`
+      : 'a Jupiter instruction is not a route the check can read against the owner\'s maxSlippageBps'));
 }
 
 /**

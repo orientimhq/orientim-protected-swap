@@ -103,7 +103,10 @@ The user provides these; never ask for them in chat, and never print or log them
   price the agent's floor may sit; `maxPriceImpactBps` (0 to 2000) the most price impact accepted. A
   `slippageBps`, `maxBelowBps`, `minOut` or `maxPriceImpactBps` beyond them is refused before anything
   is prepared (`slippage-over-limit`, `floor-over-limit`, `impact-over-limit`); a default or an
-  `"auto"` estimate beyond them is brought within them instead. For an agent trading volatile tokens:
+  `"auto"` estimate beyond them is brought within them instead. `maxSlippageBps` is also held on the
+  bytes the wallet signs: a route Orientim builds on a Pump.fun curve (3% by default) above it is
+  refused even when your own quote was an ordinary route; to trade such a token, ask for a
+  `slippageBps` (or `"auto"`) within the ceiling. For an agent trading volatile tokens:
 
   ```json
   { "maxAmountIn": { "So11111111111111111111111111111111111111112": "500000000" },
@@ -198,7 +201,7 @@ Run or adapt `examples/swap.ts`. Do not write the flow from scratch, and never d
    transaction's id is now known: it is the wallet's signature (`getSignatureFromTransaction`).
    **Keep it before finalize** (the example's `onSigned`); it is how you learn what happened if an
    answer is lost or the process stops.
-5. **Finalize** promptly: the transaction lives 150 blocks, about a minute at today's block times.
+5. **Finalize** promptly: the transaction lives 150 blocks, about 40 seconds at today's block times.
    With fewer than 30 blocks left (`lastValidBlockHeight` minus your RPC's block height) prepare
    again instead; the example does. `POST /api/v1/finalize` with `{ ticket, signedTransaction }`.
    Orientim looks the transaction up first (a repeated finalize answers for the same transaction and

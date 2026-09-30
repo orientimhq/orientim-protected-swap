@@ -1222,6 +1222,7 @@ async function verifyPrepared(prepared, limits, rpc, opts = {}) {
 	if (limits.slippageBps !== void 0 && !isSlippageBps(limits.slippageBps)) return [...problems, `slippageBps must be a whole number of bps from 10 to ${MAX_SLIPPAGE_BPS}`];
 	const verdict = await verify(transaction, p, snapshot, limits.slippageBps !== void 0 ? { maxSlippageBps: limits.slippageBps } : {});
 	for (const v of verdict.violations) problems.push(`${v.rule}: ${v.detail}`);
+	if (limits.maxSlippageCeilingBps !== void 0) problems.push(...routesAboveCeiling(transaction.messageBytes, limits.maxSlippageCeilingBps));
 	if (limits.maxSolCostLamports !== void 0 && verdict.networkFeeLamports !== void 0) {
 		const solCost = verdict.networkFeeLamports + routeCost + solFeeOf(p);
 		if (solCost > BigInt(limits.maxSolCostLamports)) problems.push(`the swap may cost ${solCost} lamports of SOL that do not come back, above your limit of ${limits.maxSolCostLamports} (maxSolCostLamports)`);
@@ -1234,6 +1235,15 @@ async function verifyPrepared(prepared, limits, rpc, opts = {}) {
 	const fresh = [...new Set(snapshotAddresses)].filter((a) => !exists(a) && !keep.has(a));
 	problems.push(...await leftUnderKey(prepared.transaction, transaction, underKey, snapshot, rpc, timeoutMs, fresh));
 	return problems;
+}
+/**
+* Every Jupiter route in the message that tolerates more than the owner's `ceiling`, as problems. A
+* program is always a static account, so no lookup table can hide the route from this reading.
+*/
+function routesAboveCeiling(messageBytes, ceiling) {
+	if (!isSlippageBps(ceiling)) return [`the owner's maxSlippageBps must be a whole number of bps from 10 to ${MAX_SLIPPAGE_BPS}`];
+	const compiled = getCompiledTransactionMessageDecoder().decode(messageBytes);
+	return compiled.instructions.filter((ix) => compiled.staticAccounts[ix.programAddressIndex] === JUPITER_PROGRAM).map((ix) => jupiterRouteArgs(ix.data ?? /* @__PURE__ */ new Uint8Array())).filter((args) => !args || args.slippageBps > ceiling).map((args) => args ? `the Jupiter route tolerates ${args.slippageBps} bps, above the owner's limit of ${ceiling} (maxSlippageBps)` : "a Jupiter instruction is not a route the check can read against the owner's maxSlippageBps");
 }
 /**
 * E, each Pump market's account in E's name, and the token accounts those hold cashback in (WSOL,
