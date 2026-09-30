@@ -220,8 +220,9 @@ Run or adapt `examples/swap.ts`. Do not write the flow from scratch, and never d
    `orientim-verify resolve` or `resolvePending`. An unattended bot can name a second RPC that keeps the
    chain's full history (`ORIENTIM_ARCHIVE_RPC_URL`, or `archive` in code): when its own RPC missed that
    window, the archive proves expiry from the one-time key's own history, which no other swap signs, so
-   an outage near expiry does not leave the wallet stopped at `unknown`. Name only an archive that keeps
-   all of its history. A swap is done only when confirmed (a supermajority
+   an outage near expiry does not leave the wallet stopped at `unknown`. The skill asks the archive how
+   far back its history reaches and takes no proof from one that does not reach the swap's blocks, so an
+   ordinary RPC named there only proves nothing. A swap is done only when confirmed (a supermajority
    voted for it; wait for `finalized` if you need rooted finality); `sent` is not done.
 7. **Prepare again only when the chain says the first one can no longer land.** A `rejected` status
    or an error from finalize speaks for that one request: an earlier finalize whose answer was lost
@@ -251,6 +252,8 @@ names the transaction (`signature`, `lastValidBlockHeight`); follow step 7 befor
   on your own.
 - `409 costs-more` (`requiresApproval: true`): the protected route is `gapBps` below the open market.
   Ask the user; to accept, prepare again with `acceptCostBps: gapBps` (the example's `--accept-cost-bps`).
+  Orientim then also takes a route up to 0.5% past it, so a market that drifts a little does not ask
+  again; your `minOut` still holds. Tell the user so when you ask.
 - `409 output-balance-changed`: your balance of the output token changed between prepare and
   finalize (another swap or a transfer), so that finalize signed nothing. Step 7, then prepare again.
 - `503 busy` / `unavailable`, `429 rate-limited`, and `orientim-verify`'s own `unavailable` (Jupiter,

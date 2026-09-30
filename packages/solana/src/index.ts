@@ -86,15 +86,16 @@ export async function fetchAccounts(rpc: SolanaRpc, addresses: readonly Address[
 
 /**
  * A read that must not be older than `minContextSlot`: a node behind it says so, and is asked again
- * a few times (it catches up in a slot or two) before the read fails.
+ * for about four and a half seconds (it usually catches up in a slot or two) before the read fails.
  */
 async function notOlderThan<T>(read: () => Promise<T>, minContextSlot: bigint | undefined): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
       return await read();
     } catch (e) {
-      if (minContextSlot === undefined || attempt >= 4 || !isSolanaError(e, SOLANA_ERROR__JSON_RPC__SERVER_ERROR_MIN_CONTEXT_SLOT_NOT_REACHED)) throw e;
-      await new Promise(r => setTimeout(r, 400));
+      if (minContextSlot === undefined || attempt >= 5 || !isSolanaError(e, SOLANA_ERROR__JSON_RPC__SERVER_ERROR_MIN_CONTEXT_SLOT_NOT_REACHED)) throw e;
+      // 0.3, 0.6, 0.9, 1.2 and 1.5 s: a node of a load-balanced RPC can lag by several seconds.
+      await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
     }
   }
 }

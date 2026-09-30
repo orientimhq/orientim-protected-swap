@@ -18,7 +18,7 @@ export type Intent = {
 };
 
 export type OrientimConfig = {
-  /** 30n = 0.3%, the product's fee. */
+  /** 25n = 0.25%, the product's fee. */
   feeBps: bigint;
   /** Fee recipient wallet. When null the fee is 0 (test mode). */
   treasury: Address | null;

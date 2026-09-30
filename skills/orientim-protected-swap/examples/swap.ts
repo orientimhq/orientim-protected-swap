@@ -304,7 +304,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.8.5';
+export const SKILL_VERSION = '1.8.6';
 
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res: Response) => {
@@ -323,6 +323,12 @@ async function answerOf<T>(res: Response): Promise<{ error?: { code: string; mes
     });
   }
 }
+
+/**
+ * How long a prepare is waited for: longer than Orientim takes at most to answer one (45 s), so a slow
+ * build still ends in its answer rather than a second prepare.
+ */
+const PREPARE_WAIT_MS = 60_000;
 
 /** Each call to Orientim ends within `timeoutMs`: an answer that never comes is no answer. */
 async function call<T>(fetchImpl: Fetch, url: string, key: string, body: unknown, timeoutMs = 30_000): Promise<T> {
@@ -620,6 +626,11 @@ export function temporaryAuthorityOf(signedTransaction: string): string | undefi
 
 /** A list this long may be cut: it proves nothing about what is not on it. */
 const ARCHIVE_PAGE = 1_000;
+/**
+ * How far before the end of its lifetime a transaction could have landed, in blocks: its lifetime is
+ * 150 blocks, and this is twice that, to spare. The archive's history must reach back this far.
+ */
+const ARCHIVE_REACH_BLOCKS = 300n;
 
 /**
  * The second proof that a transaction never landed, from an RPC with the chain's full history that
@@ -627,7 +638,9 @@ const ARCHIVE_PAGE = 1_000;
  * status for the signature, and the one-time key E, which no other transaction of Orientim's signs,
  * lists no such signature at a slot at least as late. Its confirmed status, if it has one, is the
  * outcome instead. Null when it proves nothing. Used when your RPC does not answer, or can no longer
- * prove it (`confirm`). An archive that trims its history proves nothing: name only one that keeps all of it.
+ * prove it (`confirm`). An archive whose history does not reach back to every block the transaction
+ * could have landed in (its first available block, read here) proves nothing: an RPC that trims its
+ * history is asked and found too short, never taken at its word.
  */
 async function archiveOutcome(
   archive: Rpc<SolanaRpcApi>, signature: string, temporaryAuthority: string, lastValidBlockHeight: bigint,
@@ -641,6 +654,13 @@ async function archiveOutcome(
   const finalized = await archive.getEpochInfo({ commitment: 'finalized' }).send(bounded());
   const height = (finalized as { blockHeight?: bigint | number }).blockHeight;
   if (height === undefined || BigInt(height) <= lastValidBlockHeight) return null;
+  // Its history reaches back before the transaction could first land, or its silence proves nothing.
+  const first = await archive.getFirstAvailableBlock().send(bounded());
+  const oldest = await archive.getBlock(BigInt(first), {
+    commitment: 'finalized', transactionDetails: 'none', rewards: false, maxSupportedTransactionVersion: 0,
+  }).send(bounded());
+  const oldestHeight = (oldest as { blockHeight?: bigint | number | null } | null)?.blockHeight;
+  if (oldestHeight === undefined || oldestHeight === null || BigInt(oldestHeight) > lastValidBlockHeight - ARCHIVE_REACH_BLOCKS) return null;
   const listed = await archive.getSignaturesForAddress(temporaryAuthority as Address, {
     commitment: 'finalized', minContextSlot: BigInt(finalized.absoluteSlot), limit: ARCHIVE_PAGE,
   }).send(bounded());
@@ -1645,7 +1665,7 @@ export async function prepareChecked(args: {
     ...(slippageBps !== undefined ? { slippageBps } : {}),
     ...(intent.routingMode === 'fast' ? { routingMode: 'fast' } : {}),
     ...(intent.version !== undefined ? { version: intent.version } : {}),
-  }, args.requestTimeoutMs);
+  }, args.requestTimeoutMs ?? PREPARE_WAIT_MS);
   measured('apiPrepare');
   // A fee in SOL from the wallet: held to a price of your own, asked of Jupiter here.
   await holdSolFee(intent, prepared, { fetchImpl, jupiterApiKey: args.jupiterApiKey });
@@ -2107,7 +2127,7 @@ async function main() {
       ...(intent.acceptCostBps ? { acceptCostBps: intent.acceptCostBps } : {}), ...(intent.version ? { version: 1 } : {}),
       ...(own.slippageBps !== undefined ? { slippageBps: own.slippageBps } : {}),
       ...(intent.routingMode === 'fast' ? { routingMode: 'fast' } : {}),
-    });
+    }, PREPARE_WAIT_MS);
     const checked: Intent = withTolerance({ ...intent, owner, minOut }, own.slippageBps);
     await holdSolFee(checked, prepared, { jupiterApiKey });
     const problems = await checkPrepared(prepared, checked, rpc, { slippageCeilingBps: policy?.maxSlippageBps });

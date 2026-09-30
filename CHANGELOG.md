@@ -3,6 +3,19 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.8.6 (2026-09-30)
+
+- The owner's archive RPC (`ORIENTIM_ARCHIVE_RPC_URL`) proves expiry only when its history reaches
+  back past every block the swap could have landed in: the skill asks it for its first available
+  block and that block's height. An RPC that trims its history now proves nothing, and the swap
+  stays `unknown`, rather than being called `expired` and swapped again.
+- A prepare is waited for 60 seconds, longer than Orientim takes at most to answer one (45 seconds),
+  so a slow build ends in its answer rather than in a second prepare.
+- The source of the shipped bundle matches it again: a read of a node behind an earlier read's slot
+  is asked again for about four and a half seconds (0.3 to 1.5 s apart), as the bundle already did.
+- Docs: `acceptCostBps` also takes a route up to 0.5% past it, so a market that drifts a little does
+  not ask again; `minOut` still holds.
+
 ## 1.8.5 (2026-09-30)
 
 - A route that fails in the check's simulation is simulated once more, 1.2 seconds later, and only

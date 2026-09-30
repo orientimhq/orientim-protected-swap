@@ -43,7 +43,7 @@ export const BPS_DENOMINATOR = 10_000n;
 // Ceilings the verifier enforces whatever the configuration says. The fee and
 // F_max reach the browser from the deployment; these limits do not, so a compromised backend or a
 // config bug cannot push past them.
-export const MAX_FEE_BPS = 100n; // 1% ceiling; the current product fee is 0.3%
+export const MAX_FEE_BPS = 100n; // 1% ceiling; the current product fee is 0.25%
 export const ABSOLUTE_MAX_NETWORK_FEE_LAMPORTS = 1_000_000n; // 0.001 SOL
 /**
  * The most W may send E for rent of an account the route opens in E's name. Both of Pump.fun's
