@@ -3,6 +3,21 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.8.4 (2026-09-30)
+
+- Jupiter's 400s that wrap a market whose price feed is behind for a moment ("Oracle price out of
+  date", "Oracle is stale", "The price was expired", "Pair temporarily unavailable", or an upstream
+  `500:`) are asked again, as busy answers, not taken as refusals. Found on mainnet by the
+  simulation matrix, where they stopped about 7% of swaps. The agent's own price is now asked up to
+  four times (waits of 0.4, 0.8 and 1.6 seconds). Orientim's server does the same.
+- A refusal Jupiter gives without a code gets one: `NO_ROUTES_FOUND`, `TOKEN_NOT_TRADABLE` or
+  `SAME_MINT`, asked once and never taken for busy.
+- The same token on both sides is refused by the skill itself (`IntentError`), before anything is
+  asked of Jupiter or Orientim.
+- The check's simulation is asked again, a moment apart, when the RPC answers "Minimum context slot
+  has not been reached" (a node of a load-balanced RPC a few slots behind the one that read the
+  accounts). Before, it stopped the check as unavailable.
+
 ## 1.8.3 (2026-09-30)
 
 - The agent's own price is asked of Jupiter again, twice, a moment apart, when Jupiter answers 429,
