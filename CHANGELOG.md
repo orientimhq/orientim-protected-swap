@@ -3,6 +3,14 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.8.7 (2026-10-01)
+
+- The owner's `maxSlippageBps` is read on v1 transactions too. A v1 message lists its instructions
+  as headers and payloads, not as v0's instructions; the check read only the latter, so a v1 swap
+  under an owner's ceiling stopped with "Cannot read properties of undefined" before signing (found
+  by the mainnet simulation matrix run as v1). Nothing was signed; the swap could not be made. A v1
+  transaction that failed on chain is now explained with its program too.
+
 ## 1.8.6 (2026-09-30)
 
 - The owner's archive RPC (`ORIENTIM_ARCHIVE_RPC_URL`) proves expiry only when its history reaches

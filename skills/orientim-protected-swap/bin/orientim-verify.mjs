@@ -1233,13 +1233,27 @@ async function verifyPrepared(prepared, limits, rpc, opts = {}) {
 	return problems;
 }
 /**
+* Each instruction's program and data, from a compiled message of either version: v0 lists
+* instructions; v1 lists instruction headers and payloads.
+*/
+function compiledInstructions(messageBytes) {
+	const m = getCompiledTransactionMessageDecoder().decode(messageBytes);
+	if (m.instructions) return m.instructions.map((ix) => ({
+		program: m.staticAccounts[ix.programAddressIndex],
+		data: ix.data
+	}));
+	return (m.instructionHeaders ?? []).map((h, i) => ({
+		program: m.staticAccounts[h.programAccountIndex],
+		data: m.instructionPayloads?.[i]?.instructionData
+	}));
+}
+/**
 * Every Jupiter route in the message that tolerates more than the owner's `ceiling`, as problems. A
 * program is always a static account, so no lookup table can hide the route from this reading.
 */
 function routesAboveCeiling(messageBytes, ceiling) {
 	if (!isSlippageBps(ceiling)) return [`the owner's maxSlippageBps must be a whole number of bps from 10 to ${MAX_SLIPPAGE_BPS}`];
-	const compiled = getCompiledTransactionMessageDecoder().decode(messageBytes);
-	return compiled.instructions.filter((ix) => compiled.staticAccounts[ix.programAddressIndex] === JUPITER_PROGRAM).map((ix) => jupiterRouteArgs(ix.data ?? /* @__PURE__ */ new Uint8Array())).filter((args) => !args || args.slippageBps > ceiling).map((args) => args ? `the Jupiter route tolerates ${args.slippageBps} bps, above the owner's limit of ${ceiling} (maxSlippageBps)` : "a Jupiter instruction is not a route the check can read against the owner's maxSlippageBps");
+	return compiledInstructions(messageBytes).filter((ix) => ix.program === JUPITER_PROGRAM).map((ix) => jupiterRouteArgs(ix.data ?? /* @__PURE__ */ new Uint8Array())).filter((args) => !args || args.slippageBps > ceiling).map((args) => args ? `the Jupiter route tolerates ${args.slippageBps} bps, above the owner's limit of ${ceiling} (maxSlippageBps)` : "a Jupiter instruction is not a route the check can read against the owner's maxSlippageBps");
 }
 /**
 * E, each Pump market's account in E's name, and the token accounts those hold cashback in (WSOL,
@@ -1651,7 +1665,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.8.6";
+const SKILL_VERSION = "1.8.7";
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res) => {
 	const after = Number(res.headers.get("retry-after"));
@@ -2985,8 +2999,8 @@ function networkCause(raw, transaction) {
 	let program;
 	try {
 		const message = getCompiledTransactionMessageDecoder().decode(transaction.messageBytes);
-		const instruction = message.instructions?.[index];
-		program = instruction ? message.staticAccounts[instruction.programAddressIndex] : void 0;
+		const at = message.instructions?.[index]?.programAddressIndex ?? message.instructionHeaders?.[index]?.programAccountIndex;
+		program = at === void 0 ? void 0 : message.staticAccounts[at];
 	} catch {
 		program = void 0;
 	}

@@ -304,7 +304,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.8.6';
+export const SKILL_VERSION = '1.8.7';
 
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res: Response) => {
@@ -1873,11 +1873,12 @@ export function networkCause(raw: string, transaction: Transaction): string | un
   if (named === undefined && !(Number.isInteger(custom) && (custom as number) >= 0 && (custom as number) < 2 ** 32)) return undefined;
   let program: string | undefined;
   try {
+    // v0 lists instructions; v1 lists instruction headers.
     const message = getCompiledTransactionMessageDecoder().decode(transaction.messageBytes) as unknown as {
-      staticAccounts: string[]; instructions?: { programAddressIndex: number }[];
+      staticAccounts: string[]; instructions?: { programAddressIndex: number }[]; instructionHeaders?: { programAccountIndex: number }[];
     };
-    const instruction = message.instructions?.[index];
-    program = instruction ? message.staticAccounts[instruction.programAddressIndex] : undefined;
+    const at = message.instructions?.[index]?.programAddressIndex ?? message.instructionHeaders?.[index]?.programAccountIndex;
+    program = at === undefined ? undefined : message.staticAccounts[at];
   } catch {
     program = undefined;
   }
