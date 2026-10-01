@@ -384,16 +384,28 @@ export async function verifyPrepared(
 }
 
 /**
+ * Each instruction's program and data, from a compiled message of either version: v0 lists
+ * instructions; v1 lists instruction headers and payloads.
+ */
+function compiledInstructions(messageBytes: Transaction['messageBytes']): { program: Address | undefined; data?: Uint8Array }[] {
+  const m = getCompiledTransactionMessageDecoder().decode(messageBytes) as unknown as {
+    staticAccounts: Address[];
+    instructions?: { programAddressIndex: number; data?: Uint8Array }[];
+    instructionHeaders?: { programAccountIndex: number }[];
+    instructionPayloads?: { instructionData?: Uint8Array }[];
+  };
+  if (m.instructions) return m.instructions.map(ix => ({ program: m.staticAccounts[ix.programAddressIndex], data: ix.data }));
+  return (m.instructionHeaders ?? []).map((h, i) => ({ program: m.staticAccounts[h.programAccountIndex], data: m.instructionPayloads?.[i]?.instructionData }));
+}
+
+/**
  * Every Jupiter route in the message that tolerates more than the owner's `ceiling`, as problems. A
  * program is always a static account, so no lookup table can hide the route from this reading.
  */
 function routesAboveCeiling(messageBytes: Transaction['messageBytes'], ceiling: number): string[] {
   if (!isSlippageBps(ceiling)) return [`the owner's maxSlippageBps must be a whole number of bps from ${MIN_SLIPPAGE_BPS} to ${MAX_SLIPPAGE_BPS}`];
-  const compiled = getCompiledTransactionMessageDecoder().decode(messageBytes) as unknown as {
-    staticAccounts: Address[]; instructions: { programAddressIndex: number; data?: Uint8Array }[];
-  };
-  return compiled.instructions
-    .filter(ix => compiled.staticAccounts[ix.programAddressIndex] === JUPITER_PROGRAM)
+  return compiledInstructions(messageBytes)
+    .filter(ix => ix.program === JUPITER_PROGRAM)
     .map(ix => jupiterRouteArgs(ix.data ?? new Uint8Array()))
     .filter(args => !args || args.slippageBps > ceiling)
     .map(args => (args
