@@ -1169,10 +1169,20 @@ async function askJupiter(url, asked, apiKey, fetchImpl, budget) {
 			if (timeLeft() <= 0) throw outOfTime();
 			budget.asks--;
 		}
-		const res = await (fetchImpl ?? fetch)(url, {
-			headers: apiKey ? { "x-api-key": apiKey } : {},
-			signal: AbortSignal.timeout(Math.max(1, Math.min(15e3, timeLeft())))
-		});
+		let res;
+		try {
+			res = await (fetchImpl ?? fetch)(url, {
+				headers: apiKey ? { "x-api-key": apiKey } : {},
+				signal: AbortSignal.timeout(Math.max(1, Math.min(15e3, timeLeft())))
+			});
+		} catch (e) {
+			if (e?.name !== "TimeoutError") throw e;
+			if (attempt < 3) {
+				await pause(400 * 2 ** attempt, outOfTime);
+				continue;
+			}
+			throw new Error(`Jupiter did not answer in time (busy) when asked for ${asked}, four times. Nothing was signed; try again in a moment.`);
+		}
 		if (res.ok) return res.json();
 		const body = await res.text().catch(() => "");
 		const busy = res.status === 429 || res.status >= 500 || res.status === 400 && JUPITER_TRANSIENT_400.test(body) && !JUPITER_REFUSALS.some(([said]) => said.test(body));

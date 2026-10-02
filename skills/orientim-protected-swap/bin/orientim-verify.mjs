@@ -1114,10 +1114,20 @@ async function askJupiter(url, asked, apiKey, fetchImpl, budget) {
 			if (timeLeft() <= 0) throw outOfTime();
 			budget.asks--;
 		}
-		const res = await (fetchImpl ?? fetch)(url, {
-			headers: apiKey ? { "x-api-key": apiKey } : {},
-			signal: AbortSignal.timeout(Math.max(1, Math.min(15e3, timeLeft())))
-		});
+		let res;
+		try {
+			res = await (fetchImpl ?? fetch)(url, {
+				headers: apiKey ? { "x-api-key": apiKey } : {},
+				signal: AbortSignal.timeout(Math.max(1, Math.min(15e3, timeLeft())))
+			});
+		} catch (e) {
+			if (e?.name !== "TimeoutError") throw e;
+			if (attempt < 3) {
+				await pause(400 * 2 ** attempt, outOfTime);
+				continue;
+			}
+			throw new Error(`Jupiter did not answer in time (busy) when asked for ${asked}, four times. Nothing was signed; try again in a moment.`);
+		}
 		if (res.ok) return res.json();
 		const body = await res.text().catch(() => "");
 		const busy = res.status === 429 || res.status >= 500 || res.status === 400 && JUPITER_TRANSIENT_400.test(body) && !JUPITER_REFUSALS.some(([said]) => said.test(body));
@@ -1801,7 +1811,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.9.1";
+const SKILL_VERSION = "1.9.2";
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res) => {
 	const after = Number(res.headers.get("retry-after"));
@@ -1845,7 +1855,8 @@ const OWN_ROUTES_WAIT_MS = 11e4;
 *
 * The one-time key the first round names is the one every round and the swap itself must name; the
 * routes are counted before they are fetched, each fetched once; and the rounds, routes and pauses
-* share one deadline and one budget of asks of the agent's key.
+* share one deadline and one budget of asks of the agent's key. A swap that needs more routes or
+* rounds than that is prepared with Orientim's own key, as without the agent's.
 */
 async function preparedByOrientim(fetchImpl, apiUrl, apiKey, body, timeoutMs, own) {
 	const url = `${apiUrl}/api/v1/prepare`;
@@ -1884,7 +1895,7 @@ async function preparedByOrientim(fetchImpl, apiUrl, apiKey, body, timeoutMs, ow
 			const fresh = new Map(routeRequestsFor(asked.requests, swap(taker)).map((r) => [routeRequestKey(r), r]));
 			for (const k of fetched.keys()) fresh.delete(k);
 			if (fresh.size === 0) throw new Error("Orientim asked again for routes it was already sent. Nothing was signed; try again in a moment.");
-			if (fetched.size + fresh.size > MAX_ROUTES) throw new Error(`Orientim asked for more than ${MAX_ROUTES} routes for one swap. Nothing was signed; try again, or a smaller amount.`);
+			if (fetched.size + fresh.size > MAX_ROUTES) return call(fetchImpl, url, apiKey, body, timeoutMs);
 			for (const r of await fetchRoutes([...fresh.values()], swap(taker), {
 				apiKey: own.jupiterApiKey,
 				fetchImpl,
@@ -1895,7 +1906,7 @@ async function preparedByOrientim(fetchImpl, apiUrl, apiKey, body, timeoutMs, ow
 		if (taker !== void 0 && prepared.temporaryAuthority !== taker) throw new Error("Orientim built this swap around another one-time key than the one it asked routes for. Nothing was signed.");
 		return prepared;
 	}
-	throw new Error(`Orientim still asked for routes after ${MAX_ROUTE_ROUNDS} rounds. Nothing was signed; try again in a moment.`);
+	return call(fetchImpl, url, apiKey, body, timeoutMs);
 }
 /** Each call to Orientim ends within `timeoutMs`: an answer that never comes is no answer. */
 async function call(fetchImpl, url, key, body, timeoutMs = 3e4) {
@@ -3005,6 +3016,7 @@ async function ownFloor(intent, deps) {
 	if (intent.minOut === void 0) return {
 		minOut: own.minOut,
 		priceImpactBps: own.priceImpactBps,
+		maxPriceImpactBps: maxImpact,
 		...tolerance
 	};
 	const belowBps = owner.maxBelowBps ?? 2e3;
@@ -3016,6 +3028,7 @@ async function ownFloor(intent, deps) {
 	return {
 		minOut: intent.minOut,
 		priceImpactBps: own.priceImpactBps,
+		maxPriceImpactBps: maxImpact,
 		...tolerance
 	};
 }
@@ -3077,6 +3090,8 @@ async function prepareChecked(args) {
 		ownRoutes: args.ownRoutes
 	});
 	measured("apiPrepare");
+	const routeImpact = prepared.amounts?.priceImpactPct;
+	if (typeof routeImpact === "number" && Number.isFinite(routeImpact) && Math.round(routeImpact * 1e4) > own.maxPriceImpactBps) throw new PriceImpactError(Math.round(routeImpact * 1e4), own.maxPriceImpactBps);
 	await holdSolFee(intent, prepared, {
 		fetchImpl,
 		jupiterApiKey: args.jupiterApiKey

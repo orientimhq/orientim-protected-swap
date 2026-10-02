@@ -237,7 +237,9 @@ or the swap stopped when that does not fit.
 The skill and `orientim-verify` do this themselves whenever `JUPITER_API_KEY` is set
 (`ORIENTIM_OWN_ROUTES=0`, or `ownRoutes: false`, lets Orientim's key build them instead), within 110
 seconds and 48 asks of your key for one swap, waiting out Jupiter's rate limit when it says how long
-and that fits, and sharing that wait among the swaps of one process. A free Jupiter key allows one
+and that fits, and sharing that wait among the swaps of one process. A swap that needs more than 24
+routes or 10 rounds (a large amount, tried at narrower routes) is prepared with Orientim's key
+instead. Once the widest route does not fit, prepare asks for every narrower one in the same round. A free Jupiter key allows one
 request a second, so a swap takes a few seconds longer; a busy bot does well with a paid key.
 Without `ownRoutes`, prepare works as before, and a deployment whose operator turned own routes off
 (`ORIENTIM_OWN_ROUTES=0` on the server) builds with its own key and ignores `ownRoutes`, `routes` and
@@ -254,7 +256,8 @@ run them itself before signing.
   far below the market the floor may sit and the price impact (`maxBelowBps`, `maxPriceImpactBps`).
 - **Price impact.** How far this amount moves the market, from your own quote (`ownQuote`). Above
   `maxPriceImpactBps` (default 5%, at most 20%) the skill refuses before anything is prepared, with
-  `PriceImpactError`. Show this to the owner before an interactive swap. A large impact is the mark of thin
+  `PriceImpactError`, and so is a prepared route whose own impact is above it (a costlier route, once
+  approved, may move the market more than the best one). Show this to the owner before an interactive swap. A large impact is the mark of thin
   liquidity, as when a token's pool is being drained.
 - **Your floor's own limit.** The skill asks Jupiter for its price on every swap and refuses a
   `minOut` more than 20% below it before anything is prepared (`FloorError`, `floor-too-low` from the

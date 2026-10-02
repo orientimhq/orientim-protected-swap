@@ -198,9 +198,20 @@ async function askJupiter(
       if (timeLeft() <= 0) throw outOfTime();
       budget.asks--;
     }
-    const res = await (fetchImpl ?? fetch)(url, {
-      headers: apiKey ? { 'x-api-key': apiKey } : {}, signal: AbortSignal.timeout(Math.max(1, Math.min(15_000, timeLeft()))),
-    });
+    let res: Response;
+    try {
+      res = await (fetchImpl ?? fetch)(url, {
+        headers: apiKey ? { 'x-api-key': apiKey } : {}, signal: AbortSignal.timeout(Math.max(1, Math.min(15_000, timeLeft()))),
+      });
+    } catch (e) {
+      // No answer in time is Jupiter busy, as a 5xx is: asked again, within the budget.
+      if ((e as Error)?.name !== 'TimeoutError') throw e;
+      if (attempt < 3) {
+        await pause(400 * 2 ** attempt, outOfTime);
+        continue;
+      }
+      throw new Error(`Jupiter did not answer in time (busy) when asked for ${asked}, four times. Nothing was signed; try again in a moment.`);
+    }
     if (res.ok) return res.json();
     const body = await res.text().catch(() => '');
     // A market's oracle behind for a moment is transient; a refusal of the trade itself is not.
