@@ -3,6 +3,21 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.9.3 (2026-10-03)
+
+From an external audit:
+
+- One budget for the whole preparation: 110 seconds and 48 asks of Jupiter, from the agent's own
+  quote, every route and its retries and pauses, to the fee-in-SOL check, the check on your RPC and
+  the token-risk read before signing. Every ask is counted before it is sent, even one that fails;
+  time is kept on a monotonic clock; spent, the swap stops unsigned. Finalize and the wait for an
+  outcome are not part of it.
+- The fee on the output is documented exactly: 0.25% of the guaranteed minimum, which with your own
+  routes is checked against an independent Orientim price within 1%. The earlier "never lowers
+  Orientim's fee" said more than that.
+- On Orientim's side, its own price is kept in the session for the rounds that follow while fresh
+  (15 seconds) and asked for the same tolerance and fee, instead of being asked in every round.
+
 ## 1.9.2 (2026-10-02)
 
 Found by the mainnet simulation matrix with the agent's own routes (732 cases):

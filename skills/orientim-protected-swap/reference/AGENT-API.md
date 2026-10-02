@@ -198,15 +198,21 @@ them with yours, which never reaches Orientim. Orientim builds, checks and signs
 as around a route it asked for. Your routes are untrusted, as Jupiter's own answers are: each is held
 to this swap (mints, amount, the one-time key as taker), to the tolerance and quote its instruction
 carries, to the verifier's rules and to two simulations, and a route through a DEX the build excludes
-is refused by the programs it names. A made-up route can only fail your own swap; it never lowers
-Orientim's fee:
+is refused by the programs it names. A made-up route can fail your own swap; what it can do to
+Orientim's fee is exactly this:
 
 - A fee on the input is a share of `amountIn`, which no route sets.
 - A fee in SOL, for a pair neither token of which can carry it, is always priced with Orientim's
   own key.
-- A fee on the output (a sale into SOL, USDC or USDT) is a share of the minimum the route sets. For
-  these, Orientim asks Jupiter once with its own key for the unrestricted price, and a route whose
-  minimum is more than 1% below that price, each at its own tolerance, is not used.
+- A fee on the output (a sale into SOL, USDC or USDT) is 0.25% of the guaranteed minimum, the
+  minimum your route sets. That minimum is checked against an independent price of Orientim's own,
+  with a tolerance of up to 1%: a route whose minimum is more than 1% below it, each at its own
+  tolerance, is not used. Within that 1%, the fee follows your route's minimum, so it may be up to
+  1% of the fee lower than with Orientim's own routes. What your wallet keeps is that minimum less
+  the fee, and never less than your `minOut`.
+
+Orientim's price is asked once with its key and kept in the session for the rounds that follow
+while it is fresh (15 seconds) and asked for the same tolerance and fee; otherwise it is asked again.
 
 What Orientim cannot check this way, it does not take on trust: a route more than 1% below its
 price, or an excluded DEX it cannot tell by its programs (Jupiter's labels unavailable), and
@@ -235,8 +241,11 @@ deadline for all the rounds; and Jupiter's `Retry-After` or `x-ratelimit-reset` 
 or the swap stopped when that does not fit.
 
 The skill and `orientim-verify` do this themselves whenever `JUPITER_API_KEY` is set
-(`ORIENTIM_OWN_ROUTES=0`, or `ownRoutes: false`, lets Orientim's key build them instead), within 110
-seconds and 48 asks of your key for one swap, waiting out Jupiter's rate limit when it says how long
+(`ORIENTIM_OWN_ROUTES=0`, or `ownRoutes: false`, lets Orientim's key build them instead). One
+budget of 110 seconds and 48 asks of Jupiter covers the whole preparation, from the agent's own
+quote and every route to the fee-in-SOL check and the last check before signing (finalize and the
+wait for an outcome have their own); spent, the swap stops unsigned. It counts every ask before it
+is sent, retries included, waiting out Jupiter's rate limit when it says how long
 and that fits, and sharing that wait among the swaps of one process. A swap that needs more than 24
 routes or 10 rounds (a large amount, tried at narrower routes) is prepared with Orientim's key
 instead. Once the widest route does not fit, prepare asks for every narrower one in the same round. A free Jupiter key allows one

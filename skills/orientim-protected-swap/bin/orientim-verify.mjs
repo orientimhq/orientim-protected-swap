@@ -1061,6 +1061,18 @@ function jupiterErrorCode(body) {
 	} catch {}
 	return JUPITER_REFUSALS.find(([said]) => said.test(body))?.[1] ?? null;
 }
+const PREPARATION_MS = 11e4;
+/** A new budget for one preparation (see `JupiterBudget`). */
+function preparationBudget(asks = 48, ms = PREPARATION_MS) {
+	return {
+		asks,
+		until: performance.now() + ms
+	};
+}
+/** The time a budget has left, in ms (Infinity without one). */
+function timeLeftOf(budget) {
+	return budget ? budget.until - performance.now() : Infinity;
+}
 /** The longest pause the skill takes for Jupiter's rate limit without a budget's deadline. */
 const MAX_RATE_LIMIT_WAIT_MS = 1e4;
 /**
@@ -1097,7 +1109,7 @@ function rateLimitResetMs(headers, now = Date.now()) {
 */
 async function askJupiter(url, asked, apiKey, fetchImpl, budget) {
 	const id = apiKey ?? "";
-	const timeLeft = () => budget ? budget.until - Date.now() : Infinity;
+	const timeLeft = () => timeLeftOf(budget);
 	const outOfTime = () => /* @__PURE__ */ new Error(`Fetching routes with your Jupiter key took longer than this swap's time allows (when asked for ${asked}). Nothing was signed; try again in a moment.`);
 	/** Wait `ms`, or stop when it would end past the budget's deadline, or past the longest pause. */
 	const pause = async (ms, why) => {
@@ -1118,7 +1130,7 @@ async function askJupiter(url, asked, apiKey, fetchImpl, budget) {
 		try {
 			res = await (fetchImpl ?? fetch)(url, {
 				headers: apiKey ? { "x-api-key": apiKey } : {},
-				signal: AbortSignal.timeout(Math.max(1, Math.min(15e3, timeLeft())))
+				signal: AbortSignal.timeout(Math.max(1, Math.floor(Math.min(15e3, timeLeft()))))
 			});
 		} catch (e) {
 			if (e?.name !== "TimeoutError") throw e;
@@ -1502,7 +1514,7 @@ async function ownQuote(args) {
 		maxAccounts: "64"
 	};
 	for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
-	const r = await askJupiter(url.toString(), "your own price", args.apiKey, args.fetchImpl);
+	const r = await askJupiter(url.toString(), "your own price", args.apiKey, args.fetchImpl, args.budget);
 	if (r.inputMint !== args.inputMint || r.outputMint !== args.outputMint || r.inAmount !== routed.toString() || !/^\d{1,20}$/.test(r.outAmount ?? "")) throw new Error("Jupiter answered for another trade when asked for your own price");
 	const curve = r.swapInstruction?.accounts?.some((a) => a.pubkey === PUMP_CURVE_PROGRAM) ?? false;
 	const ceiling = args.ceilings?.maxSlippageBps;
@@ -1599,7 +1611,7 @@ async function ownSolFeeLimit(args) {
 		maxAccounts: "64"
 	};
 	for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
-	const r = await askJupiter(url.toString(), "the value of your swap in SOL", args.apiKey, args.fetchImpl);
+	const r = await askJupiter(url.toString(), "the value of your swap in SOL", args.apiKey, args.fetchImpl, args.budget);
 	if (r.inputMint !== args.inputMint || r.outputMint !== query.outputMint || r.inAmount !== args.amountIn || !/^\d{1,20}$/.test(r.outAmount ?? "")) throw new Error("Jupiter answered for another trade when asked for the value of your swap in SOL");
 	const fee = BigInt(r.outAmount) * BigInt(feeLimitBps(args.maxFeeBps)) / 10000n;
 	const limit = fee + fee / 50n;
@@ -1811,7 +1823,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.9.2";
+const SKILL_VERSION = "1.9.3";
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res) => {
 	const after = Number(res.headers.get("retry-after"));
@@ -1840,13 +1852,6 @@ const PREPARE_WAIT_MS = 6e4;
 /** The rounds of a prepare whose routes the agent brings, and the routes it may carry in all. */
 const MAX_ROUTE_ROUNDS = 10;
 const MAX_ROUTES = 24;
-/** The asks of the agent's Jupiter key one prepare may make, retries included. */
-const MAX_JUPITER_ASKS = 48;
-/**
-* How long a prepare whose routes the agent brings may take in all, its rounds, routes and pauses
-* together: within the two minutes Orientim's session lives from the first round.
-*/
-const OWN_ROUTES_WAIT_MS = 11e4;
 /**
 * Orientim's prepare. With the agent's own Jupiter key, Orientim asks for the routes it needs (409
 * `routes-needed`), the agent fetches them from Jupiter with that key, which never leaves this
@@ -1860,11 +1865,13 @@ const OWN_ROUTES_WAIT_MS = 11e4;
 */
 async function preparedByOrientim(fetchImpl, apiUrl, apiKey, body, timeoutMs, own) {
 	const url = `${apiUrl}/api/v1/prepare`;
-	if (!own.jupiterApiKey || own.ownRoutes === false) return call(fetchImpl, url, apiKey, body, timeoutMs);
-	const budget = {
-		asks: MAX_JUPITER_ASKS,
-		until: Date.now() + OWN_ROUTES_WAIT_MS
+	const budget = own.budget ?? preparationBudget();
+	const waitFor = () => {
+		const left = timeLeftOf(budget);
+		if (left <= 0) throw new Error("Preparing this swap took longer than a swap may (110 s). Nothing was signed; try again in a moment.");
+		return Math.max(1, Math.floor(Math.min(timeoutMs, left)));
 	};
+	if (!own.jupiterApiKey || own.ownRoutes === false) return call(fetchImpl, url, apiKey, body, waitFor());
 	const fetched = /* @__PURE__ */ new Map();
 	let session;
 	let taker;
@@ -1875,8 +1882,6 @@ async function preparedByOrientim(fetchImpl, apiUrl, apiKey, body, timeoutMs, ow
 		taker: named
 	});
 	for (let round = 0; round < MAX_ROUTE_ROUNDS; round++) {
-		const left = budget.until - Date.now();
-		if (left <= 0) throw new Error("Preparing with your own Jupiter key's routes took longer than a swap may. Nothing was signed; try again in a moment.");
 		let prepared;
 		try {
 			prepared = await call(fetchImpl, url, apiKey, {
@@ -1884,7 +1889,7 @@ async function preparedByOrientim(fetchImpl, apiUrl, apiKey, body, timeoutMs, ow
 				ownRoutes: true,
 				...session ? { session } : {},
 				routes: [...fetched.values()]
-			}, Math.min(timeoutMs, left));
+			}, waitFor());
 		} catch (e) {
 			if (!(e instanceof OrientimApiError) || e.code !== "routes-needed") throw e;
 			const asked = e.body;
@@ -1895,7 +1900,7 @@ async function preparedByOrientim(fetchImpl, apiUrl, apiKey, body, timeoutMs, ow
 			const fresh = new Map(routeRequestsFor(asked.requests, swap(taker)).map((r) => [routeRequestKey(r), r]));
 			for (const k of fetched.keys()) fresh.delete(k);
 			if (fresh.size === 0) throw new Error("Orientim asked again for routes it was already sent. Nothing was signed; try again in a moment.");
-			if (fetched.size + fresh.size > MAX_ROUTES) return call(fetchImpl, url, apiKey, body, timeoutMs);
+			if (fetched.size + fresh.size > MAX_ROUTES) return call(fetchImpl, url, apiKey, body, waitFor());
 			for (const r of await fetchRoutes([...fresh.values()], swap(taker), {
 				apiKey: own.jupiterApiKey,
 				fetchImpl,
@@ -1906,7 +1911,7 @@ async function preparedByOrientim(fetchImpl, apiUrl, apiKey, body, timeoutMs, ow
 		if (taker !== void 0 && prepared.temporaryAuthority !== taker) throw new Error("Orientim built this swap around another one-time key than the one it asked routes for. Nothing was signed.");
 		return prepared;
 	}
-	return call(fetchImpl, url, apiKey, body, timeoutMs);
+	return call(fetchImpl, url, apiKey, body, waitFor());
 }
 /** Each call to Orientim ends within `timeoutMs`: an answer that never comes is no answer. */
 async function call(fetchImpl, url, key, body, timeoutMs = 3e4) {
@@ -3004,6 +3009,7 @@ async function ownFloor(intent, deps) {
 		autoSlippage: auto,
 		apiKey: deps.jupiterApiKey,
 		fetchImpl: deps.fetchImpl,
+		budget: deps.budget,
 		ceilings: {
 			maxSlippageBps: owner.maxSlippageBps,
 			maxBelowBps: owner.maxBelowBps
@@ -3049,6 +3055,13 @@ function withTolerance(intent, slippageBps) {
 async function prepareChecked(args) {
 	const fetchImpl = args.fetchImpl ?? fetch;
 	const owner = args.owner;
+	const budget = args.budget ?? preparationBudget();
+	const outOfTime = () => /* @__PURE__ */ new Error("Preparing this swap took longer than a swap may (110 s). Nothing was signed; try again in a moment.");
+	const within = (ms) => {
+		const left = timeLeftOf(budget);
+		if (left <= 0) throw outOfTime();
+		return Math.max(1, Math.floor(Math.min(ms ?? 1e4, left)));
+	};
 	let phaseStarted = performance.now();
 	const measured = (phase) => {
 		const now = performance.now();
@@ -3064,8 +3077,9 @@ async function prepareChecked(args) {
 		rpc: args.rpc,
 		fetchImpl,
 		jupiterApiKey: args.jupiterApiKey,
-		requestTimeoutMs: args.requestTimeoutMs,
-		policy: args.policy
+		requestTimeoutMs: within(args.requestTimeoutMs),
+		policy: args.policy,
+		budget
 	});
 	measured("ownFloor");
 	const minOut = own.minOut;
@@ -3087,17 +3101,19 @@ async function prepareChecked(args) {
 		...intent.version !== void 0 ? { version: intent.version } : {}
 	}, args.requestTimeoutMs ?? PREPARE_WAIT_MS, {
 		jupiterApiKey: args.jupiterApiKey,
-		ownRoutes: args.ownRoutes
+		ownRoutes: args.ownRoutes,
+		budget
 	});
 	measured("apiPrepare");
 	const routeImpact = prepared.amounts?.priceImpactPct;
 	if (typeof routeImpact === "number" && Number.isFinite(routeImpact) && Math.round(routeImpact * 1e4) > own.maxPriceImpactBps) throw new PriceImpactError(Math.round(routeImpact * 1e4), own.maxPriceImpactBps);
 	await holdSolFee(intent, prepared, {
 		fetchImpl,
-		jupiterApiKey: args.jupiterApiKey
+		jupiterApiKey: args.jupiterApiKey,
+		budget
 	});
 	const problems = await checkPrepared(prepared, intent, args.rpc, {
-		requestTimeoutMs: args.requestTimeoutMs,
+		requestTimeoutMs: within(args.requestTimeoutMs),
 		slippageCeilingBps: args.policy?.maxSlippageBps
 	});
 	if (problems.length) {
@@ -3106,8 +3122,9 @@ async function prepareChecked(args) {
 		throw refused;
 	}
 	measured("localVerification");
-	const risk = await tokenRisk(args.rpc, [intent.inputMint, intent.outputMint], args.requestTimeoutMs ?? 1e4);
+	const risk = await tokenRisk(args.rpc, [intent.inputMint, intent.outputMint], within(args.requestTimeoutMs ?? 1e4));
 	measured("tokenRisk");
+	if (timeLeftOf(budget) <= 0) throw outOfTime();
 	return {
 		prepared: preparedData(prepared),
 		intent,
@@ -3151,7 +3168,8 @@ async function holdSolFee(intent, prepared, deps) {
 		taker: intent.owner,
 		maxFeeBps: intent.maxFeeBps,
 		apiKey: deps.jupiterApiKey,
-		fetchImpl: deps.fetchImpl
+		fetchImpl: deps.fetchImpl,
+		budget: deps.budget
 	});
 	intent.maxSolFeeLamports = given === void 0 ? own : Math.min(own, given);
 }
@@ -3493,13 +3511,15 @@ async function main$1() {
 			inputMint,
 			amountIn
 		});
+		const budget = preparationBudget();
 		const own = await ownFloor({
 			...intent,
 			owner
 		}, {
 			rpc,
 			jupiterApiKey,
-			policy
+			policy,
+			budget
 		});
 		const minOut = own.minOut;
 		const prepared = await preparedByOrientim(fetch, apiUrl, apiKey, {
@@ -3514,14 +3534,18 @@ async function main$1() {
 			...intent.routingMode === "fast" ? { routingMode: "fast" } : {}
 		}, PREPARE_WAIT_MS, {
 			jupiterApiKey,
-			ownRoutes: process.env.ORIENTIM_OWN_ROUTES !== "0"
+			ownRoutes: process.env.ORIENTIM_OWN_ROUTES !== "0",
+			budget
 		});
 		const checked = withTolerance({
 			...intent,
 			owner,
 			minOut
 		}, own.slippageBps);
-		await holdSolFee(checked, prepared, { jupiterApiKey });
+		await holdSolFee(checked, prepared, {
+			jupiterApiKey,
+			budget
+		});
 		const problems = await checkPrepared(prepared, checked, rpc, { slippageCeilingBps: policy?.maxSlippageBps });
 		const risk = await tokenRisk(rpc, [inputMint, outputMint]);
 		const shownData = preparedData(prepared);

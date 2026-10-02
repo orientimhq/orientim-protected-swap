@@ -135,10 +135,25 @@ function jupiterErrorCode(body: string): string | null {
 }
 
 /**
- * What one prepare may spend of the agent's own Jupiter key: asks, retries included, and time. Every
- * ask is counted before it is made, and no ask or pause runs past `until`.
+ * What one preparation may spend, from its own quote to the last check before signing: asks of
+ * Jupiter, retries included, and time. Every ask is counted before it is made, even one that fails,
+ * and no ask or pause runs past `until` (performance.now(), a monotonic clock, in ms).
  */
 export type JupiterBudget = { asks: number; until: number };
+
+/** The asks of Jupiter and the time one preparation may take, from its own quote to signing. */
+export const PREPARATION_ASKS = 48;
+export const PREPARATION_MS = 110_000;
+
+/** A new budget for one preparation (see `JupiterBudget`). */
+export function preparationBudget(asks = PREPARATION_ASKS, ms = PREPARATION_MS): JupiterBudget {
+  return { asks, until: performance.now() + ms };
+}
+
+/** The time a budget has left, in ms (Infinity without one). */
+export function timeLeftOf(budget: JupiterBudget | undefined): number {
+  return budget ? budget.until - performance.now() : Infinity;
+}
 
 /** The longest pause the skill takes for Jupiter's rate limit without a budget's deadline. */
 const MAX_RATE_LIMIT_WAIT_MS = 10_000;
@@ -181,7 +196,7 @@ async function askJupiter(
   url: string, asked: string, apiKey: string | undefined, fetchImpl: typeof fetch | undefined, budget?: JupiterBudget,
 ): Promise<unknown> {
   const id = apiKey ?? '';
-  const timeLeft = () => (budget ? budget.until - Date.now() : Infinity);
+  const timeLeft = () => timeLeftOf(budget);
   const outOfTime = () => new Error(`Fetching routes with your Jupiter key took longer than this swap's time allows (when asked for ${asked}). Nothing was signed; try again in a moment.`);
   /** Wait `ms`, or stop when it would end past the budget's deadline, or past the longest pause. */
   const pause = async (ms: number, why: () => Error) => {
@@ -201,7 +216,7 @@ async function askJupiter(
     let res: Response;
     try {
       res = await (fetchImpl ?? fetch)(url, {
-        headers: apiKey ? { 'x-api-key': apiKey } : {}, signal: AbortSignal.timeout(Math.max(1, Math.min(15_000, timeLeft()))),
+        headers: apiKey ? { 'x-api-key': apiKey } : {}, signal: AbortSignal.timeout(Math.max(1, Math.floor(Math.min(15_000, timeLeft())))),
       });
     } catch (e) {
       // No answer in time is Jupiter busy, as a 5xx is: asked again, within the budget.
@@ -687,6 +702,8 @@ async function leftUnderKey(
 export type OwnQuoteArgs = {
   inputMint: string; outputMint: string; amountIn: string; taker: string;
   maxFeeBps?: number; maxBelowBps?: number; jupiterUrl?: string; apiKey?: string; fetchImpl?: typeof fetch;
+  /** The preparation's budget of asks and time, when this quote is part of one. */
+  budget?: JupiterBudget;
   /**
    * The tolerance the agent chose for its route (`AgentLimits.slippageBps`). Without `maxBelowBps`,
    * the floor then sits that far below Jupiter's price, and 1.5% more (2% on a Pump.fun curve) for
@@ -759,7 +776,7 @@ export async function ownQuote(args: OwnQuoteArgs): Promise<{
     slippageBps: args.autoSlippage ? 'rtse' : '50', maxAccounts: '64',
   };
   for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
-  const r = (await askJupiter(url.toString(), 'your own price', args.apiKey, args.fetchImpl)) as {
+  const r = (await askJupiter(url.toString(), 'your own price', args.apiKey, args.fetchImpl, args.budget)) as {
     inputMint?: string; outputMint?: string; inAmount?: string; outAmount?: string; otherAmountThreshold?: string; priceImpactPct?: string | number;
     swapInstruction?: { accounts?: { pubkey: string }[] };
   };
@@ -881,7 +898,7 @@ export async function inputTransferFee(rpc: Rpc<SolanaRpcApi>, mint: string, tim
  */
 export async function ownSolFeeLimit(args: {
   inputMint: string; amountIn: string; taker: string;
-  maxFeeBps?: number; jupiterUrl?: string; apiKey?: string; fetchImpl?: typeof fetch;
+  maxFeeBps?: number; jupiterUrl?: string; apiKey?: string; fetchImpl?: typeof fetch; budget?: JupiterBudget;
 }): Promise<number> {
   const url = new URL(args.jupiterUrl ?? 'https://api.jup.ag/swap/v2/build');
   const query = {
@@ -889,7 +906,7 @@ export async function ownSolFeeLimit(args: {
     taker: args.taker, slippageBps: '50', maxAccounts: '64',
   };
   for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
-  const r = (await askJupiter(url.toString(), 'the value of your swap in SOL', args.apiKey, args.fetchImpl)) as { inputMint?: string; outputMint?: string; inAmount?: string; outAmount?: string };
+  const r = (await askJupiter(url.toString(), 'the value of your swap in SOL', args.apiKey, args.fetchImpl, args.budget)) as { inputMint?: string; outputMint?: string; inAmount?: string; outAmount?: string };
   if (r.inputMint !== args.inputMint || r.outputMint !== query.outputMint || r.inAmount !== args.amountIn || !/^\d{1,20}$/.test(r.outAmount ?? '')) {
     throw new Error('Jupiter answered for another trade when asked for the value of your swap in SOL');
   }

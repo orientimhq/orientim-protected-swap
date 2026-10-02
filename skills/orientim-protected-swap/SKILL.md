@@ -133,7 +133,8 @@ The user provides these; never ask for them in chat, and never print or log them
   refuses, so the agent's own floor cannot be priced and the swap stops before anything is signed.
   With it, the skill also fetches the routes Orientim builds around, with this key, which never
   leaves this process (AGENT-API.md, "Your own Jupiter key"): Orientim's own Jupiter quota is not
-  shared with other agents' swaps. One swap spends at most 48 asks of this key and 110 seconds, and
+  shared with other agents' swaps. One preparation, from the agent's own quote to the last check
+  before signing, spends at most 48 asks of this key and 110 seconds, and
   waits out Jupiter's rate limit when it says how long and that fits; a swap that needs more is
   prepared with Orientim's key. `ORIENTIM_OWN_ROUTES=0` lets Orientim's key fetch them instead.
 
