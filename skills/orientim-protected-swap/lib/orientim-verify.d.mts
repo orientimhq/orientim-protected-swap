@@ -42,11 +42,21 @@ export type RouteRequest = {
 export type FetchedRoute = { params: RouteRequest; response?: unknown; noRoute?: boolean };
 /** The most route requests the skill fetches for one round of a prepare. */
 export declare const MAX_ROUTE_REQUESTS_PER_ROUND: number;
-/** The route requests Orientim named, fetched from Jupiter with the agent's own key, for this swap only. */
+/** What one prepare may spend of the agent's own Jupiter key: asks, retries included, and time (ms since the epoch). */
+export type JupiterBudget = { asks: number; until: number };
+/** When Jupiter's rate limit frees again, in ms from `now`, as a 429's Retry-After or x-ratelimit-reset says; null when neither does. */
+export declare function rateLimitResetMs(headers: Headers, now?: number): number | null;
+/** The route requests Orientim named, fetched from Jupiter with the agent's own key, for this swap only, one at a time, within `budget`. */
 export declare function fetchRoutes(
   requests: unknown, swap: { inputMint: string; outputMint: string; amountIn: string; taker: string },
-  opts?: { apiKey?: string; fetchImpl?: typeof fetch; jupiterUrl?: string },
+  opts?: { apiKey?: string; fetchImpl?: typeof fetch; jupiterUrl?: string; budget?: JupiterBudget },
 ): Promise<FetchedRoute[]>;
+/** The route requests Orientim named, each checked to be one for this swap, before any is fetched; throws for any other. */
+export declare function routeRequestsFor(
+  requests: unknown, swap: { inputMint: string; outputMint: string; amountIn: string; taker: string },
+): RouteRequest[];
+/** One route request as one text: the same build, whatever the order of its excluded DEXes. */
+export declare function routeRequestKey(r: RouteRequest): string;
 export type AgentLimits = {
   /** The agent's wallet, which signs first and pays. */
   owner: string;

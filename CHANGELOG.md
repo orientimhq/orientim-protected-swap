@@ -3,6 +3,21 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.9.1 (2026-10-02)
+
+- Routes from the agent's own key are held to more (found in an external audit). On Orientim's side:
+  a fee on the output (a sale into SOL, USDC or USDT) is a share of the minimum a route sets, so
+  Orientim now prices such a swap once with its own key and does not use a route whose minimum is
+  more than 1% below that price; an excluded DEX it cannot tell by its programs is not taken as
+  absent; in both cases Orientim builds the swap with its own key instead. A session now ends two
+  minutes after the first round. On the skill's side:
+  - the one-time key of the first round must be the one of every round and of the prepared swap;
+  - routes are counted before they are fetched (24 in all), each fetched once, one at a time;
+  - one prepare spends at most 48 asks of the agent's Jupiter key, retries included, and 110
+    seconds in all;
+  - a 429 from Jupiter is waited out as long as its `Retry-After` or `x-ratelimit-reset` says, when
+    that fits the time left, and the wait is shared by the swaps of one process using the same key.
+
 ## 1.9.0 (2026-10-02)
 
 - Routes from the agent's own Jupiter key. With `JUPITER_API_KEY` set, the skill and

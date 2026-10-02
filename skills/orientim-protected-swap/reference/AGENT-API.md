@@ -198,14 +198,27 @@ them with yours, which never reaches Orientim. Orientim builds, checks and signs
 as around a route it asked for. Your routes are untrusted, as Jupiter's own answers are: each is held
 to this swap (mints, amount, the one-time key as taker), to the tolerance and quote its instruction
 carries, to the verifier's rules and to two simulations, and a route through a DEX the build excludes
-is refused by the programs it names. A made-up route can only fail your own swap. Orientim's fee in
-SOL, for a pair neither token of which can carry it, is always priced with Orientim's own key.
+is refused by the programs it names. A made-up route can only fail your own swap; it never lowers
+Orientim's fee:
+
+- A fee on the input is a share of `amountIn`, which no route sets.
+- A fee in SOL, for a pair neither token of which can carry it, is always priced with Orientim's
+  own key.
+- A fee on the output (a sale into SOL, USDC or USDT) is a share of the minimum the route sets. For
+  these, Orientim asks Jupiter once with its own key for the unrestricted price, and a route whose
+  minimum is more than 1% below that price, each at its own tolerance, is not used.
+
+What Orientim cannot check this way, it does not take on trust: a route more than 1% below its
+price, or an excluded DEX it cannot tell by its programs (Jupiter's labels unavailable), and
+Orientim builds that swap with its own key instead, around the same one-time key, within the same
+45 seconds. The answer is the prepared swap as ever; your routes were simply not used.
 
 It takes rounds, a second or so each:
 
 1. `POST /api/v1/prepare` with your usual body and `"ownRoutes": true`. The answer is `409
-   routes-needed` with `session` (sealed, two minutes, for this swap and key only), `taker` (the
-   one-time key the swap is built around) and `requests`: the Jupiter builds it needs.
+   routes-needed` with `session` (sealed, for this swap and key only, ending two minutes after this
+   first round however many rounds follow), `taker` (the one-time key the swap is built around, the
+   same in every round) and `requests`: the Jupiter builds it needs.
 2. Fetch each request from `https://api.jup.ag/swap/v2/build` with your key, with exactly its fields
    as query parameters and `wrapAndUnwrapSol=false` (`excludeDexes` joined with commas). Fetch only
    requests for your swap's mints, its `taker` and an amount no larger than yours.
@@ -215,10 +228,20 @@ It takes rounds, a second or so each:
 4. Repeat until the answer is the prepared swap; usually one or two rounds. `bad-session` means the
    session expired or was opened for another swap: start again without it.
 
+A client of its own should hold Orientim to the same as the skill does: the `taker` of the first
+round in every round and as the prepared swap's `temporaryAuthority`; each request fetched once, and
+counted before it is fetched (24 in all); every ask of its key counted, retries included; one
+deadline for all the rounds; and Jupiter's `Retry-After` or `x-ratelimit-reset` waited out on a 429,
+or the swap stopped when that does not fit.
+
 The skill and `orientim-verify` do this themselves whenever `JUPITER_API_KEY` is set
-(`ORIENTIM_OWN_ROUTES=0`, or `ownRoutes: false`, lets Orientim's key build them instead). A free
-Jupiter key allows one request a second, so a swap takes a few seconds longer; a busy bot does well
-with a paid key. Without `ownRoutes`, prepare works as before.
+(`ORIENTIM_OWN_ROUTES=0`, or `ownRoutes: false`, lets Orientim's key build them instead), within 110
+seconds and 48 asks of your key for one swap, waiting out Jupiter's rate limit when it says how long
+and that fits, and sharing that wait among the swaps of one process. A free Jupiter key allows one
+request a second, so a swap takes a few seconds longer; a busy bot does well with a paid key.
+Without `ownRoutes`, prepare works as before, and a deployment whose operator turned own routes off
+(`ORIENTIM_OWN_ROUTES=0` on the server) builds with its own key and ignores `ownRoutes`, `routes` and
+`session`.
 
 ### Protection across agent integrations
 

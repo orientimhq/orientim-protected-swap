@@ -52,10 +52,10 @@ import {
 import type { Address, Rpc, SignatureBytes, SignatureDictionary, SolanaRpcApi, Transaction, TransactionPartialSigner } from '@solana/kit';
 import {
   DEFAULT_MAX_PRICE_IMPACT_BPS, feeLimitBps, inputTransferFee, isSlippageBps, MAX_BELOW_BPS, MAX_PRICE_IMPACT_BPS, MAX_SLIPPAGE_BPS, MIN_SLIPPAGE_BPS,
-  fetchRoutes, isRpcFailure, ownQuote, ownSolFeeLimit, pastProof,
+  fetchRoutes, isRpcFailure, ownQuote, ownSolFeeLimit, pastProof, routeRequestKey, routeRequestsFor,
   noticesOf, provesNeverLanded, tokenRisk, verifyPrepared,
 } from '../lib/orientim-verify.mjs';
-import type { TokenRisk } from '../lib/orientim-verify.mjs';
+import type { FetchedRoute, TokenRisk } from '../lib/orientim-verify.mjs';
 
 export type Intent = {
   owner: string;
@@ -310,7 +310,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.9.0';
+export const SKILL_VERSION = '1.9.1';
 
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res: Response) => {
@@ -338,12 +338,23 @@ const PREPARE_WAIT_MS = 60_000;
 /** The rounds of a prepare whose routes the agent brings, and the routes it may carry in all. */
 const MAX_ROUTE_ROUNDS = 10;
 const MAX_ROUTES = 24;
+/** The asks of the agent's Jupiter key one prepare may make, retries included. */
+const MAX_JUPITER_ASKS = 2 * MAX_ROUTES;
+/**
+ * How long a prepare whose routes the agent brings may take in all, its rounds, routes and pauses
+ * together: within the two minutes Orientim's session lives from the first round.
+ */
+const OWN_ROUTES_WAIT_MS = 110_000;
 
 /**
  * Orientim's prepare. With the agent's own Jupiter key, Orientim asks for the routes it needs (409
  * `routes-needed`), the agent fetches them from Jupiter with that key, which never leaves this
  * process, and prepares again with every route it has, until the swap is built. A deployment that
  * does not know `ownRoutes` builds the swap itself as before. Without a key, Orientim builds with its own.
+ *
+ * The one-time key the first round names is the one every round and the swap itself must name; the
+ * routes are counted before they are fetched, each fetched once; and the rounds, routes and pauses
+ * share one deadline and one budget of asks of the agent's key.
  */
 async function preparedByOrientim(
   fetchImpl: Fetch, apiUrl: string, apiKey: string, body: Record<string, unknown>, timeoutMs: number,
@@ -351,23 +362,45 @@ async function preparedByOrientim(
 ): Promise<Prepared> {
   const url = `${apiUrl}/api/v1/prepare`;
   if (!own.jupiterApiKey || own.ownRoutes === false) return call<Prepared>(fetchImpl, url, apiKey, body, timeoutMs);
-  const routes: unknown[] = [];
+  const budget = { asks: MAX_JUPITER_ASKS, until: Date.now() + OWN_ROUTES_WAIT_MS };
+  const fetched = new Map<string, FetchedRoute>();
   let session: string | undefined;
+  let taker: string | undefined;
+  const swap = (named: string) => ({ inputMint: String(body.inputMint), outputMint: String(body.outputMint), amountIn: String(body.amountIn), taker: named });
   for (let round = 0; round < MAX_ROUTE_ROUNDS; round++) {
+    const left = budget.until - Date.now();
+    if (left <= 0) throw new Error("Preparing with your own Jupiter key's routes took longer than a swap may. Nothing was signed; try again in a moment.");
+    let prepared: Prepared;
     try {
-      return await call<Prepared>(fetchImpl, url, apiKey, { ...body, ownRoutes: true, ...(session ? { session } : {}), routes }, timeoutMs);
+      prepared = await call<Prepared>(fetchImpl, url, apiKey, {
+        ...body, ownRoutes: true, ...(session ? { session } : {}), routes: [...fetched.values()],
+      }, Math.min(timeoutMs, left));
     } catch (e) {
       if (!(e instanceof OrientimApiError) || e.code !== 'routes-needed') throw e;
       const asked = e.body as { session?: unknown; taker?: unknown; requests?: unknown };
       if (typeof asked.session !== 'string' || asked.session.length > 2_000 || typeof asked.taker !== 'string') {
         throw new Error('Orientim asked for routes without a session or a one-time key. Nothing was signed.');
       }
+      if (taker !== undefined && asked.taker !== taker) {
+        throw new Error('Orientim named another one-time key for this swap than in its first round. Nothing was signed.');
+      }
+      taker = asked.taker;
       session = asked.session;
-      routes.push(...await fetchRoutes(asked.requests, {
-        inputMint: String(body.inputMint), outputMint: String(body.outputMint), amountIn: String(body.amountIn), taker: asked.taker,
-      }, { apiKey: own.jupiterApiKey, fetchImpl }));
-      if (routes.length > MAX_ROUTES) throw new Error(`Orientim asked for more than ${MAX_ROUTES} routes for one swap. Nothing was signed; try again, or a smaller amount.`);
+      // Each request once, and the budget counted before any is fetched.
+      const fresh = new Map(routeRequestsFor(asked.requests, swap(taker)).map(r => [routeRequestKey(r), r] as const));
+      for (const k of fetched.keys()) fresh.delete(k);
+      if (fresh.size === 0) throw new Error('Orientim asked again for routes it was already sent. Nothing was signed; try again in a moment.');
+      if (fetched.size + fresh.size > MAX_ROUTES) throw new Error(`Orientim asked for more than ${MAX_ROUTES} routes for one swap. Nothing was signed; try again, or a smaller amount.`);
+      for (const r of await fetchRoutes([...fresh.values()], swap(taker), { apiKey: own.jupiterApiKey, fetchImpl, budget })) {
+        fetched.set(routeRequestKey(r.params), r);
+      }
+      continue;
     }
+    // The swap is built around the one-time key the routes were fetched for, or the routes were not used.
+    if (taker !== undefined && prepared.temporaryAuthority !== taker) {
+      throw new Error('Orientim built this swap around another one-time key than the one it asked routes for. Nothing was signed.');
+    }
+    return prepared;
   }
   throw new Error(`Orientim still asked for routes after ${MAX_ROUTE_ROUNDS} rounds. Nothing was signed; try again in a moment.`);
 }
