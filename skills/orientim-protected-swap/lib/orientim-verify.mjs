@@ -1116,6 +1116,20 @@ function jupiterErrorCode(body) {
 	} catch {}
 	return JUPITER_REFUSALS.find(([said]) => said.test(body))?.[1] ?? null;
 }
+/** The asks of Jupiter and the time one preparation may take, from its own quote to signing. */
+const PREPARATION_ASKS = 48;
+const PREPARATION_MS = 11e4;
+/** A new budget for one preparation (see `JupiterBudget`). */
+function preparationBudget(asks = 48, ms = PREPARATION_MS) {
+	return {
+		asks,
+		until: performance.now() + ms
+	};
+}
+/** The time a budget has left, in ms (Infinity without one). */
+function timeLeftOf(budget) {
+	return budget ? budget.until - performance.now() : Infinity;
+}
 /** The longest pause the skill takes for Jupiter's rate limit without a budget's deadline. */
 const MAX_RATE_LIMIT_WAIT_MS = 1e4;
 /**
@@ -1152,7 +1166,7 @@ function rateLimitResetMs(headers, now = Date.now()) {
 */
 async function askJupiter(url, asked, apiKey, fetchImpl, budget) {
 	const id = apiKey ?? "";
-	const timeLeft = () => budget ? budget.until - Date.now() : Infinity;
+	const timeLeft = () => timeLeftOf(budget);
 	const outOfTime = () => /* @__PURE__ */ new Error(`Fetching routes with your Jupiter key took longer than this swap's time allows (when asked for ${asked}). Nothing was signed; try again in a moment.`);
 	/** Wait `ms`, or stop when it would end past the budget's deadline, or past the longest pause. */
 	const pause = async (ms, why) => {
@@ -1173,7 +1187,7 @@ async function askJupiter(url, asked, apiKey, fetchImpl, budget) {
 		try {
 			res = await (fetchImpl ?? fetch)(url, {
 				headers: apiKey ? { "x-api-key": apiKey } : {},
-				signal: AbortSignal.timeout(Math.max(1, Math.min(15e3, timeLeft())))
+				signal: AbortSignal.timeout(Math.max(1, Math.floor(Math.min(15e3, timeLeft()))))
 			});
 		} catch (e) {
 			if (e?.name !== "TimeoutError") throw e;
@@ -1572,7 +1586,7 @@ async function ownQuote(args) {
 		maxAccounts: "64"
 	};
 	for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
-	const r = await askJupiter(url.toString(), "your own price", args.apiKey, args.fetchImpl);
+	const r = await askJupiter(url.toString(), "your own price", args.apiKey, args.fetchImpl, args.budget);
 	if (r.inputMint !== args.inputMint || r.outputMint !== args.outputMint || r.inAmount !== routed.toString() || !/^\d{1,20}$/.test(r.outAmount ?? "")) throw new Error("Jupiter answered for another trade when asked for your own price");
 	const curve = r.swapInstruction?.accounts?.some((a) => a.pubkey === PUMP_CURVE_PROGRAM) ?? false;
 	const ceiling = args.ceilings?.maxSlippageBps;
@@ -1677,7 +1691,7 @@ async function ownSolFeeLimit(args) {
 		maxAccounts: "64"
 	};
 	for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
-	const r = await askJupiter(url.toString(), "the value of your swap in SOL", args.apiKey, args.fetchImpl);
+	const r = await askJupiter(url.toString(), "the value of your swap in SOL", args.apiKey, args.fetchImpl, args.budget);
 	if (r.inputMint !== args.inputMint || r.outputMint !== query.outputMint || r.inAmount !== args.amountIn || !/^\d{1,20}$/.test(r.outAmount ?? "")) throw new Error("Jupiter answered for another trade when asked for the value of your swap in SOL");
 	const fee = BigInt(r.outAmount) * BigInt(feeLimitBps(args.maxFeeBps)) / 10000n;
 	const limit = fee + fee / 50n;
@@ -1685,4 +1699,4 @@ async function ownSolFeeLimit(args) {
 	return Number(limit);
 }
 //#endregion
-export { AUTO_MAX_SLIPPAGE_BPS, AUTO_MIN_SLIPPAGE_BPS, CURVE_SLIPPAGE_BPS, DEFAULT_MAX_PRICE_IMPACT_BPS, DEFAULT_SLIPPAGE_BPS, MAX_BELOW_BPS, MAX_FEE_BPS, MAX_PRICE_IMPACT_BPS, MAX_ROUTE_REQUESTS_PER_ROUND, MAX_SLIPPAGE_BPS, MIN_SLIPPAGE_BPS, ORIENTIM_TREASURY, STATUS_CACHE_BLOCKS, autoSlippageBps, feeLimitBps, fetchRoutes, inputTransferFee, isRpcFailure, isSlippageBps, noticesOf, ownMinimum, ownQuote, ownSolFeeLimit, pastProof, provesNeverLanded, rateLimitResetMs, routeRequestKey, routeRequestsFor, solFeeOf, tokenNotices, tokenRisk, verifyPrepared };
+export { AUTO_MAX_SLIPPAGE_BPS, AUTO_MIN_SLIPPAGE_BPS, CURVE_SLIPPAGE_BPS, DEFAULT_MAX_PRICE_IMPACT_BPS, DEFAULT_SLIPPAGE_BPS, MAX_BELOW_BPS, MAX_FEE_BPS, MAX_PRICE_IMPACT_BPS, MAX_ROUTE_REQUESTS_PER_ROUND, MAX_SLIPPAGE_BPS, MIN_SLIPPAGE_BPS, ORIENTIM_TREASURY, PREPARATION_ASKS, PREPARATION_MS, STATUS_CACHE_BLOCKS, autoSlippageBps, feeLimitBps, fetchRoutes, inputTransferFee, isRpcFailure, isSlippageBps, noticesOf, ownMinimum, ownQuote, ownSolFeeLimit, pastProof, preparationBudget, provesNeverLanded, rateLimitResetMs, routeRequestKey, routeRequestsFor, solFeeOf, timeLeftOf, tokenNotices, tokenRisk, verifyPrepared };

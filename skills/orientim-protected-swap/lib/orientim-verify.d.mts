@@ -42,8 +42,15 @@ export type RouteRequest = {
 export type FetchedRoute = { params: RouteRequest; response?: unknown; noRoute?: boolean };
 /** The most route requests the skill fetches for one round of a prepare. */
 export declare const MAX_ROUTE_REQUESTS_PER_ROUND: number;
-/** What one prepare may spend of the agent's own Jupiter key: asks, retries included, and time (ms since the epoch). */
+/** What one preparation may spend: asks of Jupiter, retries included, and time (`until` on performance.now(), in ms). */
 export type JupiterBudget = { asks: number; until: number };
+/** The asks of Jupiter and the time (ms) one preparation may take, from its own quote to signing. */
+export declare const PREPARATION_ASKS: number;
+export declare const PREPARATION_MS: number;
+/** A new budget for one preparation. */
+export declare function preparationBudget(asks?: number, ms?: number): JupiterBudget;
+/** The time a budget has left, in ms (Infinity without one). */
+export declare function timeLeftOf(budget: JupiterBudget | undefined): number;
 /** When Jupiter's rate limit frees again, in ms from `now`, as a 429's Retry-After or x-ratelimit-reset says; null when neither does. */
 export declare function rateLimitResetMs(headers: Headers, now?: number): number | null;
 /** The route requests Orientim named, fetched from Jupiter with the agent's own key, for this swap only, one at a time, within `budget`. */
@@ -127,6 +134,8 @@ export function verifyPrepared(prepared: PreparedSwap, limits: AgentLimits, rpc:
 export type OwnQuoteArgs = {
   inputMint: string; outputMint: string; amountIn: string; taker: string;
   maxFeeBps?: number; maxBelowBps?: number; jupiterUrl?: string; apiKey?: string; fetchImpl?: typeof fetch;
+  /** The preparation's budget of asks and time, when this quote is part of one. */
+  budget?: JupiterBudget;
   /** The tolerance the agent chose: without `maxBelowBps`, the floor sits that far below the price, and 1.5% more (2% on a curve). */
   slippageBps?: number;
   /** Ask Jupiter how much tolerance this trade needs (`autoSlippageBps`); the answer's `slippageBps` is then that estimate. */
@@ -191,7 +200,7 @@ export function inputTransferFee(rpc: Rpc<SolanaRpcApi>, mint: string, timeoutMs
  */
 export function ownSolFeeLimit(args: {
   inputMint: string; amountIn: string; taker: string;
-  maxFeeBps?: number; jupiterUrl?: string; apiKey?: string; fetchImpl?: typeof fetch;
+  maxFeeBps?: number; jupiterUrl?: string; apiKey?: string; fetchImpl?: typeof fetch; budget?: JupiterBudget;
 }): Promise<number>;
 
 /**
