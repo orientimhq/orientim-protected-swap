@@ -155,6 +155,76 @@ async function askJupiter(url: string, asked: string, apiKey: string | undefined
   }
 }
 
+/** One Jupiter build Orientim asks an agent to fetch with its own key (AGENT-API.md, "Your own Jupiter key"). */
+export type RouteRequest = {
+  inputMint: string; outputMint: string; amount: string; taker: string; slippageBps: number; maxAccounts: number;
+  mode?: 'fast'; destinationTokenAccount?: string; excludeDexes?: string[];
+};
+
+/** What an agent sends back for a request: Jupiter's answer, or `noRoute` when Jupiter found none. */
+export type FetchedRoute = { params: RouteRequest; response?: unknown; noRoute?: boolean };
+
+/** The most route requests the skill fetches for one round of a prepare. */
+export const MAX_ROUTE_REQUESTS_PER_ROUND = 8;
+
+/**
+ * The route requests Orientim named, fetched from Jupiter with the agent's own key: the key never
+ * leaves this process. Only requests for this swap are fetched: its two mints, the one-time key
+ * Orientim named as taker, an amount no larger than the agent's, and ordinary build parameters. A
+ * request for anything else is refused, so a server cannot spend the agent's Jupiter quota on other
+ * trades. Jupiter's refusal of the trade is sent back as `noRoute`; a Jupiter that stays busy stops
+ * the swap as busy.
+ */
+export async function fetchRoutes(
+  requests: unknown, swap: { inputMint: string; outputMint: string; amountIn: string; taker: string },
+  opts: { apiKey?: string; fetchImpl?: typeof fetch; jupiterUrl?: string } = {},
+): Promise<FetchedRoute[]> {
+  if (!Array.isArray(requests) || requests.length === 0 || requests.length > MAX_ROUTE_REQUESTS_PER_ROUND) {
+    throw new Error(`Orientim asked for routes this skill does not fetch: ${Array.isArray(requests) ? requests.length : 'not a list of'} request(s). Nothing was signed.`);
+  }
+  const out: FetchedRoute[] = [];
+  for (const r of requests as Partial<RouteRequest>[]) {
+    const ok = !!r && r.inputMint === swap.inputMint && r.outputMint === swap.outputMint && r.taker === swap.taker
+      && typeof r.amount === 'string' && /^\d{1,20}$/.test(r.amount) && BigInt(r.amount) > 0n && BigInt(r.amount) <= BigInt(swap.amountIn)
+      && Number.isInteger(r.slippageBps) && r.slippageBps! >= 1 && r.slippageBps! <= 10_000
+      && Number.isInteger(r.maxAccounts) && r.maxAccounts! >= 8 && r.maxAccounts! <= 64
+      && (r.mode === undefined || r.mode === 'fast')
+      && (r.destinationTokenAccount === undefined || (typeof r.destinationTokenAccount === 'string' && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(r.destinationTokenAccount)))
+      && (r.excludeDexes === undefined || (Array.isArray(r.excludeDexes) && r.excludeDexes.length <= 64
+        && r.excludeDexes.every(d => typeof d === 'string' && /^[\w .()-]{1,64}$/.test(d))));
+    if (!ok) throw new Error('Orientim asked for a route that is not one for this swap; this skill fetches only those. Nothing was signed.');
+    const params: RouteRequest = {
+      inputMint: r.inputMint!, outputMint: r.outputMint!, amount: r.amount!, taker: r.taker!, slippageBps: r.slippageBps!, maxAccounts: r.maxAccounts!,
+      ...(r.mode ? { mode: 'fast' as const } : {}),
+      ...(r.destinationTokenAccount ? { destinationTokenAccount: r.destinationTokenAccount } : {}),
+      ...(r.excludeDexes?.length ? { excludeDexes: [...r.excludeDexes] } : {}),
+    };
+    // The same build Orientim's own client asks for: SOL is wrapped by Orientim's instructions, never Jupiter's.
+    const url = new URL(opts.jupiterUrl ?? 'https://api.jup.ag/swap/v2/build');
+    const query: Record<string, string> = {
+      inputMint: params.inputMint, outputMint: params.outputMint, amount: params.amount, taker: params.taker,
+      slippageBps: String(params.slippageBps), maxAccounts: String(params.maxAccounts), wrapAndUnwrapSol: 'false',
+      ...(params.destinationTokenAccount ? { destinationTokenAccount: params.destinationTokenAccount } : {}),
+      ...(params.excludeDexes?.length ? { excludeDexes: params.excludeDexes.join(',') } : {}),
+      ...(params.mode ? { mode: params.mode } : {}),
+    };
+    for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
+    try {
+      out.push({ params, response: await askJupiter(url.toString(), 'a route for Orientim to protect', opts.apiKey, opts.fetchImpl) });
+    } catch (e) {
+      const message = (e as Error).message;
+      // Jupiter refused this trade (no route, a token it cannot trade): Orientim reads it as no route at this size.
+      // A refused key (401, 403) or a busy Jupiter is not the trade's answer, and stops the swap.
+      if (/^Jupiter answered 400(?! \(busy\))/.test(message)) {
+        out.push({ params, noRoute: true });
+        continue;
+      }
+      throw e;
+    }
+  }
+  return out;
+}
+
 export type AgentLimits = {
   /** The agent's wallet, which signs first and pays. */
   owner: string;

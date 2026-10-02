@@ -1083,6 +1083,63 @@ async function askJupiter(url, asked, apiKey, fetchImpl) {
 	}
 }
 /**
+* The route requests Orientim named, fetched from Jupiter with the agent's own key: the key never
+* leaves this process. Only requests for this swap are fetched: its two mints, the one-time key
+* Orientim named as taker, an amount no larger than the agent's, and ordinary build parameters. A
+* request for anything else is refused, so a server cannot spend the agent's Jupiter quota on other
+* trades. Jupiter's refusal of the trade is sent back as `noRoute`; a Jupiter that stays busy stops
+* the swap as busy.
+*/
+async function fetchRoutes(requests, swap, opts = {}) {
+	if (!Array.isArray(requests) || requests.length === 0 || requests.length > 8) throw new Error(`Orientim asked for routes this skill does not fetch: ${Array.isArray(requests) ? requests.length : "not a list of"} request(s). Nothing was signed.`);
+	const out = [];
+	for (const r of requests) {
+		if (!(!!r && r.inputMint === swap.inputMint && r.outputMint === swap.outputMint && r.taker === swap.taker && typeof r.amount === "string" && /^\d{1,20}$/.test(r.amount) && BigInt(r.amount) > 0n && BigInt(r.amount) <= BigInt(swap.amountIn) && Number.isInteger(r.slippageBps) && r.slippageBps >= 1 && r.slippageBps <= 1e4 && Number.isInteger(r.maxAccounts) && r.maxAccounts >= 8 && r.maxAccounts <= 64 && (r.mode === void 0 || r.mode === "fast") && (r.destinationTokenAccount === void 0 || typeof r.destinationTokenAccount === "string" && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(r.destinationTokenAccount)) && (r.excludeDexes === void 0 || Array.isArray(r.excludeDexes) && r.excludeDexes.length <= 64 && r.excludeDexes.every((d) => typeof d === "string" && /^[\w .()-]{1,64}$/.test(d))))) throw new Error("Orientim asked for a route that is not one for this swap; this skill fetches only those. Nothing was signed.");
+		const params = {
+			inputMint: r.inputMint,
+			outputMint: r.outputMint,
+			amount: r.amount,
+			taker: r.taker,
+			slippageBps: r.slippageBps,
+			maxAccounts: r.maxAccounts,
+			...r.mode ? { mode: "fast" } : {},
+			...r.destinationTokenAccount ? { destinationTokenAccount: r.destinationTokenAccount } : {},
+			...r.excludeDexes?.length ? { excludeDexes: [...r.excludeDexes] } : {}
+		};
+		const url = new URL(opts.jupiterUrl ?? "https://api.jup.ag/swap/v2/build");
+		const query = {
+			inputMint: params.inputMint,
+			outputMint: params.outputMint,
+			amount: params.amount,
+			taker: params.taker,
+			slippageBps: String(params.slippageBps),
+			maxAccounts: String(params.maxAccounts),
+			wrapAndUnwrapSol: "false",
+			...params.destinationTokenAccount ? { destinationTokenAccount: params.destinationTokenAccount } : {},
+			...params.excludeDexes?.length ? { excludeDexes: params.excludeDexes.join(",") } : {},
+			...params.mode ? { mode: params.mode } : {}
+		};
+		for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
+		try {
+			out.push({
+				params,
+				response: await askJupiter(url.toString(), "a route for Orientim to protect", opts.apiKey, opts.fetchImpl)
+			});
+		} catch (e) {
+			const message = e.message;
+			if (/^Jupiter answered 400(?! \(busy\))/.test(message)) {
+				out.push({
+					params,
+					noRoute: true
+				});
+				continue;
+			}
+			throw e;
+		}
+	}
+	return out;
+}
+/**
 * Orientim's fee in lamports when it is in SOL, whichever side it is taken from: from SOL the swap
 * sells (`feeSide` input), from SOL it buys (output), or from the wallet for a pair that cannot carry
 * it (sol). 0 when the fee is in another token.
@@ -1517,6 +1574,8 @@ async function ownSolFeeLimit(args) {
 */
 const ERROR_MEANINGS = {
 	"price-moved": "The best route that fits in one protected transaction no longer meets your minimum: the price moved, or the route that meets it is too big. Ask the user before preparing again with minOut set to newMinOut, or try a smaller amount.",
+	"routes-needed": "Orientim needs routes fetched from Jupiter with your own key; the skill does this itself. Prepare again.",
+	"bad-session": "The routes session expired or belongs to another swap. Prepare again from the start.",
 	"costs-more": "The protected route costs more than the open market. Ask the user; to accept, prepare again with acceptCostBps set to gapBps.",
 	"output-balance-changed": "Your balance of the output token changed since prepare, so nothing was signed. Settle what may still land, then prepare again.",
 	busy: "Jupiter or Orientim's Solana RPC is busy. Wait the Retry-After seconds, then try again.",
@@ -1566,7 +1625,10 @@ const ERROR_FIELDS = {
 	lastValidBlockHeight: (v) => typeof v === "string" && DIGITS.test(v),
 	minimum: (v) => typeof v === "string" && (DIGITS.test(v) || /^\d{1,4}\.\d{1,4}\.\d{1,4}$/.test(v)),
 	balanceAtPrepare: (v) => typeof v === "string" && DIGITS.test(v),
-	balanceNow: (v) => typeof v === "string" && DIGITS.test(v)
+	balanceNow: (v) => typeof v === "string" && DIGITS.test(v),
+	session: (v) => typeof v === "string" && v.length <= 2e3 && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(v),
+	taker: (v) => typeof v === "string" && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(v),
+	requests: (v) => Array.isArray(v) && v.length <= 8 && v.every((r) => !!r && typeof r === "object" && !Array.isArray(r))
 };
 /** An error's data fields, as ERROR_FIELDS allows them; nothing else. */
 function errorDetails(body) {
@@ -1665,7 +1727,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.8.8";
+const SKILL_VERSION = "1.9.0";
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res) => {
 	const after = Number(res.headers.get("retry-after"));
@@ -1691,6 +1753,45 @@ async function answerOf(res) {
 * build still ends in its answer rather than a second prepare.
 */
 const PREPARE_WAIT_MS = 6e4;
+/** The rounds of a prepare whose routes the agent brings, and the routes it may carry in all. */
+const MAX_ROUTE_ROUNDS = 10;
+const MAX_ROUTES = 24;
+/**
+* Orientim's prepare. With the agent's own Jupiter key, Orientim asks for the routes it needs (409
+* `routes-needed`), the agent fetches them from Jupiter with that key, which never leaves this
+* process, and prepares again with every route it has, until the swap is built. A deployment that
+* does not know `ownRoutes` builds the swap itself as before. Without a key, Orientim builds with its own.
+*/
+async function preparedByOrientim(fetchImpl, apiUrl, apiKey, body, timeoutMs, own) {
+	const url = `${apiUrl}/api/v1/prepare`;
+	if (!own.jupiterApiKey || own.ownRoutes === false) return call(fetchImpl, url, apiKey, body, timeoutMs);
+	const routes = [];
+	let session;
+	for (let round = 0; round < MAX_ROUTE_ROUNDS; round++) try {
+		return await call(fetchImpl, url, apiKey, {
+			...body,
+			ownRoutes: true,
+			...session ? { session } : {},
+			routes
+		}, timeoutMs);
+	} catch (e) {
+		if (!(e instanceof OrientimApiError) || e.code !== "routes-needed") throw e;
+		const asked = e.body;
+		if (typeof asked.session !== "string" || asked.session.length > 2e3 || typeof asked.taker !== "string") throw new Error("Orientim asked for routes without a session or a one-time key. Nothing was signed.");
+		session = asked.session;
+		routes.push(...await fetchRoutes(asked.requests, {
+			inputMint: String(body.inputMint),
+			outputMint: String(body.outputMint),
+			amountIn: String(body.amountIn),
+			taker: asked.taker
+		}, {
+			apiKey: own.jupiterApiKey,
+			fetchImpl
+		}));
+		if (routes.length > MAX_ROUTES) throw new Error(`Orientim asked for more than ${MAX_ROUTES} routes for one swap. Nothing was signed; try again, or a smaller amount.`);
+	}
+	throw new Error(`Orientim still asked for routes after ${MAX_ROUTE_ROUNDS} rounds. Nothing was signed; try again in a moment.`);
+}
 /** Each call to Orientim ends within `timeoutMs`: an answer that never comes is no answer. */
 async function call(fetchImpl, url, key, body, timeoutMs = 3e4) {
 	const res = await fetchImpl(url, {
@@ -2856,7 +2957,7 @@ async function prepareChecked(args) {
 		minOut
 	}, own.slippageBps);
 	const { slippageBps } = intent;
-	const prepared = await call(fetchImpl, `${args.apiUrl}/api/v1/prepare`, args.apiKey, {
+	const prepared = await preparedByOrientim(fetchImpl, args.apiUrl, args.apiKey, {
 		owner: intent.owner,
 		inputMint: intent.inputMint,
 		outputMint: intent.outputMint,
@@ -2866,7 +2967,10 @@ async function prepareChecked(args) {
 		...slippageBps !== void 0 ? { slippageBps } : {},
 		...intent.routingMode === "fast" ? { routingMode: "fast" } : {},
 		...intent.version !== void 0 ? { version: intent.version } : {}
-	}, args.requestTimeoutMs ?? PREPARE_WAIT_MS);
+	}, args.requestTimeoutMs ?? PREPARE_WAIT_MS, {
+		jupiterApiKey: args.jupiterApiKey,
+		ownRoutes: args.ownRoutes
+	});
 	measured("apiPrepare");
 	await holdSolFee(intent, prepared, {
 		fetchImpl,
@@ -3278,7 +3382,7 @@ async function main$1() {
 			policy
 		});
 		const minOut = own.minOut;
-		const prepared = await call(fetch, `${apiUrl}/api/v1/prepare`, apiKey, {
+		const prepared = await preparedByOrientim(fetch, apiUrl, apiKey, {
 			owner,
 			inputMint,
 			outputMint,
@@ -3288,7 +3392,10 @@ async function main$1() {
 			...intent.version ? { version: 1 } : {},
 			...own.slippageBps !== void 0 ? { slippageBps: own.slippageBps } : {},
 			...intent.routingMode === "fast" ? { routingMode: "fast" } : {}
-		}, PREPARE_WAIT_MS);
+		}, PREPARE_WAIT_MS, {
+			jupiterApiKey,
+			ownRoutes: process.env.ORIENTIM_OWN_ROUTES !== "0"
+		});
 		const checked = withTolerance({
 			...intent,
 			owner,
@@ -3375,6 +3482,7 @@ async function main$1() {
 			jupiterApiKey,
 			orders: store,
 			archive,
+			ownRoutes: process.env.ORIENTIM_OWN_ROUTES !== "0",
 			pending: store,
 			policy,
 			spends: store,
@@ -4109,7 +4217,8 @@ async function runCommand(command, input, deps) {
 				fetchImpl: deps.fetchImpl,
 				jupiterApiKey: deps.jupiterApiKey,
 				requestTimeoutMs: deps.requestTimeoutMs,
-				policy: deps.policy
+				policy: deps.policy,
+				...deps.ownRoutes !== void 0 ? { ownRoutes: deps.ownRoutes } : {}
 			});
 			const tx = getTransactionDecoder().decode(Buffer.from(checked.prepared.transaction, "base64"));
 			return {
@@ -4487,6 +4596,7 @@ async function main() {
 		apiUrl: process.env.ORIENTIM_API_URL,
 		apiKey: process.env.ORIENTIM_API_KEY,
 		jupiterApiKey: process.env.JUPITER_API_KEY || void 0,
+		ownRoutes: process.env.ORIENTIM_OWN_ROUTES !== "0",
 		stateDir,
 		treasury: process.env.ORIENTIM_TREASURY || void 0,
 		policy

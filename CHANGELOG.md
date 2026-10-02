@@ -3,6 +3,18 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.9.0 (2026-10-02)
+
+- Routes from the agent's own Jupiter key. With `JUPITER_API_KEY` set, the skill and
+  `orientim-verify` prepare with `ownRoutes: true`: Orientim answers which Jupiter builds it needs
+  (`409 routes-needed`, with a sealed session and the one-time key as taker), the skill fetches them
+  from Jupiter with the agent's key, which never leaves this process, and prepares again with them.
+  Orientim builds, checks and signs around these routes exactly as around its own, and prices its
+  fee in SOL with its own key, never from an agent's route. The skill fetches only requests for the
+  swap's own mints, the named one-time key and an amount no larger than the agent's.
+  `ORIENTIM_OWN_ROUTES=0` (or `ownRoutes: false`) lets Orientim's key build them as before; a
+  deployment that does not know `ownRoutes` builds them itself.
+
 ## 1.8.8 (2026-10-02)
 
 - A retry marker left by a worker that stopped between creating it and recording its new attempt
