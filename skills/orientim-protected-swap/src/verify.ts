@@ -135,20 +135,83 @@ function jupiterErrorCode(body: string): string | null {
 }
 
 /**
- * One question to Jupiter, asked again twice, a moment apart, when the answer says nothing about the
- * trade (429, a 5xx, a transient 400): a pool refreshing upstream must not read as a refusal of the
- * swap. Any other answer that is not a success is refused at once, with Jupiter's code.
+ * What one prepare may spend of the agent's own Jupiter key: asks, retries included, and time. Every
+ * ask is counted before it is made, and no ask or pause runs past `until`.
  */
-async function askJupiter(url: string, asked: string, apiKey: string | undefined, fetchImpl: typeof fetch | undefined): Promise<unknown> {
+export type JupiterBudget = { asks: number; until: number };
+
+/** The longest pause the skill takes for Jupiter's rate limit without a budget's deadline. */
+const MAX_RATE_LIMIT_WAIT_MS = 10_000;
+
+/**
+ * Until when each Jupiter key is limited, as Jupiter said with its last 429, in this process's memory
+ * only: every ask with that key waits for it, so concurrent swaps sharing one Jupiter account do not
+ * spend its quota again while it is used up.
+ */
+const limitedUntil = new Map<string, number>();
+
+/**
+ * When Jupiter's rate limit frees again, in ms from `now`, as a 429 says it: Retry-After (seconds or
+ * a date) or x-ratelimit-reset (seconds, or a Unix time in seconds or ms). Null when it says neither.
+ */
+export function rateLimitResetMs(headers: Headers, now = Date.now()): number | null {
+  const retryAfter = headers.get('retry-after');
+  if (retryAfter) {
+    if (/^\d{1,6}$/.test(retryAfter.trim())) return Number(retryAfter) * 1000;
+    const at = Date.parse(retryAfter);
+    if (Number.isFinite(at)) return Math.max(0, at - now);
+  }
+  const reset = headers.get('x-ratelimit-reset')?.trim();
+  if (reset && /^\d{1,16}(\.\d+)?$/.test(reset)) {
+    const v = Number(reset);
+    if (v > 1e12) return Math.max(0, v - now);
+    if (v > 1e9) return Math.max(0, v * 1000 - now);
+    return v * 1000;
+  }
+  return null;
+}
+
+/**
+ * One question to Jupiter, asked again up to three times, a moment apart, when the answer says nothing
+ * about the trade (429, a 5xx, a transient 400): a pool refreshing upstream must not read as a refusal
+ * of the swap. A 429 waits as long as Jupiter says its limit lasts, when that fits. Any other answer
+ * that is not a success is refused at once, with Jupiter's code.
+ */
+async function askJupiter(
+  url: string, asked: string, apiKey: string | undefined, fetchImpl: typeof fetch | undefined, budget?: JupiterBudget,
+): Promise<unknown> {
+  const id = apiKey ?? '';
+  const timeLeft = () => (budget ? budget.until - Date.now() : Infinity);
+  const outOfTime = () => new Error(`Fetching routes with your Jupiter key took longer than this swap's time allows (when asked for ${asked}). Nothing was signed; try again in a moment.`);
+  /** Wait `ms`, or stop when it would end past the budget's deadline, or past the longest pause. */
+  const pause = async (ms: number, why: () => Error) => {
+    if (ms <= 0) return;
+    if (ms > Math.min(timeLeft(), budget ? Infinity : MAX_RATE_LIMIT_WAIT_MS)) throw why();
+    await new Promise(r => setTimeout(r, ms));
+  };
+  const limitedFor = (ms: number) => () => new Error(`${jupiterRefusal(429, asked, apiKey)}: your Jupiter key is limited for another ${Math.ceil(ms / 1000)} s. Nothing was signed; try again then.`);
   for (let attempt = 0; ; attempt++) {
-    const res = await (fetchImpl ?? fetch)(url, { headers: apiKey ? { 'x-api-key': apiKey } : {}, signal: AbortSignal.timeout(15_000) });
+    const waitLimit = (limitedUntil.get(id) ?? 0) - Date.now();
+    await pause(waitLimit, limitedFor(waitLimit));
+    if (budget) {
+      if (budget.asks <= 0) throw new Error(`Orientim's routes for this swap would take more asks of your Jupiter key than one swap may spend (when asked for ${asked}). Nothing was signed; try again in a moment, or a smaller amount.`);
+      if (timeLeft() <= 0) throw outOfTime();
+      budget.asks--;
+    }
+    const res = await (fetchImpl ?? fetch)(url, {
+      headers: apiKey ? { 'x-api-key': apiKey } : {}, signal: AbortSignal.timeout(Math.max(1, Math.min(15_000, timeLeft()))),
+    });
     if (res.ok) return res.json();
     const body = await res.text().catch(() => '');
     // A market's oracle behind for a moment is transient; a refusal of the trade itself is not.
     const busy = res.status === 429 || res.status >= 500
       || (res.status === 400 && JUPITER_TRANSIENT_400.test(body) && !JUPITER_REFUSALS.some(([said]) => said.test(body)));
+    const reset = res.status === 429 ? rateLimitResetMs(res.headers) : null;
+    if (reset !== null) limitedUntil.set(id, Math.max(limitedUntil.get(id) ?? 0, Date.now() + reset));
     if (busy && attempt < 3) {
-      await new Promise(r => setTimeout(r, 400 * 2 ** attempt));
+      const backoff = 400 * 2 ** attempt;
+      // Jupiter's own word on when its limit frees, when it gives one; never sooner than the backoff.
+      await pause(Math.max(backoff, reset ?? 0), reset !== null && reset > backoff ? limitedFor(reset) : outOfTime);
       continue;
     }
     throw new Error(jupiterRefusal(res.status, asked, apiKey, busy, jupiterErrorCode(body)));
@@ -177,28 +240,12 @@ export const MAX_ROUTE_REQUESTS_PER_ROUND = 8;
  */
 export async function fetchRoutes(
   requests: unknown, swap: { inputMint: string; outputMint: string; amountIn: string; taker: string },
-  opts: { apiKey?: string; fetchImpl?: typeof fetch; jupiterUrl?: string } = {},
+  opts: { apiKey?: string; fetchImpl?: typeof fetch; jupiterUrl?: string; budget?: JupiterBudget } = {},
 ): Promise<FetchedRoute[]> {
-  if (!Array.isArray(requests) || requests.length === 0 || requests.length > MAX_ROUTE_REQUESTS_PER_ROUND) {
-    throw new Error(`Orientim asked for routes this skill does not fetch: ${Array.isArray(requests) ? requests.length : 'not a list of'} request(s). Nothing was signed.`);
-  }
+  const checked = routeRequestsFor(requests, swap);
   const out: FetchedRoute[] = [];
-  for (const r of requests as Partial<RouteRequest>[]) {
-    const ok = !!r && r.inputMint === swap.inputMint && r.outputMint === swap.outputMint && r.taker === swap.taker
-      && typeof r.amount === 'string' && /^\d{1,20}$/.test(r.amount) && BigInt(r.amount) > 0n && BigInt(r.amount) <= BigInt(swap.amountIn)
-      && Number.isInteger(r.slippageBps) && r.slippageBps! >= 1 && r.slippageBps! <= 10_000
-      && Number.isInteger(r.maxAccounts) && r.maxAccounts! >= 8 && r.maxAccounts! <= 64
-      && (r.mode === undefined || r.mode === 'fast')
-      && (r.destinationTokenAccount === undefined || (typeof r.destinationTokenAccount === 'string' && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(r.destinationTokenAccount)))
-      && (r.excludeDexes === undefined || (Array.isArray(r.excludeDexes) && r.excludeDexes.length <= 64
-        && r.excludeDexes.every(d => typeof d === 'string' && /^[\w .()-]{1,64}$/.test(d))));
-    if (!ok) throw new Error('Orientim asked for a route that is not one for this swap; this skill fetches only those. Nothing was signed.');
-    const params: RouteRequest = {
-      inputMint: r.inputMint!, outputMint: r.outputMint!, amount: r.amount!, taker: r.taker!, slippageBps: r.slippageBps!, maxAccounts: r.maxAccounts!,
-      ...(r.mode ? { mode: 'fast' as const } : {}),
-      ...(r.destinationTokenAccount ? { destinationTokenAccount: r.destinationTokenAccount } : {}),
-      ...(r.excludeDexes?.length ? { excludeDexes: [...r.excludeDexes] } : {}),
-    };
+  // One at a time: a round never spends the key's quota in a burst.
+  for (const params of checked) {
     // The same build Orientim's own client asks for: SOL is wrapped by Orientim's instructions, never Jupiter's.
     const url = new URL(opts.jupiterUrl ?? 'https://api.jup.ag/swap/v2/build');
     const query: Record<string, string> = {
@@ -210,7 +257,7 @@ export async function fetchRoutes(
     };
     for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
     try {
-      out.push({ params, response: await askJupiter(url.toString(), 'a route for Orientim to protect', opts.apiKey, opts.fetchImpl) });
+      out.push({ params, response: await askJupiter(url.toString(), 'a route for Orientim to protect', opts.apiKey, opts.fetchImpl, opts.budget) });
     } catch (e) {
       const message = (e as Error).message;
       // Jupiter refused this trade (no route, a token it cannot trade): Orientim reads it as no route at this size.
@@ -223,6 +270,45 @@ export async function fetchRoutes(
     }
   }
   return out;
+}
+
+/**
+ * The route requests Orientim named, each checked to be one for this swap (see `fetchRoutes`), all of
+ * them before any is fetched; throws for any other.
+ */
+export function routeRequestsFor(
+  requests: unknown, swap: { inputMint: string; outputMint: string; amountIn: string; taker: string },
+): RouteRequest[] {
+  if (!Array.isArray(requests) || requests.length === 0 || requests.length > MAX_ROUTE_REQUESTS_PER_ROUND) {
+    throw new Error(`Orientim asked for routes this skill does not fetch: ${Array.isArray(requests) ? requests.length : 'not a list of'} request(s). Nothing was signed.`);
+  }
+  const out: RouteRequest[] = [];
+  for (const r of requests as Partial<RouteRequest>[]) {
+    const ok = !!r && r.inputMint === swap.inputMint && r.outputMint === swap.outputMint && r.taker === swap.taker
+      && typeof r.amount === 'string' && /^\d{1,20}$/.test(r.amount) && BigInt(r.amount) > 0n && BigInt(r.amount) <= BigInt(swap.amountIn)
+      && Number.isInteger(r.slippageBps) && r.slippageBps! >= 1 && r.slippageBps! <= 10_000
+      && Number.isInteger(r.maxAccounts) && r.maxAccounts! >= 8 && r.maxAccounts! <= 64
+      && (r.mode === undefined || r.mode === 'fast')
+      && (r.destinationTokenAccount === undefined || (typeof r.destinationTokenAccount === 'string' && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(r.destinationTokenAccount)))
+      && (r.excludeDexes === undefined || (Array.isArray(r.excludeDexes) && r.excludeDexes.length <= 64
+        && r.excludeDexes.every(d => typeof d === 'string' && /^[\w .()-]{1,64}$/.test(d))));
+    if (!ok) throw new Error('Orientim asked for a route that is not one for this swap; this skill fetches only those. Nothing was signed.');
+    out.push({
+      inputMint: r.inputMint!, outputMint: r.outputMint!, amount: r.amount!, taker: r.taker!, slippageBps: r.slippageBps!, maxAccounts: r.maxAccounts!,
+      ...(r.mode ? { mode: 'fast' as const } : {}),
+      ...(r.destinationTokenAccount ? { destinationTokenAccount: r.destinationTokenAccount } : {}),
+      ...(r.excludeDexes?.length ? { excludeDexes: [...r.excludeDexes] } : {}),
+    });
+  }
+  return out;
+}
+
+/** One route request as one text: the same build, whatever the order of its excluded DEXes. */
+export function routeRequestKey(r: RouteRequest): string {
+  return JSON.stringify([
+    r.inputMint, r.outputMint, r.amount, r.taker, r.slippageBps, r.maxAccounts, r.mode ?? null,
+    r.destinationTokenAccount ?? null, [...(r.excludeDexes ?? [])].sort(),
+  ]);
 }
 
 export type AgentLimits = {
