@@ -145,6 +145,17 @@ export type JupiterBudget = { asks: number; until: number };
 export const PREPARATION_ASKS = 48;
 export const PREPARATION_MS = 110_000;
 
+/**
+ * A preparation spent its budget (`JupiterBudget`) before it could be signed: its time, or its asks
+ * of Jupiter. Nothing was signed; the same swap may be prepared again in a moment, with a new budget.
+ */
+export class BudgetSpentError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'BudgetSpentError';
+  }
+}
+
 /** A new budget for one preparation (see `JupiterBudget`). */
 export function preparationBudget(asks = PREPARATION_ASKS, ms = PREPARATION_MS): JupiterBudget {
   return { asks, until: performance.now() + ms };
@@ -197,7 +208,7 @@ async function askJupiter(
 ): Promise<unknown> {
   const id = apiKey ?? '';
   const timeLeft = () => timeLeftOf(budget);
-  const outOfTime = () => new Error(`Fetching routes with your Jupiter key took longer than this swap's time allows (when asked for ${asked}). Nothing was signed; try again in a moment.`);
+  const outOfTime = () => new BudgetSpentError(`Preparing this swap took longer than a swap may (${PREPARATION_MS / 1000} s) while Jupiter was asked for ${asked}. Nothing was signed; try again in a moment.`);
   /** Wait `ms`, or stop when it would end past the budget's deadline, or past the longest pause. */
   const pause = async (ms: number, why: () => Error) => {
     if (ms <= 0) return;
@@ -209,7 +220,7 @@ async function askJupiter(
     const waitLimit = (limitedUntil.get(id) ?? 0) - Date.now();
     await pause(waitLimit, limitedFor(waitLimit));
     if (budget) {
-      if (budget.asks <= 0) throw new Error(`Orientim's routes for this swap would take more asks of your Jupiter key than one swap may spend (when asked for ${asked}). Nothing was signed; try again in a moment, or a smaller amount.`);
+      if (budget.asks <= 0) throw new BudgetSpentError(`Preparing this swap would take more asks of your Jupiter key than one preparation may make (${PREPARATION_ASKS}, retries included), when asked for ${asked}. Nothing was signed; try again in a moment, or a smaller amount.`);
       if (timeLeft() <= 0) throw outOfTime();
       budget.asks--;
     }
@@ -225,7 +236,10 @@ async function askJupiter(
         await pause(400 * 2 ** attempt, outOfTime);
         continue;
       }
-      throw new Error(`Jupiter did not answer in time (busy) when asked for ${asked}, four times. Nothing was signed; try again in a moment.`);
+      const silent = new Error(`Jupiter did not answer in time (busy) when asked for ${asked}, four times. Nothing was signed; try again in a moment.`);
+      // No answer is a service that did not answer, as a timeout is: tried again later, never a verdict.
+      silent.name = 'TimeoutError';
+      throw silent;
     }
     if (res.ok) return res.json();
     const body = await res.text().catch(() => '');

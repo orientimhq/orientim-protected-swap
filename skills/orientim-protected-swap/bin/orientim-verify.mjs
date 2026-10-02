@@ -1062,6 +1062,16 @@ function jupiterErrorCode(body) {
 	return JUPITER_REFUSALS.find(([said]) => said.test(body))?.[1] ?? null;
 }
 const PREPARATION_MS = 11e4;
+/**
+* A preparation spent its budget (`JupiterBudget`) before it could be signed: its time, or its asks
+* of Jupiter. Nothing was signed; the same swap may be prepared again in a moment, with a new budget.
+*/
+var BudgetSpentError = class extends Error {
+	constructor(message) {
+		super(message);
+		this.name = "BudgetSpentError";
+	}
+};
 /** A new budget for one preparation (see `JupiterBudget`). */
 function preparationBudget(asks = 48, ms = PREPARATION_MS) {
 	return {
@@ -1110,7 +1120,7 @@ function rateLimitResetMs(headers, now = Date.now()) {
 async function askJupiter(url, asked, apiKey, fetchImpl, budget) {
 	const id = apiKey ?? "";
 	const timeLeft = () => timeLeftOf(budget);
-	const outOfTime = () => /* @__PURE__ */ new Error(`Fetching routes with your Jupiter key took longer than this swap's time allows (when asked for ${asked}). Nothing was signed; try again in a moment.`);
+	const outOfTime = () => new BudgetSpentError(`Preparing this swap took longer than a swap may (${PREPARATION_MS / 1e3} s) while Jupiter was asked for ${asked}. Nothing was signed; try again in a moment.`);
 	/** Wait `ms`, or stop when it would end past the budget's deadline, or past the longest pause. */
 	const pause = async (ms, why) => {
 		if (ms <= 0) return;
@@ -1122,7 +1132,7 @@ async function askJupiter(url, asked, apiKey, fetchImpl, budget) {
 		const waitLimit = (limitedUntil.get(id) ?? 0) - Date.now();
 		await pause(waitLimit, limitedFor(waitLimit));
 		if (budget) {
-			if (budget.asks <= 0) throw new Error(`Orientim's routes for this swap would take more asks of your Jupiter key than one swap may spend (when asked for ${asked}). Nothing was signed; try again in a moment, or a smaller amount.`);
+			if (budget.asks <= 0) throw new BudgetSpentError(`Preparing this swap would take more asks of your Jupiter key than one preparation may make (48, retries included), when asked for ${asked}. Nothing was signed; try again in a moment, or a smaller amount.`);
 			if (timeLeft() <= 0) throw outOfTime();
 			budget.asks--;
 		}
@@ -1138,7 +1148,9 @@ async function askJupiter(url, asked, apiKey, fetchImpl, budget) {
 				await pause(400 * 2 ** attempt, outOfTime);
 				continue;
 			}
-			throw new Error(`Jupiter did not answer in time (busy) when asked for ${asked}, four times. Nothing was signed; try again in a moment.`);
+			const silent = /* @__PURE__ */ new Error(`Jupiter did not answer in time (busy) when asked for ${asked}, four times. Nothing was signed; try again in a moment.`);
+			silent.name = "TimeoutError";
+			throw silent;
 		}
 		if (res.ok) return res.json();
 		const body = await res.text().catch(() => "");
@@ -1823,7 +1835,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.9.3";
+const SKILL_VERSION = "1.9.4";
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res) => {
 	const after = Number(res.headers.get("retry-after"));
@@ -1866,12 +1878,17 @@ const MAX_ROUTES = 24;
 async function preparedByOrientim(fetchImpl, apiUrl, apiKey, body, timeoutMs, own) {
 	const url = `${apiUrl}/api/v1/prepare`;
 	const budget = own.budget ?? preparationBudget();
-	const waitFor = () => {
+	const prepare = async (payload) => {
 		const left = timeLeftOf(budget);
-		if (left <= 0) throw new Error("Preparing this swap took longer than a swap may (110 s). Nothing was signed; try again in a moment.");
-		return Math.max(1, Math.floor(Math.min(timeoutMs, left)));
+		if (left <= 0) throw outOfPreparationTime();
+		try {
+			return await call(fetchImpl, url, apiKey, payload, Math.max(1, Math.floor(Math.min(timeoutMs, left))));
+		} catch (e) {
+			if (e?.name === "TimeoutError" && timeLeftOf(budget) <= 0) throw outOfPreparationTime();
+			throw e;
+		}
 	};
-	if (!own.jupiterApiKey || own.ownRoutes === false) return call(fetchImpl, url, apiKey, body, waitFor());
+	if (!own.jupiterApiKey || own.ownRoutes === false) return prepare(body);
 	const fetched = /* @__PURE__ */ new Map();
 	let session;
 	let taker;
@@ -1884,12 +1901,12 @@ async function preparedByOrientim(fetchImpl, apiUrl, apiKey, body, timeoutMs, ow
 	for (let round = 0; round < MAX_ROUTE_ROUNDS; round++) {
 		let prepared;
 		try {
-			prepared = await call(fetchImpl, url, apiKey, {
+			prepared = await prepare({
 				...body,
 				ownRoutes: true,
 				...session ? { session } : {},
 				routes: [...fetched.values()]
-			}, waitFor());
+			});
 		} catch (e) {
 			if (!(e instanceof OrientimApiError) || e.code !== "routes-needed") throw e;
 			const asked = e.body;
@@ -1900,7 +1917,7 @@ async function preparedByOrientim(fetchImpl, apiUrl, apiKey, body, timeoutMs, ow
 			const fresh = new Map(routeRequestsFor(asked.requests, swap(taker)).map((r) => [routeRequestKey(r), r]));
 			for (const k of fetched.keys()) fresh.delete(k);
 			if (fresh.size === 0) throw new Error("Orientim asked again for routes it was already sent. Nothing was signed; try again in a moment.");
-			if (fetched.size + fresh.size > MAX_ROUTES) return call(fetchImpl, url, apiKey, body, waitFor());
+			if (fetched.size + fresh.size > MAX_ROUTES) return prepare(body);
 			for (const r of await fetchRoutes([...fresh.values()], swap(taker), {
 				apiKey: own.jupiterApiKey,
 				fetchImpl,
@@ -1911,8 +1928,10 @@ async function preparedByOrientim(fetchImpl, apiUrl, apiKey, body, timeoutMs, ow
 		if (taker !== void 0 && prepared.temporaryAuthority !== taker) throw new Error("Orientim built this swap around another one-time key than the one it asked routes for. Nothing was signed.");
 		return prepared;
 	}
-	return call(fetchImpl, url, apiKey, body, waitFor());
+	return prepare(body);
 }
+/** The preparation ran out of its time (PREPARATION_MS) before the swap could be signed. */
+const outOfPreparationTime = () => new BudgetSpentError(`Preparing this swap took longer than a swap may (${PREPARATION_MS / 1e3} s). Nothing was signed; try again in a moment.`);
 /** Each call to Orientim ends within `timeoutMs`: an answer that never comes is no answer. */
 async function call(fetchImpl, url, key, body, timeoutMs = 3e4) {
 	const res = await fetchImpl(url, {
@@ -3056,10 +3075,9 @@ async function prepareChecked(args) {
 	const fetchImpl = args.fetchImpl ?? fetch;
 	const owner = args.owner;
 	const budget = args.budget ?? preparationBudget();
-	const outOfTime = () => /* @__PURE__ */ new Error("Preparing this swap took longer than a swap may (110 s). Nothing was signed; try again in a moment.");
 	const within = (ms) => {
 		const left = timeLeftOf(budget);
-		if (left <= 0) throw outOfTime();
+		if (left <= 0) throw outOfPreparationTime();
 		return Math.max(1, Math.floor(Math.min(ms ?? 1e4, left)));
 	};
 	let phaseStarted = performance.now();
@@ -3124,7 +3142,7 @@ async function prepareChecked(args) {
 	measured("localVerification");
 	const risk = await tokenRisk(args.rpc, [intent.inputMint, intent.outputMint], within(args.requestTimeoutMs ?? 1e4));
 	measured("tokenRisk");
-	if (timeLeftOf(budget) <= 0) throw outOfTime();
+	if (timeLeftOf(budget) <= 0) throw outOfPreparationTime();
 	return {
 		prepared: preparedData(prepared),
 		intent,
@@ -3925,7 +3943,7 @@ function ownIntent(raw, deps) {
 */
 function unavailable(e) {
 	if (!(e instanceof Error)) return false;
-	return e.name === "TimeoutError" || e.name === "AbortError" || e.name === "RpcUnavailableError" || e instanceof TypeError && /fetch failed/i.test(e.message) || isSolanaError(e, SOLANA_ERROR__RPC__TRANSPORT_HTTP_ERROR) && [
+	return e.name === "TimeoutError" || e.name === "AbortError" || e.name === "RpcUnavailableError" || e.name === "BudgetSpentError" || e instanceof TypeError && /fetch failed/i.test(e.message) || isSolanaError(e, SOLANA_ERROR__RPC__TRANSPORT_HTTP_ERROR) && [
 		429,
 		500,
 		502,
@@ -4089,19 +4107,22 @@ async function runCommand(command, input, deps) {
 		try {
 			if (deps.policy) await checkPolicy(deps.policy, intent, spendsOf(store));
 			if (intent.slippageBps === "auto") return usage("check needs intent.slippageBps as the number of bps the swap was prepared with, not \"auto\".");
+			const budget = preparationBudget();
 			const own = await ownFloor(intent, {
 				rpc: deps.rpc,
 				fetchImpl: deps.fetchImpl,
 				jupiterApiKey: deps.jupiterApiKey,
 				requestTimeoutMs: deps.requestTimeoutMs,
-				policy: deps.policy
+				policy: deps.policy,
+				budget
 			});
 			intent.minOut = own.minOut;
 			if (own.slippageBps !== void 0) intent.slippageBps = own.slippageBps;
 			const priceImpactBps = own.priceImpactBps;
 			await holdSolFee(intent, prepared, {
 				fetchImpl: deps.fetchImpl,
-				jupiterApiKey: deps.jupiterApiKey
+				jupiterApiKey: deps.jupiterApiKey,
+				budget
 			});
 			const problems = await checkPrepared(prepared, intent, deps.rpc, {
 				requestTimeoutMs: deps.requestTimeoutMs,
@@ -4538,18 +4559,21 @@ async function runCommand(command, input, deps) {
 					error: "finalize needs checked.intent.slippageBps as prepare returned it, a number, not \"auto\". Nothing was sent."
 				}
 			};
+			const budget = preparationBudget();
 			const own = await ownFloor(intent, {
 				rpc: deps.rpc,
 				fetchImpl: deps.fetchImpl,
 				jupiterApiKey: deps.jupiterApiKey,
 				requestTimeoutMs: deps.requestTimeoutMs,
-				policy: deps.policy
+				policy: deps.policy,
+				budget
 			});
 			intent.minOut = own.minOut;
 			if (own.slippageBps !== void 0) intent.slippageBps = own.slippageBps;
 			await holdSolFee(intent, prepared, {
 				fetchImpl: deps.fetchImpl,
-				jupiterApiKey: deps.jupiterApiKey
+				jupiterApiKey: deps.jupiterApiKey,
+				budget
 			});
 			const problems = await checkPrepared(prepared, intent, deps.rpc, {
 				requestTimeoutMs: deps.requestTimeoutMs,
