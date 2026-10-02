@@ -3,6 +3,11 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.9.5 (2026-10-03)
+
+- A prepare cut short by the time the preparation had left is always `BudgetSpentError`, never a
+  bare timeout, however close to its end the timer fires.
+
 ## 1.9.4 (2026-10-03)
 
 - The fall back to Orientim's own routes, after the route or round limit, runs within the time the

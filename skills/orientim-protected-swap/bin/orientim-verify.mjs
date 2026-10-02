@@ -1835,7 +1835,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.9.4";
+const SKILL_VERSION = "1.9.5";
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res) => {
 	const after = Number(res.headers.get("retry-after"));
@@ -1881,10 +1881,11 @@ async function preparedByOrientim(fetchImpl, apiUrl, apiKey, body, timeoutMs, ow
 	const prepare = async (payload) => {
 		const left = timeLeftOf(budget);
 		if (left <= 0) throw outOfPreparationTime();
+		const cutByBudget = left < timeoutMs;
 		try {
 			return await call(fetchImpl, url, apiKey, payload, Math.max(1, Math.floor(Math.min(timeoutMs, left))));
 		} catch (e) {
-			if (e?.name === "TimeoutError" && timeLeftOf(budget) <= 0) throw outOfPreparationTime();
+			if (e?.name === "TimeoutError" && cutByBudget) throw outOfPreparationTime();
 			throw e;
 		}
 	};
