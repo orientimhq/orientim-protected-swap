@@ -3,6 +3,15 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.8.8 (2026-10-02)
+
+- A retry marker left by a worker that stopped between creating it and recording its new attempt
+  no longer holds the order for good (found in an external audit). The file store's
+  `reclaimOrder` now finds such a marker abandoned, and sets it aside atomically for one worker,
+  only when all of these hold: it is older than a minute, the order still names the attempt it
+  retries, and no swap kept for that order is pending. A marker a worker may still be using is never
+  taken, so two workers still cannot both retry one order.
+
 ## 1.8.7 (2026-10-01)
 
 - The owner's `maxSlippageBps` is read on v1 transactions too. A v1 message lists its instructions
