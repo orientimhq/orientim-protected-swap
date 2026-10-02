@@ -43,7 +43,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeSync } from 'node:fs';
 import { hostname } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { basename, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   createKeyPairSignerFromBytes, createSolanaRpc, getCompiledTransactionMessageDecoder, getPublicKeyFromAddress,
@@ -304,7 +304,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.8.7';
+export const SKILL_VERSION = '1.8.8';
 
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res: Response) => {
@@ -1180,6 +1180,12 @@ function syncDir(dir: string): void {
   }
 }
 
+/**
+ * How old a retry marker must be before a worker may find it abandoned. A worker records its attempt
+ * milliseconds after creating the marker; a minute is far past that, and short for an order to wait.
+ */
+const RETRY_MARKER_STALE_MS = 60_000;
+
 /** The state directory and its files are the owner's alone: they name the wallet, its orders and its swaps. */
 const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
@@ -1227,6 +1233,27 @@ export function createFileStore(dir: string): PendingStore & OrderBook & SpendLo
     writeDurably(temporary, JSON.stringify({ id, ...record }), 'w');
     commit(temporary, orderFile(id));
   };
+  /** A retry marker no worker can still be using: see `reclaimOrder`. */
+  const retryMarkerAbandoned = (marker: string, id: string, prior: OrderRecord): boolean => {
+    let made: number;
+    try {
+      made = statSync(marker).mtimeMs;
+    } catch {
+      return false;
+    }
+    if (Date.now() - made < RETRY_MARKER_STALE_MS) return false;
+    const now = readOrder(id);
+    if (!now || now.signature !== prior.signature || now.state !== prior.state) return false;
+    for (const f of readdirSync(dir).filter(f => f.startsWith('pending-') && f.endsWith('.json'))) {
+      try {
+        if ((JSON.parse(readFileSync(join(dir, f), 'utf8')) as { intentId?: unknown }).intentId === id) return false;
+      } catch {
+        // A pending record that cannot be read may be this order's: the marker is not taken.
+        return false;
+      }
+    }
+    return true;
+  };
   return {
     async order(id) {
       return readOrder(id);
@@ -1246,10 +1273,29 @@ export function createFileStore(dir: string): PendingStore & OrderBook & SpendLo
     async reclaimOrder(id, prior, record) {
       // One retry per earlier attempt: the worker that creates this marker first takes the order.
       const marker = `${orderFile(id)}.retry-${prior.signature}`;
-      try {
-        writeDurably(marker, '', 'wx');
-      } catch {
-        return false;
+      const claim = () => {
+        try {
+          writeDurably(marker, '', 'wx');
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      if (!claim()) {
+        // A marker left by a worker that stopped between creating it and recording its attempt would
+        // hold the order for good. It is abandoned only when all of these hold: it is older than any
+        // worker takes to record its attempt (milliseconds), the order still names the attempt it
+        // retries, and no swap kept for this order is pending (a worker keeps its swap before it
+        // creates the marker, and keeps it until it lands or is settled). One worker then sets it
+        // aside, atomically, and claims it afresh; any other finds it gone and stands down.
+        if (!retryMarkerAbandoned(marker, id, prior)) return false;
+        try {
+          renameSync(marker, `${marker}.abandoned-${randomUUID()}`);
+        } catch {
+          return false;
+        }
+        for (const f of readdirSync(dir).filter(f => f.startsWith(`${basename(marker)}.abandoned-`))) rmSync(join(dir, f), { force: true });
+        if (!claim()) return false;
       }
       const now = readOrder(id);
       if (!now || now.signature !== prior.signature || now.state !== prior.state) return false;
