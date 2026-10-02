@@ -33,6 +33,20 @@ export function isSlippageBps(v: unknown): v is number;
 export declare function isRpcFailure(problem: string): boolean;
 
 /** What the agent asked for, and the most it accepts. */
+/** One Jupiter build Orientim asks an agent to fetch with its own key (AGENT-API.md, "Your own Jupiter key"). */
+export type RouteRequest = {
+  inputMint: string; outputMint: string; amount: string; taker: string; slippageBps: number; maxAccounts: number;
+  mode?: 'fast'; destinationTokenAccount?: string; excludeDexes?: string[];
+};
+/** What an agent sends back for a request: Jupiter's answer, or `noRoute` when Jupiter found none. */
+export type FetchedRoute = { params: RouteRequest; response?: unknown; noRoute?: boolean };
+/** The most route requests the skill fetches for one round of a prepare. */
+export declare const MAX_ROUTE_REQUESTS_PER_ROUND: number;
+/** The route requests Orientim named, fetched from Jupiter with the agent's own key, for this swap only. */
+export declare function fetchRoutes(
+  requests: unknown, swap: { inputMint: string; outputMint: string; amountIn: string; taker: string },
+  opts?: { apiKey?: string; fetchImpl?: typeof fetch; jupiterUrl?: string },
+): Promise<FetchedRoute[]>;
 export type AgentLimits = {
   /** The agent's wallet, which signs first and pays. */
   owner: string;

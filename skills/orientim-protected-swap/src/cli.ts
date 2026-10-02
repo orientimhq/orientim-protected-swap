@@ -75,6 +75,8 @@ export type CliDeps = {
   apiKey?: string;
   fetchImpl?: typeof fetch;
   jupiterApiKey?: string;
+  /** Routes from Jupiter with `jupiterApiKey` (default with a key; ORIENTIM_OWN_ROUTES=0 turns it off). */
+  ownRoutes?: boolean;
   stateDir: string;
   treasury?: string;
   pollMs?: number;
@@ -407,6 +409,7 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
       const checked = await prepareChecked({
         ...api, rpc: deps.rpc, owner, intent: rest,
         fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey, requestTimeoutMs: deps.requestTimeoutMs, policy: deps.policy,
+        ...(deps.ownRoutes !== undefined ? { ownRoutes: deps.ownRoutes } : {}),
       });
       const tx = getTransactionDecoder().decode(Buffer.from(checked.prepared.transaction, 'base64'));
       return {
@@ -710,6 +713,7 @@ export async function main(): Promise<void> {
     apiUrl: process.env.ORIENTIM_API_URL,
     apiKey: process.env.ORIENTIM_API_KEY,
     jupiterApiKey: process.env.JUPITER_API_KEY || undefined,
+    ownRoutes: process.env.ORIENTIM_OWN_ROUTES !== '0',
     stateDir,
     treasury: process.env.ORIENTIM_TREASURY || undefined,
     policy,

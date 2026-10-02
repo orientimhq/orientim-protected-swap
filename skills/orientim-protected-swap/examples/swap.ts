@@ -52,7 +52,7 @@ import {
 import type { Address, Rpc, SignatureBytes, SignatureDictionary, SolanaRpcApi, Transaction, TransactionPartialSigner } from '@solana/kit';
 import {
   DEFAULT_MAX_PRICE_IMPACT_BPS, feeLimitBps, inputTransferFee, isSlippageBps, MAX_BELOW_BPS, MAX_PRICE_IMPACT_BPS, MAX_SLIPPAGE_BPS, MIN_SLIPPAGE_BPS,
-  isRpcFailure, ownQuote, ownSolFeeLimit, pastProof,
+  fetchRoutes, isRpcFailure, ownQuote, ownSolFeeLimit, pastProof,
   noticesOf, provesNeverLanded, tokenRisk, verifyPrepared,
 } from '../lib/orientim-verify.mjs';
 import type { TokenRisk } from '../lib/orientim-verify.mjs';
@@ -175,6 +175,8 @@ export type ApiError = { status: number; code: string; message: string; body: Re
  */
 export const ERROR_MEANINGS: Readonly<Record<string, string>> = {
   'price-moved': 'The best route that fits in one protected transaction no longer meets your minimum: the price moved, or the route that meets it is too big. Ask the user before preparing again with minOut set to newMinOut, or try a smaller amount.',
+  'routes-needed': 'Orientim needs routes fetched from Jupiter with your own key; the skill does this itself. Prepare again.',
+  'bad-session': 'The routes session expired or belongs to another swap. Prepare again from the start.',
   'costs-more': 'The protected route costs more than the open market. Ask the user; to accept, prepare again with acceptCostBps set to gapBps.',
   'output-balance-changed': 'Your balance of the output token changed since prepare, so nothing was signed. Settle what may still land, then prepare again.',
   busy: "Jupiter or Orientim's Solana RPC is busy. Wait the Retry-After seconds, then try again.",
@@ -226,6 +228,10 @@ const ERROR_FIELDS: Readonly<Record<string, (v: unknown) => boolean>> = {
   minimum: v => typeof v === 'string' && (DIGITS.test(v) || /^\d{1,4}\.\d{1,4}\.\d{1,4}$/.test(v)),
   balanceAtPrepare: v => typeof v === 'string' && DIGITS.test(v),
   balanceNow: v => typeof v === 'string' && DIGITS.test(v),
+  // routes-needed: what Orientim asks the skill to fetch with the agent's own Jupiter key (fetchRoutes checks each).
+  session: v => typeof v === 'string' && v.length <= 2_000 && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(v),
+  taker: v => typeof v === 'string' && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(v),
+  requests: v => Array.isArray(v) && v.length <= 8 && v.every(r => !!r && typeof r === 'object' && !Array.isArray(r)),
 };
 
 /** An error's data fields, as ERROR_FIELDS allows them; nothing else. */
@@ -304,7 +310,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.8.8';
+export const SKILL_VERSION = '1.9.0';
 
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res: Response) => {
@@ -329,6 +335,42 @@ async function answerOf<T>(res: Response): Promise<{ error?: { code: string; mes
  * build still ends in its answer rather than a second prepare.
  */
 const PREPARE_WAIT_MS = 60_000;
+/** The rounds of a prepare whose routes the agent brings, and the routes it may carry in all. */
+const MAX_ROUTE_ROUNDS = 10;
+const MAX_ROUTES = 24;
+
+/**
+ * Orientim's prepare. With the agent's own Jupiter key, Orientim asks for the routes it needs (409
+ * `routes-needed`), the agent fetches them from Jupiter with that key, which never leaves this
+ * process, and prepares again with every route it has, until the swap is built. A deployment that
+ * does not know `ownRoutes` builds the swap itself as before. Without a key, Orientim builds with its own.
+ */
+async function preparedByOrientim(
+  fetchImpl: Fetch, apiUrl: string, apiKey: string, body: Record<string, unknown>, timeoutMs: number,
+  own: { jupiterApiKey?: string; ownRoutes?: boolean },
+): Promise<Prepared> {
+  const url = `${apiUrl}/api/v1/prepare`;
+  if (!own.jupiterApiKey || own.ownRoutes === false) return call<Prepared>(fetchImpl, url, apiKey, body, timeoutMs);
+  const routes: unknown[] = [];
+  let session: string | undefined;
+  for (let round = 0; round < MAX_ROUTE_ROUNDS; round++) {
+    try {
+      return await call<Prepared>(fetchImpl, url, apiKey, { ...body, ownRoutes: true, ...(session ? { session } : {}), routes }, timeoutMs);
+    } catch (e) {
+      if (!(e instanceof OrientimApiError) || e.code !== 'routes-needed') throw e;
+      const asked = e.body as { session?: unknown; taker?: unknown; requests?: unknown };
+      if (typeof asked.session !== 'string' || asked.session.length > 2_000 || typeof asked.taker !== 'string') {
+        throw new Error('Orientim asked for routes without a session or a one-time key. Nothing was signed.');
+      }
+      session = asked.session;
+      routes.push(...await fetchRoutes(asked.requests, {
+        inputMint: String(body.inputMint), outputMint: String(body.outputMint), amountIn: String(body.amountIn), taker: asked.taker,
+      }, { apiKey: own.jupiterApiKey, fetchImpl }));
+      if (routes.length > MAX_ROUTES) throw new Error(`Orientim asked for more than ${MAX_ROUTES} routes for one swap. Nothing was signed; try again, or a smaller amount.`);
+    }
+  }
+  throw new Error(`Orientim still asked for routes after ${MAX_ROUTE_ROUNDS} rounds. Nothing was signed; try again in a moment.`);
+}
 
 /** Each call to Orientim ends within `timeoutMs`: an answer that never comes is no answer. */
 async function call<T>(fetchImpl: Fetch, url: string, key: string, body: unknown, timeoutMs = 30_000): Promise<T> {
@@ -1687,6 +1729,11 @@ export async function prepareChecked(args: {
   onTiming?: (phase: 'ownFloor' | 'apiPrepare' | 'localVerification' | 'tokenRisk' | 'sign' | 'finalize', ms: number) => void;
   /** The owner's limits here: the ceilings on tolerance, floor and price impact, and whether a swap may go on without a price impact. */
   policy?: OwnerCeilings;
+  /**
+   * Routes from Jupiter with your own key (`jupiterApiKey`), which never leaves this process; on by
+   * default with a key. false: Orientim builds with its own key, as without one.
+   */
+  ownRoutes?: boolean;
 }): Promise<Checked> {
   const fetchImpl = args.fetchImpl ?? fetch;
   const owner = args.owner;
@@ -1704,14 +1751,14 @@ export async function prepareChecked(args: {
   // The tolerance as resolved: "auto" becomes Jupiter's estimate, and the check holds the route to it.
   const intent: Intent = withTolerance({ ...args.intent, owner, minOut }, own.slippageBps);
   const { slippageBps } = intent;
-  const prepared = await call<Prepared>(fetchImpl, `${args.apiUrl}/api/v1/prepare`, args.apiKey, {
+  const prepared = await preparedByOrientim(fetchImpl, args.apiUrl, args.apiKey, {
     owner: intent.owner, inputMint: intent.inputMint, outputMint: intent.outputMint, amountIn: intent.amountIn,
     ...(intent.minOut ? { minOut: intent.minOut } : {}),
     ...(intent.acceptCostBps ? { acceptCostBps: intent.acceptCostBps } : {}),
     ...(slippageBps !== undefined ? { slippageBps } : {}),
     ...(intent.routingMode === 'fast' ? { routingMode: 'fast' } : {}),
     ...(intent.version !== undefined ? { version: intent.version } : {}),
-  }, args.requestTimeoutMs ?? PREPARE_WAIT_MS);
+  }, args.requestTimeoutMs ?? PREPARE_WAIT_MS, { jupiterApiKey: args.jupiterApiKey, ownRoutes: args.ownRoutes });
   measured('apiPrepare');
   // A fee in SOL from the wallet: held to a price of your own, asked of Jupiter here.
   await holdSolFee(intent, prepared, { fetchImpl, jupiterApiKey: args.jupiterApiKey });
@@ -2009,6 +2056,8 @@ export async function resumeSigned(args: {
 export async function protectedSwap(args: {
   apiUrl: string; apiKey: string; rpc: Rpc<SolanaRpcApi>; wallet: WalletSigner; intent: Omit<Intent, 'owner'>;
   fetchImpl?: Fetch; pollMs?: number; jupiterApiKey?: string;
+  /** Routes from Jupiter with `jupiterApiKey` (default with a key); false: Orientim builds with its own key. */
+  ownRoutes?: boolean;
   /** Optional per-phase durations; never receives keys, mints or transaction bytes. */
   onTiming?: (phase: 'ownFloor' | 'apiPrepare' | 'localVerification' | 'tokenRisk' | 'sign' | 'finalize', ms: number) => void;
   /**
@@ -2169,12 +2218,12 @@ async function main() {
     if (policy) await checkPolicy({ maxAmountIn: policy.maxAmountIn }, { owner, inputMint, amountIn });
     const own = await ownFloor({ ...intent, owner }, { rpc, jupiterApiKey, policy });
     const minOut = own.minOut;
-    const prepared = await call<Prepared>(fetch, `${apiUrl}/api/v1/prepare`, apiKey, {
+    const prepared = await preparedByOrientim(fetch, apiUrl, apiKey, {
       owner, inputMint, outputMint, amountIn, minOut,
       ...(intent.acceptCostBps ? { acceptCostBps: intent.acceptCostBps } : {}), ...(intent.version ? { version: 1 } : {}),
       ...(own.slippageBps !== undefined ? { slippageBps: own.slippageBps } : {}),
       ...(intent.routingMode === 'fast' ? { routingMode: 'fast' } : {}),
-    }, PREPARE_WAIT_MS);
+    }, PREPARE_WAIT_MS, { jupiterApiKey, ownRoutes: process.env.ORIENTIM_OWN_ROUTES !== '0' });
     const checked: Intent = withTolerance({ ...intent, owner, minOut }, own.slippageBps);
     await holdSolFee(checked, prepared, { jupiterApiKey });
     const problems = await checkPrepared(prepared, checked, rpc, { slippageCeilingBps: policy?.maxSlippageBps });
@@ -2235,7 +2284,7 @@ async function main() {
     const approved = keptApproval(stateDir, approvalKey);
     intent.minOut = heldToApproval(approved, intent.minOut);
     const result = await protectedSwap({
-      apiUrl, apiKey, rpc, wallet, intent, jupiterApiKey, orders: store, archive,
+      apiUrl, apiKey, rpc, wallet, intent, jupiterApiKey, orders: store, archive, ownRoutes: process.env.ORIENTIM_OWN_ROUTES !== '0',
       // Kept on disk before finalize, and removed once settled: if this process stops, the next run
       // settles it first, and nothing new is sent from this wallet while it may still land.
       pending: store,

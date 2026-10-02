@@ -1137,6 +1137,65 @@ async function askJupiter(url, asked, apiKey, fetchImpl) {
 		throw new Error(jupiterRefusal(res.status, asked, apiKey, busy, jupiterErrorCode(body)));
 	}
 }
+/** The most route requests the skill fetches for one round of a prepare. */
+const MAX_ROUTE_REQUESTS_PER_ROUND = 8;
+/**
+* The route requests Orientim named, fetched from Jupiter with the agent's own key: the key never
+* leaves this process. Only requests for this swap are fetched: its two mints, the one-time key
+* Orientim named as taker, an amount no larger than the agent's, and ordinary build parameters. A
+* request for anything else is refused, so a server cannot spend the agent's Jupiter quota on other
+* trades. Jupiter's refusal of the trade is sent back as `noRoute`; a Jupiter that stays busy stops
+* the swap as busy.
+*/
+async function fetchRoutes(requests, swap, opts = {}) {
+	if (!Array.isArray(requests) || requests.length === 0 || requests.length > 8) throw new Error(`Orientim asked for routes this skill does not fetch: ${Array.isArray(requests) ? requests.length : "not a list of"} request(s). Nothing was signed.`);
+	const out = [];
+	for (const r of requests) {
+		if (!(!!r && r.inputMint === swap.inputMint && r.outputMint === swap.outputMint && r.taker === swap.taker && typeof r.amount === "string" && /^\d{1,20}$/.test(r.amount) && BigInt(r.amount) > 0n && BigInt(r.amount) <= BigInt(swap.amountIn) && Number.isInteger(r.slippageBps) && r.slippageBps >= 1 && r.slippageBps <= 1e4 && Number.isInteger(r.maxAccounts) && r.maxAccounts >= 8 && r.maxAccounts <= 64 && (r.mode === void 0 || r.mode === "fast") && (r.destinationTokenAccount === void 0 || typeof r.destinationTokenAccount === "string" && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(r.destinationTokenAccount)) && (r.excludeDexes === void 0 || Array.isArray(r.excludeDexes) && r.excludeDexes.length <= 64 && r.excludeDexes.every((d) => typeof d === "string" && /^[\w .()-]{1,64}$/.test(d))))) throw new Error("Orientim asked for a route that is not one for this swap; this skill fetches only those. Nothing was signed.");
+		const params = {
+			inputMint: r.inputMint,
+			outputMint: r.outputMint,
+			amount: r.amount,
+			taker: r.taker,
+			slippageBps: r.slippageBps,
+			maxAccounts: r.maxAccounts,
+			...r.mode ? { mode: "fast" } : {},
+			...r.destinationTokenAccount ? { destinationTokenAccount: r.destinationTokenAccount } : {},
+			...r.excludeDexes?.length ? { excludeDexes: [...r.excludeDexes] } : {}
+		};
+		const url = new URL(opts.jupiterUrl ?? "https://api.jup.ag/swap/v2/build");
+		const query = {
+			inputMint: params.inputMint,
+			outputMint: params.outputMint,
+			amount: params.amount,
+			taker: params.taker,
+			slippageBps: String(params.slippageBps),
+			maxAccounts: String(params.maxAccounts),
+			wrapAndUnwrapSol: "false",
+			...params.destinationTokenAccount ? { destinationTokenAccount: params.destinationTokenAccount } : {},
+			...params.excludeDexes?.length ? { excludeDexes: params.excludeDexes.join(",") } : {},
+			...params.mode ? { mode: params.mode } : {}
+		};
+		for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
+		try {
+			out.push({
+				params,
+				response: await askJupiter(url.toString(), "a route for Orientim to protect", opts.apiKey, opts.fetchImpl)
+			});
+		} catch (e) {
+			const message = e.message;
+			if (/^Jupiter answered 400(?! \(busy\))/.test(message)) {
+				out.push({
+					params,
+					noRoute: true
+				});
+				continue;
+			}
+			throw e;
+		}
+	}
+	return out;
+}
 /**
 * Orientim's fee in lamports when it is in SOL, whichever side it is taken from: from SOL the swap
 * sells (`feeSide` input), from SOL it buys (output), or from the wallet for a pair that cannot carry
@@ -1542,4 +1601,4 @@ async function ownSolFeeLimit(args) {
 	return Number(limit);
 }
 //#endregion
-export { AUTO_MAX_SLIPPAGE_BPS, AUTO_MIN_SLIPPAGE_BPS, CURVE_SLIPPAGE_BPS, DEFAULT_MAX_PRICE_IMPACT_BPS, DEFAULT_SLIPPAGE_BPS, MAX_BELOW_BPS, MAX_FEE_BPS, MAX_PRICE_IMPACT_BPS, MAX_SLIPPAGE_BPS, MIN_SLIPPAGE_BPS, ORIENTIM_TREASURY, STATUS_CACHE_BLOCKS, autoSlippageBps, feeLimitBps, inputTransferFee, isRpcFailure, isSlippageBps, noticesOf, ownMinimum, ownQuote, ownSolFeeLimit, pastProof, provesNeverLanded, solFeeOf, tokenNotices, tokenRisk, verifyPrepared };
+export { AUTO_MAX_SLIPPAGE_BPS, AUTO_MIN_SLIPPAGE_BPS, CURVE_SLIPPAGE_BPS, DEFAULT_MAX_PRICE_IMPACT_BPS, DEFAULT_SLIPPAGE_BPS, MAX_BELOW_BPS, MAX_FEE_BPS, MAX_PRICE_IMPACT_BPS, MAX_ROUTE_REQUESTS_PER_ROUND, MAX_SLIPPAGE_BPS, MIN_SLIPPAGE_BPS, ORIENTIM_TREASURY, STATUS_CACHE_BLOCKS, autoSlippageBps, feeLimitBps, fetchRoutes, inputTransferFee, isRpcFailure, isSlippageBps, noticesOf, ownMinimum, ownQuote, ownSolFeeLimit, pastProof, provesNeverLanded, solFeeOf, tokenNotices, tokenRisk, verifyPrepared };

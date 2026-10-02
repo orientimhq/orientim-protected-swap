@@ -131,6 +131,9 @@ The user provides these; never ask for them in chat, and never print or log them
 - `JUPITER_API_KEY`: for the agent's own price (free at https://developers.jup.ag/portal). Get one:
   Jupiter asks for a key on every endpoint, and without one it answers a request or two and then
   refuses, so the agent's own floor cannot be priced and the swap stops before anything is signed.
+  With it, the skill also fetches the routes Orientim builds around, with this key, which never
+  leaves this process (AGENT-API.md, "Your own Jupiter key"): Orientim's own Jupiter quota is not
+  shared with other agents' swaps. `ORIENTIM_OWN_ROUTES=0` lets Orientim's key fetch them instead.
 
 Needs Node 22.18 or later. `npm ci` in this folder installs the one dependency, `@solana/kit` 8.3.0,
 exactly as `package-lock.json` pins it; the verifier ships with the skill. Before first use, check the

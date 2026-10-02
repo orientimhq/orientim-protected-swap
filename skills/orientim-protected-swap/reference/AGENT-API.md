@@ -191,6 +191,35 @@ mint more, or to move and burn them from any wallet (`permanentDelegate`, a Toke
 from your RPC (`tokenRisk`, and `tokenNotices` in words, which leave out SOL, USDC and USDT: they keep
 these powers by design). A read that fails is `unavailable`, never "no risk".
 
+### Your own Jupiter key: routes from your side
+
+With `ownRoutes: true`, Orientim asks Jupiter nothing with its own key for your routes: you fetch
+them with yours, which never reaches Orientim. Orientim builds, checks and signs around them exactly
+as around a route it asked for. Your routes are untrusted, as Jupiter's own answers are: each is held
+to this swap (mints, amount, the one-time key as taker), to the tolerance and quote its instruction
+carries, to the verifier's rules and to two simulations, and a route through a DEX the build excludes
+is refused by the programs it names. A made-up route can only fail your own swap. Orientim's fee in
+SOL, for a pair neither token of which can carry it, is always priced with Orientim's own key.
+
+It takes rounds, a second or so each:
+
+1. `POST /api/v1/prepare` with your usual body and `"ownRoutes": true`. The answer is `409
+   routes-needed` with `session` (sealed, two minutes, for this swap and key only), `taker` (the
+   one-time key the swap is built around) and `requests`: the Jupiter builds it needs.
+2. Fetch each request from `https://api.jup.ag/swap/v2/build` with your key, with exactly its fields
+   as query parameters and `wrapAndUnwrapSol=false` (`excludeDexes` joined with commas). Fetch only
+   requests for your swap's mints, its `taker` and an amount no larger than yours.
+3. Prepare again with the same body, `session`, and `routes`: every route you have so far, each
+   `{ "params": <the request, unchanged>, "response": <Jupiter's answer> }`, or `"noRoute": true`
+   when Jupiter answered 400 for it. At most 24 routes; the body may be up to 1 MiB.
+4. Repeat until the answer is the prepared swap; usually one or two rounds. `bad-session` means the
+   session expired or was opened for another swap: start again without it.
+
+The skill and `orientim-verify` do this themselves whenever `JUPITER_API_KEY` is set
+(`ORIENTIM_OWN_ROUTES=0`, or `ownRoutes: false`, lets Orientim's key build them instead). A free
+Jupiter key allows one request a second, so a swap takes a few seconds longer; a busy bot does well
+with a paid key. Without `ownRoutes`, prepare works as before.
+
 ### Protection across agent integrations
 
 The skill and command line run the independent checks below. A client using the API directly must
@@ -307,11 +336,13 @@ one to ask") lists what to do with each code.
 | 400 | `invalid-ticket` | The ticket was not issued to this API key, or was altered. |
 | 400 | `transaction-changed` | The message is not the one Orientim built. Sign the transaction exactly as returned. |
 | 400 | `wallet-changed-transaction` | Your wallet's signature is missing or does not match (`violations`). |
+| 400 | `bad-session` | With `ownRoutes`: the session expired (two minutes) or was opened for another swap or key. Prepare again without it. |
 | 401 | `unauthorized` | Missing, unknown, expired or revoked API key. A self-serve key is renewed by signing a new key challenge. |
 | 403 | `wrong-wallet` | The key belongs to another wallet: a self-serve key prepares swaps for its own wallet only. |
 | 404 | `not-enabled` | The agent API is not available. |
 | 409 | `price-moved` | The best route that fits in one protected transaction cannot meet your `minOut`: the price moved, or the route that meets it is too big (`message` says which; a smaller amount may meet it). `newMinOut` is what the route that fits supports: with the user's approval, prepare again with it; or not. |
 | 409 | `costs-more` | The route that fits in one protected transaction is `gapBps` below the open market. With the user's approval, prepare again with `acceptCostBps` (which also takes a route up to 50 bps past it). |
+| 409 | `routes-needed` | With `ownRoutes`: fetch `requests` from Jupiter with your own key and prepare again with `session` and every route you have (see "Your own Jupiter key"). |
 | 409 | `output-balance-changed` | Your balance of the output token moved since prepare, so this request signed nothing. Check `signature` as above, then prepare again. |
 | 410 | `expired` | The transaction's lifetime passed before this finalize signed it. Check `signature` as above, then prepare again. |
 | 422 | `unsupported-token`, `no-route`, `bad-quote`, `insufficient-sol`, `insufficient-balance`, `simulation-failed`, `verification-failed`, `token-data-mismatch`, `output-account-restricted`, `input-account-restricted` | This swap cannot be built safely right now; `message` says why. |
