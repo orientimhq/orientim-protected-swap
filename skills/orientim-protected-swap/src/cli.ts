@@ -67,7 +67,7 @@ import {
   exitCodeOf, outcomeMeaning, settleOrder, ApprovalError, forgetApproval, heldToApproval, keptApproval,
 } from '../examples/swap.ts';
 import type { Checked, FoundOrder, Intent, OrderBook, OrderRecord, OwnerPolicy, PendingStore, Prepared, SpendLog } from '../examples/swap.ts';
-import { isRpcFailure, ORIENTIM_TREASURY } from '../lib/orientim-verify.mjs';
+import { isRpcFailure, ORIENTIM_TREASURY, preparationBudget } from '../lib/orientim-verify.mjs';
 
 export type CliDeps = {
   rpc: Rpc<SolanaRpcApi>;
@@ -158,7 +158,8 @@ function ownIntent(raw: Intent, deps: CliDeps): Intent | string {
  */
 function unavailable(e: unknown): boolean {
   if (!(e instanceof Error)) return false;
-  return e.name === 'TimeoutError' || e.name === 'AbortError' || e.name === 'RpcUnavailableError'
+  // A preparation that spent its time or its asks of Jupiter (BudgetSpentError): nothing was signed.
+  return e.name === 'TimeoutError' || e.name === 'AbortError' || e.name === 'RpcUnavailableError' || e.name === 'BudgetSpentError'
     || (e instanceof TypeError && /fetch failed/i.test(e.message))
     // Your RPC answered 429 or 5xx: busy or down, not a verdict on the swap.
     || (isSolanaError(e, SOLANA_ERROR__RPC__TRANSPORT_HTTP_ERROR) && [429, 500, 502, 503, 504].includes(Number(e.context.statusCode)))
@@ -265,13 +266,15 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
       if (deps.policy) await checkPolicy(deps.policy, intent, spendsOf(store));
       // The same floor as prepare: Jupiter's own price, whatever the intent says.
       if (intent.slippageBps === 'auto') return usage('check needs intent.slippageBps as the number of bps the swap was prepared with, not "auto".');
-      const own = await ownFloor(intent, { rpc: deps.rpc, fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey, requestTimeoutMs: deps.requestTimeoutMs, policy: deps.policy });
+      // One budget of time and Jupiter asks for this check, as for a preparation.
+      const budget = preparationBudget();
+      const own = await ownFloor(intent, { rpc: deps.rpc, fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey, requestTimeoutMs: deps.requestTimeoutMs, policy: deps.policy, budget });
       intent.minOut = own.minOut;
       // Without a tolerance of its own, the owner's ceiling (if any) is what the route is held to.
       if (own.slippageBps !== undefined) intent.slippageBps = own.slippageBps;
       const priceImpactBps = own.priceImpactBps;
       // A fee in SOL: never above the skill's own limit, whatever the intent says.
-      await holdSolFee(intent, prepared, { fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey });
+      await holdSolFee(intent, prepared, { fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey, budget });
       const problems = await checkPrepared(prepared, intent, deps.rpc, { requestTimeoutMs: deps.requestTimeoutMs, slippageCeilingBps: deps.policy?.maxSlippageBps });
       if (problems.length && problems.every(isRpcFailure)) return unavailableRefusal(new Error(problems.join('; ')));
       return { code: problems.length ? 1 : 0, output: { ok: problems.length === 0, problems, yourFloor: intent.minOut, priceImpactBps } };
@@ -562,10 +565,12 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
       // and a fee in SOL to the skill's own limit, and to what the user approved after a dry run.
       intent.minOut = heldToApproval(keptApproval(deps.stateDir, approvalKeyOf({ ...intent, owner: prepared.wallet })), intent.minOut);
       if (intent.slippageBps === 'auto') return { code: 2, output: { ok: false, sent: false, error: 'finalize needs checked.intent.slippageBps as prepare returned it, a number, not "auto". Nothing was sent.' } };
-      const own = await ownFloor(intent, { rpc: deps.rpc, fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey, requestTimeoutMs: deps.requestTimeoutMs, policy: deps.policy });
+      // The checks before sending, within one budget of time and Jupiter asks of their own.
+      const budget = preparationBudget();
+      const own = await ownFloor(intent, { rpc: deps.rpc, fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey, requestTimeoutMs: deps.requestTimeoutMs, policy: deps.policy, budget });
       intent.minOut = own.minOut;
       if (own.slippageBps !== undefined) intent.slippageBps = own.slippageBps;
-      await holdSolFee(intent, prepared, { fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey });
+      await holdSolFee(intent, prepared, { fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey, budget });
       const problems = await checkPrepared(prepared, intent, deps.rpc, { requestTimeoutMs: deps.requestTimeoutMs, slippageCeilingBps: deps.policy?.maxSlippageBps });
       if (problems.length && problems.every(isRpcFailure)) return unavailableRefusal(new Error(problems.join('; ')), false);
       if (problems.length) return { code: 1, output: { ok: false, sent: false, problems } };

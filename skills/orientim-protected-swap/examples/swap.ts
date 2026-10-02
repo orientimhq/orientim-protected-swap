@@ -52,10 +52,13 @@ import {
 import type { Address, Rpc, SignatureBytes, SignatureDictionary, SolanaRpcApi, Transaction, TransactionPartialSigner } from '@solana/kit';
 import {
   DEFAULT_MAX_PRICE_IMPACT_BPS, feeLimitBps, inputTransferFee, isSlippageBps, MAX_BELOW_BPS, MAX_PRICE_IMPACT_BPS, MAX_SLIPPAGE_BPS, MIN_SLIPPAGE_BPS,
-  fetchRoutes, isRpcFailure, ownQuote, ownSolFeeLimit, pastProof, preparationBudget, routeRequestKey, routeRequestsFor, timeLeftOf,
+  BudgetSpentError, fetchRoutes, isRpcFailure, ownQuote, ownSolFeeLimit, pastProof, PREPARATION_MS, preparationBudget, routeRequestKey, routeRequestsFor, timeLeftOf,
   noticesOf, provesNeverLanded, tokenRisk, verifyPrepared,
 } from '../lib/orientim-verify.mjs';
 import type { FetchedRoute, JupiterBudget, TokenRisk } from '../lib/orientim-verify.mjs';
+// The preparation's budget, for an agent that runs its own (see `prepareChecked`).
+export { BudgetSpentError, PREPARATION_ASKS, PREPARATION_MS, preparationBudget } from '../lib/orientim-verify.mjs';
+export type { JupiterBudget } from '../lib/orientim-verify.mjs';
 
 export type Intent = {
   owner: string;
@@ -310,7 +313,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.9.3';
+export const SKILL_VERSION = '1.9.4';
 
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res: Response) => {
@@ -355,14 +358,21 @@ async function preparedByOrientim(
   own: { jupiterApiKey?: string; ownRoutes?: boolean; budget?: JupiterBudget },
 ): Promise<Prepared> {
   const url = `${apiUrl}/api/v1/prepare`;
-  // The preparation's one budget: no call to Orientim runs past it.
+  // The preparation's one budget: no call to Orientim runs past it, the one that falls back to
+  // Orientim's own routes included.
   const budget = own.budget ?? preparationBudget();
-  const waitFor = () => {
+  const prepare = async (payload: unknown): Promise<Prepared> => {
     const left = timeLeftOf(budget);
-    if (left <= 0) throw new Error('Preparing this swap took longer than a swap may (110 s). Nothing was signed; try again in a moment.');
-    return Math.max(1, Math.floor(Math.min(timeoutMs, left)));
+    if (left <= 0) throw outOfPreparationTime();
+    try {
+      return await call<Prepared>(fetchImpl, url, apiKey, payload, Math.max(1, Math.floor(Math.min(timeoutMs, left))));
+    } catch (e) {
+      // Cut short by the time the preparation had left, not by Orientim: said as that.
+      if ((e as Error)?.name === 'TimeoutError' && timeLeftOf(budget) <= 0) throw outOfPreparationTime();
+      throw e;
+    }
   };
-  if (!own.jupiterApiKey || own.ownRoutes === false) return call<Prepared>(fetchImpl, url, apiKey, body, waitFor());
+  if (!own.jupiterApiKey || own.ownRoutes === false) return prepare(body);
   const fetched = new Map<string, FetchedRoute>();
   let session: string | undefined;
   let taker: string | undefined;
@@ -370,9 +380,7 @@ async function preparedByOrientim(
   for (let round = 0; round < MAX_ROUTE_ROUNDS; round++) {
     let prepared: Prepared;
     try {
-      prepared = await call<Prepared>(fetchImpl, url, apiKey, {
-        ...body, ownRoutes: true, ...(session ? { session } : {}), routes: [...fetched.values()],
-      }, waitFor());
+      prepared = await prepare({ ...body, ownRoutes: true, ...(session ? { session } : {}), routes: [...fetched.values()] });
     } catch (e) {
       if (!(e instanceof OrientimApiError) || e.code !== 'routes-needed') throw e;
       const asked = e.body as { session?: unknown; taker?: unknown; requests?: unknown };
@@ -390,7 +398,7 @@ async function preparedByOrientim(
       if (fresh.size === 0) throw new Error('Orientim asked again for routes it was already sent. Nothing was signed; try again in a moment.');
       // A swap that needs more routes than one prepare may fetch (a large amount, tried at narrower
       // routes): Orientim builds it with its own key, as without your key.
-      if (fetched.size + fresh.size > MAX_ROUTES) return call<Prepared>(fetchImpl, url, apiKey, body, waitFor());
+      if (fetched.size + fresh.size > MAX_ROUTES) return prepare(body);
       for (const r of await fetchRoutes([...fresh.values()], swap(taker), { apiKey: own.jupiterApiKey, fetchImpl, budget })) {
         fetched.set(routeRequestKey(r.params), r);
       }
@@ -403,8 +411,12 @@ async function preparedByOrientim(
     return prepared;
   }
   // Still asking after every round a prepare may take: Orientim builds it with its own key instead.
-  return call<Prepared>(fetchImpl, url, apiKey, body, waitFor());
+  return prepare(body);
 }
+
+/** The preparation ran out of its time (PREPARATION_MS) before the swap could be signed. */
+const outOfPreparationTime = () =>
+  new BudgetSpentError(`Preparing this swap took longer than a swap may (${PREPARATION_MS / 1000} s). Nothing was signed; try again in a moment.`);
 
 /** Each call to Orientim ends within `timeoutMs`: an answer that never comes is no answer. */
 async function call<T>(fetchImpl: Fetch, url: string, key: string, body: unknown, timeoutMs = 30_000): Promise<T> {
@@ -1777,10 +1789,9 @@ export async function prepareChecked(args: {
   // signing: every ask of Jupiter counts against it, and no step runs past its time. What happens
   // after signing (finalize, the wait for an outcome) is not part of it.
   const budget = args.budget ?? preparationBudget();
-  const outOfTime = () => new Error('Preparing this swap took longer than a swap may (110 s). Nothing was signed; try again in a moment.');
   const within = (ms: number | undefined) => {
     const left = timeLeftOf(budget);
-    if (left <= 0) throw outOfTime();
+    if (left <= 0) throw outOfPreparationTime();
     return Math.max(1, Math.floor(Math.min(ms ?? 10_000, left)));
   };
   let phaseStarted = performance.now();
@@ -1825,7 +1836,7 @@ export async function prepareChecked(args: {
   const risk = await tokenRisk(args.rpc, [intent.inputMint, intent.outputMint], within(args.requestTimeoutMs ?? 10_000));
   measured('tokenRisk');
   // Checked to the end within its time, or not signed: a check that ran past it is not taken.
-  if (timeLeftOf(budget) <= 0) throw outOfTime();
+  if (timeLeftOf(budget) <= 0) throw outOfPreparationTime();
   return { prepared: preparedData(prepared), intent, notices: noticesOf(risk), tokenRisk: risk };
 }
 

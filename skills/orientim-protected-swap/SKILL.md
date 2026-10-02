@@ -134,9 +134,11 @@ The user provides these; never ask for them in chat, and never print or log them
   With it, the skill also fetches the routes Orientim builds around, with this key, which never
   leaves this process (AGENT-API.md, "Your own Jupiter key"): Orientim's own Jupiter quota is not
   shared with other agents' swaps. One preparation, from the agent's own quote to the last check
-  before signing, spends at most 48 asks of this key and 110 seconds, and
-  waits out Jupiter's rate limit when it says how long and that fits; a swap that needs more is
-  prepared with Orientim's key. `ORIENTIM_OWN_ROUTES=0` lets Orientim's key fetch them instead.
+  before signing, spends at most 48 asks of this key and 110 seconds, and waits out Jupiter's rate
+  limit when it says how long and that fits; spent, nothing is signed (`BudgetSpentError`, or
+  `error.code` `unavailable` from `orientim-verify`): prepare again in a moment. A swap that needs
+  more routes is prepared with Orientim's key. `ORIENTIM_OWN_ROUTES=0` lets Orientim's key fetch them
+  instead.
 
 Needs Node 22.18 or later. `npm ci` in this folder installs the one dependency, `@solana/kit` 8.3.0,
 exactly as `package-lock.json` pins it; the verifier ships with the skill. Before first use, check the

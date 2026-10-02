@@ -47,6 +47,10 @@ export type JupiterBudget = { asks: number; until: number };
 /** The asks of Jupiter and the time (ms) one preparation may take, from its own quote to signing. */
 export declare const PREPARATION_ASKS: number;
 export declare const PREPARATION_MS: number;
+/** A preparation spent its budget (time or asks of Jupiter) before it could be signed; nothing was signed. */
+export declare class BudgetSpentError extends Error {
+  constructor(message: string);
+}
 /** A new budget for one preparation. */
 export declare function preparationBudget(asks?: number, ms?: number): JupiterBudget;
 /** The time a budget has left, in ms (Infinity without one). */

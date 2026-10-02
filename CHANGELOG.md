@@ -3,6 +3,18 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.9.4 (2026-10-03)
+
+- The fall back to Orientim's own routes, after the route or round limit, runs within the time the
+  preparation has left, never a call's full timeout: when that time is spent, the skill stops before
+  signing with `BudgetSpentError` (`error.code` `unavailable` from `orientim-verify`), a spent budget
+  of asks of Jupiter too. `check` and `finalize` hold their own checks before sending to a budget of
+  their own. `BudgetSpentError`, `preparationBudget`, `PREPARATION_MS` and `PREPARATION_ASKS` are
+  exported for an agent that runs its own.
+- `reference/AGENT-API.md` states the integration contract plainly: who asks Jupiter and who reads
+  the chain in one swap, that neither `sent` nor `unknown` is a final answer, that Orientim keeps no
+  order database, and what a direct client does on every start.
+
 ## 1.9.3 (2026-10-03)
 
 From an external audit:

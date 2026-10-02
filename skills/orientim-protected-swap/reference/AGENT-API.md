@@ -85,8 +85,9 @@ revoke a wallet's keys; the wallet's owner then signs again for a new one.
 0.25%, inside the transaction, taken the way Jupiter takes its own: in SOL first, then USDC, then
 USDT, on whichever side of the swap they are; otherwise in the input token. `amounts.feeMint` says
 which. On the input it is 0.25% of `amountIn`; on the output it is 0.25% of the enforced minimum, paid
-after the minimum is checked, and `amounts.minOut` is what your wallet keeps after it. It is part of
-the message you sign, and Orientim signs only the exact message it built, so a transaction with the fee
+after the minimum is checked, and `amounts.minOut` is what your wallet keeps after it. With your own
+routes (`ownRoutes`, below), that minimum is checked against Orientim's own price within up to 1%. It
+is part of the message you sign, and Orientim signs only the exact message it built, so a transaction with the fee
 removed is not signed. The agent API and shipped skill both refuse an Orientim fee above 0.3%.
 
 A swap between two tokens neither of which can carry the fee (no SOL, USDC or USDT on it, and no
@@ -245,14 +246,26 @@ The skill and `orientim-verify` do this themselves whenever `JUPITER_API_KEY` is
 budget of 110 seconds and 48 asks of Jupiter covers the whole preparation, from the agent's own
 quote and every route to the fee-in-SOL check and the last check before signing (finalize and the
 wait for an outcome have their own); spent, the swap stops unsigned. It counts every ask before it
-is sent, retries included, waiting out Jupiter's rate limit when it says how long
-and that fits, and sharing that wait among the swaps of one process. A swap that needs more than 24
-routes or 10 rounds (a large amount, tried at narrower routes) is prepared with Orientim's key
-instead. Once the widest route does not fit, prepare asks for every narrower one in the same round. A free Jupiter key allows one
-request a second, so a swap takes a few seconds longer; a busy bot does well with a paid key.
-Without `ownRoutes`, prepare works as before, and a deployment whose operator turned own routes off
-(`ORIENTIM_OWN_ROUTES=0` on the server) builds with its own key and ignores `ownRoutes`, `routes` and
-`session`.
+is sent, retries included, waiting out Jupiter's rate limit when it says how long and that fits, and
+sharing that wait among the swaps of one process; a spent budget is `BudgetSpentError` in code and
+`error.code` `unavailable` from `orientim-verify`. A swap that needs more than 24 routes or 10 rounds
+(a large amount, tried at narrower routes) is prepared with Orientim's key instead. Once the widest
+route does not fit, prepare asks for every narrower one in the same round. Every round is one
+prepare request toward the rate limit. A free Jupiter key allows one request a second, so a swap
+takes a few seconds longer; a busy bot does well with a paid key. Without `ownRoutes`, prepare works
+as before, and a deployment whose operator turned own routes off (`ORIENTIM_OWN_ROUTES=0` on the
+server) builds with its own key and ignores `ownRoutes`, `routes` and `session`.
+
+Who asks what, for one swap:
+
+| Who | What |
+| --- | --- |
+| Your Jupiter key | Your own price (floor and price impact), always: one ask. With `ownRoutes`, the routes: usually two, at most 24. For a fee in SOL, one ask for your own limit on it. |
+| Orientim's Jupiter key | Without `ownRoutes`, the routes. With them: one ask for its own price when the fee is on the output (kept 15 seconds across the rounds), and the price of a fee in SOL. |
+| Orientim's RPC | The chain state it builds from, its own simulations, and sending once at finalize. |
+| Your RPC | Any Solana RPC of yours. The check before signing: a few account reads, one or two simulations and the token-risk read. After finalize: a status read about every second and a re-send of the same bytes every few seconds, until the swap confirms or its lifetime passes, then one read of the transaction for what arrived. |
+
+Routes come only from Jupiter: the verifier accepts Jupiter's program and no other.
 
 ### Protection across agent integrations
 
@@ -330,6 +343,10 @@ one-time key and sends it once. Run one swap per output token at a time.
 | `unknown` | The connection failed after the request left. It may have been forwarded: check the signature before doing anything else. |
 | `rejected` | This request never broadcast it (`refusal`: `network` is the RPC's preflight, usually a price that moved; `transactionError` is then the simulation's error as JSON, e.g. `{"InstructionError":[3,{"Custom":6001}]}`, when there is one). No `signedTransaction` is returned. |
 
+Neither `sent` nor `unknown` is a final answer: `sent` says the transaction was accepted for
+broadcast, `unknown` that the answer was lost. Only the chain says whether the swap happened; until
+it does, the swap may still land.
+
 Finalizing the same ticket again, after an answer that never arrived, answers for the same
 transaction: while it is not on chain it is sent again (the same bytes can land only once), and
 once it is on chain the answer is `sent` with the same bytes, even after its lifetime or during a
@@ -402,7 +419,9 @@ The key endpoints answer, besides `400 bad-request`:
 ## Direct API integration contract
 
 The API key grants access, not proof that your bot checked the transaction. The optional skill-version
-header is a compatibility hint, not attestation. A bot using `prepare` and `finalize` directly must:
+header is a compatibility hint, not attestation. Orientim keeps no order database: it does not know
+your order ids, does not deduplicate your orders and cannot tell you later what became of a ticket;
+the chain and your own store are the record. A bot using `prepare` and `finalize` directly must:
 
 1. Set a positive `minOut` from its own price source and run `checkPrepared` or
    `orientim-verify check` on the exact prepare response with its own RPC before a signer sees it.
@@ -416,6 +435,12 @@ header is a compatibility hint, not attestation. A bot using `prepare` and `fina
    The signing service must enforce the owner's own wallet, mint, amount and daily limits before
    signing, and return the signed transaction unsent. A key file readable by the agent offers no
    protection against that agent choosing a different signing path.
+
+On every start, before anything new: load every swap stored as signed and not yet settled (order id,
+signature, signed bytes, last valid block height); look each signature up on your RPC and record
+`confirmed` or `failed`; with no record, re-send the same bytes until the lifetime passes and record
+`expired` only by the rule under Finalize; an outcome you cannot prove stays unknown and is settled by
+hand. Only then prepare anything new for that order or wallet.
 
 The shipped skill and command line provide local order state and wallet locks. A deployment with
 workers on several machines needs a shared atomic store or a signer that serializes and limits them.
