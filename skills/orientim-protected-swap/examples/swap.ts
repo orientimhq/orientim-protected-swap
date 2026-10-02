@@ -310,7 +310,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.9.1';
+export const SKILL_VERSION = '1.9.2';
 
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res: Response) => {
@@ -354,7 +354,8 @@ const OWN_ROUTES_WAIT_MS = 110_000;
  *
  * The one-time key the first round names is the one every round and the swap itself must name; the
  * routes are counted before they are fetched, each fetched once; and the rounds, routes and pauses
- * share one deadline and one budget of asks of the agent's key.
+ * share one deadline and one budget of asks of the agent's key. A swap that needs more routes or
+ * rounds than that is prepared with Orientim's own key, as without the agent's.
  */
 async function preparedByOrientim(
   fetchImpl: Fetch, apiUrl: string, apiKey: string, body: Record<string, unknown>, timeoutMs: number,
@@ -390,7 +391,9 @@ async function preparedByOrientim(
       const fresh = new Map(routeRequestsFor(asked.requests, swap(taker)).map(r => [routeRequestKey(r), r] as const));
       for (const k of fetched.keys()) fresh.delete(k);
       if (fresh.size === 0) throw new Error('Orientim asked again for routes it was already sent. Nothing was signed; try again in a moment.');
-      if (fetched.size + fresh.size > MAX_ROUTES) throw new Error(`Orientim asked for more than ${MAX_ROUTES} routes for one swap. Nothing was signed; try again, or a smaller amount.`);
+      // A swap that needs more routes than one prepare may fetch (a large amount, tried at narrower
+      // routes): Orientim builds it with its own key, as without your key.
+      if (fetched.size + fresh.size > MAX_ROUTES) return call<Prepared>(fetchImpl, url, apiKey, body, timeoutMs);
       for (const r of await fetchRoutes([...fresh.values()], swap(taker), { apiKey: own.jupiterApiKey, fetchImpl, budget })) {
         fetched.set(routeRequestKey(r.params), r);
       }
@@ -402,7 +405,8 @@ async function preparedByOrientim(
     }
     return prepared;
   }
-  throw new Error(`Orientim still asked for routes after ${MAX_ROUTE_ROUNDS} rounds. Nothing was signed; try again in a moment.`);
+  // Still asking after every round a prepare may take: Orientim builds it with its own key instead.
+  return call<Prepared>(fetchImpl, url, apiKey, body, timeoutMs);
 }
 
 /** Each call to Orientim ends within `timeoutMs`: an answer that never comes is no answer. */
@@ -1682,7 +1686,7 @@ export class FloorError extends Error {
 export async function ownFloor(
   intent: Intent,
   deps: { rpc: Rpc<SolanaRpcApi>; fetchImpl?: Fetch; jupiterApiKey?: string; requestTimeoutMs?: number; policy?: OwnerCeilings },
-): Promise<{ minOut: string; priceImpactBps: number | null; slippageBps?: number }> {
+): Promise<{ minOut: string; priceImpactBps: number | null; maxPriceImpactBps: number; slippageBps?: number }> {
   if (intent.routingMode !== undefined && intent.routingMode !== 'standard' && intent.routingMode !== 'fast') {
     throw new IntentError('routingMode must be standard or fast. Nothing was sent.');
   }
@@ -1724,7 +1728,7 @@ export async function ownFloor(
   });
   if (own.priceImpactBps !== null && own.priceImpactBps > maxImpact) throw new PriceImpactError(own.priceImpactBps, maxImpact);
   const tolerance = own.slippageBps !== undefined ? { slippageBps: own.slippageBps } : {};
-  if (intent.minOut === undefined) return { minOut: own.minOut, priceImpactBps: own.priceImpactBps, ...tolerance };
+  if (intent.minOut === undefined) return { minOut: own.minOut, priceImpactBps: own.priceImpactBps, maxPriceImpactBps: maxImpact, ...tolerance };
   const belowBps = owner.maxBelowBps ?? MAX_BELOW_BPS;
   const lowest = (BigInt(own.outAmount) * BigInt(10_000 - belowBps)) / 10_000n;
   if (BigInt(intent.minOut) < lowest) {
@@ -1733,7 +1737,7 @@ export async function ownFloor(
     }
     throw new FloorError(intent.minOut, lowest.toString());
   }
-  return { minOut: intent.minOut, priceImpactBps: own.priceImpactBps, ...tolerance };
+  return { minOut: intent.minOut, priceImpactBps: own.priceImpactBps, maxPriceImpactBps: maxImpact, ...tolerance };
 }
 
 /** The intent with the tolerance `ownFloor` resolved: a number, or none for Orientim's default. */
@@ -1793,6 +1797,12 @@ export async function prepareChecked(args: {
     ...(intent.version !== undefined ? { version: intent.version } : {}),
   }, args.requestTimeoutMs ?? PREPARE_WAIT_MS, { jupiterApiKey: args.jupiterApiKey, ownRoutes: args.ownRoutes });
   measured('apiPrepare');
+  // The route Orientim built moves the market no more than the limit either: a costlier route, once
+  // approved, may move it more than the market's own best one did. Orientim's word can only refuse here.
+  const routeImpact = prepared.amounts?.priceImpactPct;
+  if (typeof routeImpact === 'number' && Number.isFinite(routeImpact) && Math.round(routeImpact * 10_000) > own.maxPriceImpactBps) {
+    throw new PriceImpactError(Math.round(routeImpact * 10_000), own.maxPriceImpactBps);
+  }
   // A fee in SOL from the wallet: held to a price of your own, asked of Jupiter here.
   await holdSolFee(intent, prepared, { fetchImpl, jupiterApiKey: args.jupiterApiKey });
   const problems = await checkPrepared(prepared, intent, args.rpc, { requestTimeoutMs: args.requestTimeoutMs, slippageCeilingBps: args.policy?.maxSlippageBps });

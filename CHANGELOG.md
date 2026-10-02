@@ -3,6 +3,18 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.9.2 (2026-10-02)
+
+Found by the mainnet simulation matrix with the agent's own routes (732 cases):
+
+- A large swap that needs more routes or rounds than one prepare may fetch (24 routes, 10 rounds) is
+  prepared with Orientim's key instead of stopping. Orientim also asks for every narrower route in
+  one round once the widest does not fit, so such a swap rarely gets there.
+- A prepared route whose own price impact is above the limit is refused (`PriceImpactError`), as
+  your own quote's is: a costlier route, once approved, may move the market more than the best one.
+- Jupiter that does not answer in time is busy: asked again within the budget, then refused in
+  words, never as a bare "operation aborted".
+
 ## 1.9.1 (2026-10-02)
 
 - Routes from the agent's own key are held to more (found in an external audit). On Orientim's side:
