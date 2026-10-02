@@ -313,7 +313,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.9.4';
+export const SKILL_VERSION = '1.9.5';
 
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res: Response) => {
@@ -364,11 +364,13 @@ async function preparedByOrientim(
   const prepare = async (payload: unknown): Promise<Prepared> => {
     const left = timeLeftOf(budget);
     if (left <= 0) throw outOfPreparationTime();
+    // The call ends at the preparation's own end when that comes first.
+    const cutByBudget = left < timeoutMs;
     try {
       return await call<Prepared>(fetchImpl, url, apiKey, payload, Math.max(1, Math.floor(Math.min(timeoutMs, left))));
     } catch (e) {
       // Cut short by the time the preparation had left, not by Orientim: said as that.
-      if ((e as Error)?.name === 'TimeoutError' && timeLeftOf(budget) <= 0) throw outOfPreparationTime();
+      if ((e as Error)?.name === 'TimeoutError' && cutByBudget) throw outOfPreparationTime();
       throw e;
     }
   };
