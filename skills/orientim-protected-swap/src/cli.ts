@@ -64,9 +64,9 @@ import {
   acquireLock, apiKeyChallenge, OrientimApiError, checkPrepared, createFileStore, finalizeSigned, isApiKeyMessage, pendingFor, PendingSwapError,
   prepareChecked, PriceImpactError, FloorError, ownFloor, receivedFor, recoverPending, redeemApiKey, resolvePending, resumeSigned, takeOrder,
   checkPolicy, loadPolicy, PolicyError, LockBusyError, OrientimOrderError, holdSolFee, releaseHeldLocks, stateDirFor, DEFAULT_STATE_DIR, IntentError,
-  exitCodeOf, outcomeMeaning, settleOrder, ApprovalError, forgetApproval, heldToApproval, keptApproval,
+  exitCodeOf, outcomeMeaning, settleOrder, ApprovalError, forgetApproval, heldToApproval, keptApproval, rpcSender,
 } from '../examples/swap.ts';
-import type { Checked, FoundOrder, Intent, OrderBook, OrderRecord, OwnerPolicy, PendingStore, Prepared, SpendLog } from '../examples/swap.ts';
+import type { Checked, FoundOrder, Intent, OrderBook, OrderRecord, OwnerPolicy, PendingStore, Prepared, SendTransaction, SpendLog } from '../examples/swap.ts';
 import { isRpcFailure, ORIENTIM_TREASURY, preparationBudget } from '../lib/orientim-verify.mjs';
 
 export type CliDeps = {
@@ -77,6 +77,8 @@ export type CliDeps = {
   jupiterApiKey?: string;
   /** Routes from Jupiter with `jupiterApiKey` (default with a key; ORIENTIM_OWN_ROUTES=0 turns it off). */
   ownRoutes?: boolean;
+  /** How the bot's own swaps are sent (ORIENTIM_SEND_RPC_URL): Orientim then signs and sends nothing. */
+  sendTransaction?: SendTransaction;
   stateDir: string;
   treasury?: string;
   pollMs?: number;
@@ -541,7 +543,7 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
         signedAs = kept.signature;
         const result = await resumeSigned({
           ...api, rpc: deps.rpc, signed: kept, fetchImpl: deps.fetchImpl, pollMs: deps.pollMs, maxWaitMs: deps.maxWaitMs, requestTimeoutMs: deps.requestTimeoutMs,
-          archive: deps.archive,
+          archive: deps.archive, ...(deps.sendTransaction ? { sendTransaction: deps.sendTransaction } : {}),
         });
         return settle(result, kept.intentId ?? intent.id, true);
       }
@@ -591,6 +593,7 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
       const result = await finalizeSigned({
         ...api, rpc: deps.rpc, prepared, signedTransaction: wire, fetchImpl: deps.fetchImpl,
         pollMs: deps.pollMs, maxWaitMs: deps.maxWaitMs, requestTimeoutMs: deps.requestTimeoutMs, archive: deps.archive,
+        ...(deps.sendTransaction ? { sendTransaction: deps.sendTransaction } : {}),
         // Kept on disk before finalize: if this process stops, `recover` settles it first. The swap is
         // kept before the order is taken, as the example does, so a run that stops between the two
         // leaves a kept swap `recover` settles, never an order pending with nothing kept. The order is
@@ -715,6 +718,8 @@ export async function main(): Promise<void> {
     // The key commands read nothing from a chain.
     rpc: createSolanaRpc(rpcUrl ?? 'http://127.0.0.1:1'),
     ...(process.env.ORIENTIM_ARCHIVE_RPC_URL ? { archive: createSolanaRpc(process.env.ORIENTIM_ARCHIVE_RPC_URL) } : {}),
+    // The bot's own way of sending (a staked RPC, a sender service): Orientim signs and sends nothing.
+    ...(process.env.ORIENTIM_SEND_RPC_URL ? { sendTransaction: rpcSender(process.env.ORIENTIM_SEND_RPC_URL) } : {}),
     apiUrl: process.env.ORIENTIM_API_URL,
     apiKey: process.env.ORIENTIM_API_KEY,
     jupiterApiKey: process.env.JUPITER_API_KEY || undefined,

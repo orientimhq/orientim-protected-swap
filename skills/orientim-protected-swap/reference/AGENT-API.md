@@ -225,7 +225,9 @@ It takes rounds, a second or so each:
 1. `POST /api/v1/prepare` with your usual body and `"ownRoutes": true`. The answer is `409
    routes-needed` with `session` (sealed, for this swap and key only, ending two minutes after this
    first round however many rounds follow), `taker` (the one-time key the swap is built around, the
-   same in every round) and `requests`: the Jupiter builds it needs.
+   same in every round) and `requests`: the Jupiter builds it needs. This first round builds
+   nothing, so it may go without `minOut` while you ask Jupiter for your own price; every later
+   round carries it, and nothing is built without it.
 2. Fetch each request from `https://api.jup.ag/swap/v2/build` with your key, with exactly its fields
    as query parameters and `wrapAndUnwrapSol=false` (`excludeDexes` joined with commas). Fetch only
    requests for your swap's mints, its `taker` and an amount no larger than yours.
@@ -328,6 +330,14 @@ that the transaction has not expired, and that your output account holds what it
 (another swap or a transfer in between would count toward the minimum); then it signs as the
 one-time key and sends it once. Run one swap per output token at a time.
 
+`"send": false` in the body asks for the fully signed transaction without Orientim sending it:
+the answer is `status` `signed` with `signedTransaction`, and you send those bytes your own way (a
+staked RPC, a sender service, a bundle with a tip in a transaction of its own beside it; the bytes
+cannot change, so a service that needs a tip inside the transaction cannot be used). Send it at
+once and again every few seconds until it confirms or its lifetime passes: the same bytes land
+only once. The skill does this with `sendTransaction` in code, `orientim-verify` with
+`ORIENTIM_SEND_RPC_URL`.
+
 ```json
 {
   "signature": "5h...",
@@ -341,6 +351,7 @@ one-time key and sends it once. Run one swap per output token at a time.
 | --- | --- |
 | `sent` | The RPC accepted it, or it is already on chain. Confirm it on chain; re-broadcast `signedTransaction` until it confirms or `lastValidBlockHeight` passes. It can land only once. |
 | `unknown` | The connection failed after the request left. It may have been forwarded: check the signature before doing anything else. |
+| `signed` | Asked with `"send": false`: signed as the one-time key, and not sent by Orientim. Send `signedTransaction` yourself, as above; until it confirms, this is no answer about the swap. |
 | `rejected` | This request never broadcast it (`refusal`: `network` is the RPC's preflight, usually a price that moved; `transactionError` is then the simulation's error as JSON, e.g. `{"InstructionError":[3,{"Custom":6001}]}`, when there is one). No `signedTransaction` is returned. |
 
 Neither `sent` nor `unknown` is a final answer: `sent` says the transaction was accepted for

@@ -382,7 +382,10 @@ check on your RPC, the record kept before finalize, finalize, and the outcome re
 It needs Node 22.18 or later and `npm ci` in this folder, and reads `SOLANA_RPC_URL`,
 `ORIENTIM_API_URL`, `ORIENTIM_API_KEY`, `JUPITER_API_KEY`, `ORIENTIM_POLICY` (see Setup), `ORIENTIM_STATE_DIR` (default
 `./.orientim-state`) and, optionally, `ORIENTIM_ARCHIVE_RPC_URL` (an RPC with the full history, a second
-proof of expiry; see The flow) from the environment.
+proof of expiry; see The flow) and `ORIENTIM_SEND_RPC_URL` (an RPC of yours that sends the swap, a
+staked connection or a sender service: Orientim then signs it and sends nothing) from the
+environment. In code, `sendTransaction` (any function that sends the signed bytes; `rpcSender(url)`
+makes one) does the same.
 
 - **`ORIENTIM_STATE_DIR` must outlive the bot**: an absolute path on a disk that stays across restarts
   (a volume, not a container's own file system), shared by every process of the same wallet. It holds

@@ -3,6 +3,22 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.10.0 (2026-10-03)
+
+Faster swaps, the same checks:
+
+- Send it your own way. With `sendTransaction` in code (`rpcSender(url)` makes one) or
+  `ORIENTIM_SEND_RPC_URL` for `orientim-verify`, finalize asks Orientim to sign without sending
+  (`send: false`, answered `signed`), and the skill sends the fully signed swap at once through
+  yours (a staked connection, a sender service, a bundle with a tip of its own), then again every
+  few seconds until it lands or expires. The chain says the outcome; an error from your sender is
+  never taken as "not sent".
+- With your own routes, the first round of prepare goes out while the agent asks Jupiter for its own
+  price: that round builds nothing and needs no minimum, and every later round carries it. An older
+  deployment that wants it in the first round is asked again with it. Not with `"auto"` tolerance,
+  whose number names the routes.
+- The check on your RPC and the tokens' risk are read at the same time.
+
 ## 1.9.5 (2026-10-03)
 
 - A prepare cut short by the time the preparation had left is always `BudgetSpentError`, never a
