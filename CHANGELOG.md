@@ -3,6 +3,13 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.10.5 (2026-10-03)
+
+- Jupiter's own service failing to find a token's program (a 400 wrapping its internal 500, "Missing
+  token program") is its index lagging behind a new token: the skill asks again, as for its other
+  transient failures, instead of refusing the token at once. Seen on mainnet: the same Pump.fun
+  token refused, then quoted a few seconds later. A plain "Missing token program" is still a refusal.
+
 ## 1.10.4 (2026-10-03)
 
 - A sender of your own (`sendTransaction` in code) is held to the same time as every read while
