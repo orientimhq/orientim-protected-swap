@@ -3,7 +3,8 @@
  * mint may state, any quote a route may carry and any balance the output account already holds.
  * - the fee and the minimum are exact whatever the amount: never above 0.3%, never negative, never lost;
  * - an honest swap at any size passes, and the verifier answers every case without throwing;
- * - a route whose own floor is below the minimum is refused at any size, by one unit or by all of it.
+ * - a route whose own floor is below the minimum is refused at any size, by one unit or by all of it;
+ * - a token account of the wallet that is frozen is refused, whichever side it is on.
  *
  * `npm run test:fuzz` runs 200,000 cases per property; ORIENTIM_FUZZ_RUNS and ORIENTIM_FUZZ_SEED set a shard.
  */
@@ -116,6 +117,25 @@ describe('the verifier at any size', () => {
       const v = await verify(tx, sc.policy, sc.snapshot);
       expect(v.violations).toEqual([]);
     }), PARAMS);
+  }, TIMEOUT);
+
+  it("refuses a swap from or to a frozen token account of the wallet, at any size", async () => {
+    await fc.assert(fc.asyncProperty(shape, fc.boolean(), async (s, outputSide) => {
+      const { sc, tx } = await make(s, least => (least > U64 ? U64 : least));
+      const side = outputSide ? sc.policy.accounts.wOut : sc.policy.accounts.wIn;
+      const state = side ? sc.snapshot.accounts.get(side) : null;
+      fc.pre(!!side && !!state && state.data.length >= 165);
+      const data = new Uint8Array(state!.data);
+      data[108] = 2; // AccountState::Frozen
+      const accounts = new Map(sc.snapshot.accounts);
+      accounts.set(side!, { ...state!, data });
+      const v = await verify(tx, sc.policy, { ...sc.snapshot, accounts });
+      expect(v.ok).toBe(false);
+      expect(v.violations).toContainEqual(expect.objectContaining({
+        rule: 'R1', detail: `the wallet's ${outputSide ? 'output' : 'input'} token account is frozen`,
+      }));
+      // One state byte decides it, so a tenth of the cases suffices and the shard keeps its time.
+    }), { ...PARAMS, numRuns: Math.max(200, Math.floor(RUNS / 10)) });
   }, TIMEOUT);
 
   it("refuses a route whose own floor is below the minimum at any size, by one unit or by all of it", async () => {
