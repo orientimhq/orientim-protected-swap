@@ -1848,7 +1848,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.10.0";
+const SKILL_VERSION = "1.10.1";
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res) => {
 	const after = Number(res.headers.get("retry-after"));
@@ -3151,6 +3151,8 @@ async function prepareChecked(args) {
 		...args.intent.version !== void 0 ? { version: args.intent.version } : {}
 	};
 	const parallel = !!args.jupiterApiKey && args.ownRoutes !== false && args.intent.slippageBps !== "auto";
+	const ownFields = parallel ? floor.then((o) => fieldsOf(resolved(o))) : void 0;
+	ownFields?.catch(() => void 0);
 	let prepared;
 	try {
 		prepared = await preparedByOrientim(fetchImpl, args.apiUrl, args.apiKey, {
@@ -3161,7 +3163,7 @@ async function prepareChecked(args) {
 			jupiterApiKey: args.jupiterApiKey,
 			ownRoutes: args.ownRoutes,
 			budget,
-			...parallel ? { floor: floor.then((o) => fieldsOf(resolved(o))) } : {}
+			...ownFields ? { floor: ownFields } : {}
 		});
 	} catch (e) {
 		await floor;

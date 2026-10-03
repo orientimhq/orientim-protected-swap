@@ -334,7 +334,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.10.0';
+export const SKILL_VERSION = '1.10.1';
 
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res: Response) => {
@@ -1868,6 +1868,11 @@ export async function prepareChecked(args: {
   // minimum: it goes out while the agent asks Jupiter for its own price. Not with "auto", whose
   // tolerance, still unknown, names the routes.
   const parallel = !!args.jupiterApiKey && args.ownRoutes !== false && args.intent.slippageBps !== 'auto';
+  // What the later rounds carry, settled early too: a refusal of the agent's own (its limits, its
+  // price impact, Jupiter's) may come while the first round is still out, and must not be left
+  // unhandled, which would end the agent's process.
+  const ownFields = parallel ? floor.then(o => fieldsOf(resolved(o))) : undefined;
+  ownFields?.catch(() => undefined);
   let prepared: Prepared;
   try {
     prepared = await preparedByOrientim(fetchImpl, args.apiUrl, args.apiKey, {
@@ -1876,7 +1881,7 @@ export async function prepareChecked(args: {
       ...(parallel ? {} : fieldsOf(resolved(await floor))),
     }, args.requestTimeoutMs ?? PREPARE_WAIT_MS, {
       jupiterApiKey: args.jupiterApiKey, ownRoutes: args.ownRoutes, budget,
-      ...(parallel ? { floor: floor.then(o => fieldsOf(resolved(o))) } : {}),
+      ...(ownFields ? { floor: ownFields } : {}),
     });
   } catch (e) {
     // The agent's own refusal (its floor, its price impact, its owner's limits) says more than
