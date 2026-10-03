@@ -3,6 +3,12 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.10.2 (2026-10-03)
+
+- The API reference: Orientim does not use routes of yours that build a transaction its own
+  verifier refuses (one delivering elsewhere, say); it builds the swap with its own key, as for
+  routes more than 1% below its price. The skill itself is unchanged.
+
 ## 1.10.1 (2026-10-03)
 
 - A refusal of the agent's own (its owner's limits, the price impact, Jupiter finding no route)

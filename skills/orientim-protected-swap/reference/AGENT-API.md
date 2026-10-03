@@ -216,8 +216,9 @@ Orientim's price is asked once with its key and kept in the session for the roun
 while it is fresh (15 seconds) and asked for the same tolerance and fee; otherwise it is asked again.
 
 What Orientim cannot check this way, it does not take on trust: a route more than 1% below its
-price, or an excluded DEX it cannot tell by its programs (Jupiter's labels unavailable), and
-Orientim builds that swap with its own key instead, around the same one-time key, within the same
+price, an excluded DEX it cannot tell by its programs (Jupiter's labels unavailable), or routes that
+build a transaction its own verifier refuses (one delivering elsewhere, say), and Orientim builds
+that swap with its own key instead, around the same one-time key, within the same
 45 seconds. The answer is the prepared swap as ever; your routes were simply not used.
 
 It takes rounds, a second or so each:
