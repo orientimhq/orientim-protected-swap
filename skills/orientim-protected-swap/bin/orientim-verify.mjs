@@ -1848,7 +1848,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.10.2";
+const SKILL_VERSION = "1.10.3";
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res) => {
 	const after = Number(res.headers.get("retry-after"));
