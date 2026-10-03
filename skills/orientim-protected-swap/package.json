@@ -1,6 +1,6 @@
 {
   "name": "orientim-protected-swap",
-  "version": "1.10.4",
+  "version": "1.10.5",
   "license": "Apache-2.0",
   "private": true,
   "description": "Protected swaps on Solana through Orientim's agent API: the route can only touch the approved amount, verified on your own RPC before your wallet signs.",

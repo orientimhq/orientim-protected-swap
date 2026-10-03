@@ -1211,7 +1211,8 @@ async function askJupiter(url, asked, apiKey, fetchImpl, budget) {
 		}
 		if (res.ok) return res.json();
 		const body = await res.text().catch(() => "");
-		const busy = res.status === 429 || res.status >= 500 || res.status === 400 && JUPITER_TRANSIENT_400.test(body) && !JUPITER_REFUSALS.some(([said]) => said.test(body));
+		const lagging = /"500: /.test(body) && /missing token program/i.test(body);
+		const busy = res.status === 429 || res.status >= 500 || res.status === 400 && JUPITER_TRANSIENT_400.test(body) && (lagging || !JUPITER_REFUSALS.some(([said]) => said.test(body)));
 		const reset = res.status === 429 ? rateLimitResetMs(res.headers) : null;
 		if (reset !== null) limitedUntil.set(id, Math.max(limitedUntil.get(id) ?? 0, Date.now() + reset));
 		if (busy && attempt < 3) {

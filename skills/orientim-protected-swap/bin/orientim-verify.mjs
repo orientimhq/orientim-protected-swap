@@ -1154,7 +1154,8 @@ async function askJupiter(url, asked, apiKey, fetchImpl, budget) {
 		}
 		if (res.ok) return res.json();
 		const body = await res.text().catch(() => "");
-		const busy = res.status === 429 || res.status >= 500 || res.status === 400 && JUPITER_TRANSIENT_400.test(body) && !JUPITER_REFUSALS.some(([said]) => said.test(body));
+		const lagging = /"500: /.test(body) && /missing token program/i.test(body);
+		const busy = res.status === 429 || res.status >= 500 || res.status === 400 && JUPITER_TRANSIENT_400.test(body) && (lagging || !JUPITER_REFUSALS.some(([said]) => said.test(body)));
 		const reset = res.status === 429 ? rateLimitResetMs(res.headers) : null;
 		if (reset !== null) limitedUntil.set(id, Math.max(limitedUntil.get(id) ?? 0, Date.now() + reset));
 		if (busy && attempt < 3) {
@@ -1848,7 +1849,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.10.4";
+const SKILL_VERSION = "1.10.5";
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res) => {
 	const after = Number(res.headers.get("retry-after"));
