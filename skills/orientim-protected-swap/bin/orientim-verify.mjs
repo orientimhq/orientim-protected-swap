@@ -1848,7 +1848,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.10.3";
+const SKILL_VERSION = "1.10.4";
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res) => {
 	const after = Number(res.headers.get("retry-after"));
@@ -2050,6 +2050,15 @@ const BASE58 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const hex = (b) => Array.from(new Uint8Array(b), (x) => x.toString(16).padStart(2, "0")).join("");
 const sameBytes = (a, b) => a.length === b.length && Array.from(a).every((x, i) => x === b[i]);
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+/** `work`, or a refusal once `signal` aborts: for a call that takes no signal of its own. */
+function withinTime(work, signal) {
+	if (signal.aborted) return Promise.reject(signal.reason);
+	return new Promise((resolve, reject) => {
+		const stop = () => reject(signal.reason);
+		signal.addEventListener("abort", stop, { once: true });
+		work.then(resolve, reject).finally(() => signal.removeEventListener("abort", stop));
+	});
+}
 /**
 * What to check before signing. First that Orientim's answer agrees with itself and with what you
 * asked for; then the full verifier on the exact bytes, with chain state from `rpc`, which must be
@@ -2304,7 +2313,7 @@ async function confirm(rpc, signature, lastValidBlockHeight, opts = {}) {
 	let lastSend = 0;
 	const resend = async () => {
 		lastSend = Date.now();
-		if (opts.send) await opts.send(opts.signedTransaction).catch(() => void 0);
+		if (opts.send) await withinTime(Promise.resolve().then(() => opts.send(opts.signedTransaction)), bounded().abortSignal).catch(() => void 0);
 		else await rpc.sendTransaction(opts.signedTransaction, {
 			encoding: "base64",
 			skipPreflight: true,
@@ -3112,95 +3121,110 @@ async function prepareChecked(args) {
 		if (left <= 0) throw outOfPreparationTime();
 		return Math.max(1, Math.floor(Math.min(ms ?? 1e4, left)));
 	};
-	let phaseStarted = performance.now();
-	const measured = (phase) => {
-		const now = performance.now();
-		try {
-			args.onTiming?.(phase, Math.round(now - phaseStarted));
-		} catch {}
-		phaseStarted = now;
+	const started = performance.now();
+	const durations = /* @__PURE__ */ new Map();
+	const timeOf = (phase, work, from = performance.now()) => {
+		work.then(() => {
+			durations.set(phase, performance.now() - from);
+		}, () => void 0);
+		return work;
 	};
-	const floor = ownFloor({
-		...args.intent,
-		owner
-	}, {
-		rpc: args.rpc,
-		fetchImpl,
-		jupiterApiKey: args.jupiterApiKey,
-		requestTimeoutMs: within(args.requestTimeoutMs),
-		policy: args.policy,
-		budget
-	});
-	floor.catch(() => void 0);
-	const resolved = (o) => withTolerance({
-		...args.intent,
-		owner,
-		minOut: o.minOut
-	}, o.slippageBps);
-	const fieldsOf = (i) => ({
-		...i.minOut ? { minOut: i.minOut } : {},
-		...i.slippageBps !== void 0 ? { slippageBps: i.slippageBps } : {}
-	});
-	const body = {
-		owner,
-		inputMint: args.intent.inputMint,
-		outputMint: args.intent.outputMint,
-		amountIn: args.intent.amountIn,
-		...args.intent.acceptCostBps ? { acceptCostBps: args.intent.acceptCostBps } : {},
-		...args.intent.routingMode === "fast" ? { routingMode: "fast" } : {},
-		...args.intent.version !== void 0 ? { version: args.intent.version } : {}
+	const report = () => {
+		for (const phase of [
+			"ownFloor",
+			"apiPrepare",
+			"localVerification",
+			"tokenRisk",
+			"readyToSign"
+		]) {
+			const ms = durations.get(phase);
+			if (ms !== void 0) try {
+				args.onTiming?.(phase, Math.round(ms));
+			} catch {}
+		}
 	};
-	const parallel = !!args.jupiterApiKey && args.ownRoutes !== false && args.intent.slippageBps !== "auto";
-	const ownFields = parallel ? floor.then((o) => fieldsOf(resolved(o))) : void 0;
-	ownFields?.catch(() => void 0);
-	let prepared;
 	try {
-		prepared = await preparedByOrientim(fetchImpl, args.apiUrl, args.apiKey, {
-			...body,
-			...parallel && typeof args.intent.slippageBps === "number" ? { slippageBps: args.intent.slippageBps } : {},
-			...parallel ? {} : fieldsOf(resolved(await floor))
-		}, args.requestTimeoutMs ?? PREPARE_WAIT_MS, {
+		const floor = timeOf("ownFloor", ownFloor({
+			...args.intent,
+			owner
+		}, {
+			rpc: args.rpc,
+			fetchImpl,
 			jupiterApiKey: args.jupiterApiKey,
-			ownRoutes: args.ownRoutes,
-			budget,
-			...ownFields ? { floor: ownFields } : {}
+			requestTimeoutMs: within(args.requestTimeoutMs),
+			policy: args.policy,
+			budget
+		}), started);
+		floor.catch(() => void 0);
+		const resolved = (o) => withTolerance({
+			...args.intent,
+			owner,
+			minOut: o.minOut
+		}, o.slippageBps);
+		const fieldsOf = (i) => ({
+			...i.minOut ? { minOut: i.minOut } : {},
+			...i.slippageBps !== void 0 ? { slippageBps: i.slippageBps } : {}
 		});
-	} catch (e) {
-		await floor;
-		throw e;
+		const body = {
+			owner,
+			inputMint: args.intent.inputMint,
+			outputMint: args.intent.outputMint,
+			amountIn: args.intent.amountIn,
+			...args.intent.acceptCostBps ? { acceptCostBps: args.intent.acceptCostBps } : {},
+			...args.intent.routingMode === "fast" ? { routingMode: "fast" } : {},
+			...args.intent.version !== void 0 ? { version: args.intent.version } : {}
+		};
+		const parallel = !!args.jupiterApiKey && args.ownRoutes !== false && args.intent.slippageBps !== "auto";
+		const ownFields = parallel ? floor.then((o) => fieldsOf(resolved(o))) : void 0;
+		ownFields?.catch(() => void 0);
+		let prepared;
+		try {
+			prepared = await timeOf("apiPrepare", preparedByOrientim(fetchImpl, args.apiUrl, args.apiKey, {
+				...body,
+				...parallel && typeof args.intent.slippageBps === "number" ? { slippageBps: args.intent.slippageBps } : {},
+				...parallel ? {} : fieldsOf(resolved(await floor))
+			}, args.requestTimeoutMs ?? PREPARE_WAIT_MS, {
+				jupiterApiKey: args.jupiterApiKey,
+				ownRoutes: args.ownRoutes,
+				budget,
+				...ownFields ? { floor: ownFields } : {}
+			}));
+		} catch (e) {
+			await floor;
+			throw e;
+		}
+		const own = await floor;
+		const intent = resolved(own);
+		const routeImpact = prepared.amounts?.priceImpactPct;
+		if (typeof routeImpact === "number" && Number.isFinite(routeImpact) && Math.round(routeImpact * 1e4) > own.maxPriceImpactBps) throw new PriceImpactError(Math.round(routeImpact * 1e4), own.maxPriceImpactBps);
+		await holdSolFee(intent, prepared, {
+			fetchImpl,
+			jupiterApiKey: args.jupiterApiKey,
+			budget
+		});
+		const riskRead = timeOf("tokenRisk", tokenRisk(args.rpc, [intent.inputMint, intent.outputMint], within(args.requestTimeoutMs ?? 1e4)));
+		riskRead.catch(() => void 0);
+		const problems = await timeOf("localVerification", checkPrepared(prepared, intent, args.rpc, {
+			requestTimeoutMs: within(args.requestTimeoutMs),
+			slippageCeilingBps: args.policy?.maxSlippageBps
+		}));
+		if (problems.length) {
+			const refused = /* @__PURE__ */ new Error(`Not signing: ${problems.join("; ")}`);
+			if (problems.every(isRpcFailure)) refused.name = "RpcUnavailableError";
+			throw refused;
+		}
+		const risk = await riskRead;
+		if (timeLeftOf(budget) <= 0) throw outOfPreparationTime();
+		durations.set("readyToSign", performance.now() - started);
+		return {
+			prepared: preparedData(prepared),
+			intent,
+			notices: noticesOf(risk),
+			tokenRisk: risk
+		};
+	} finally {
+		report();
 	}
-	const own = await floor;
-	const intent = resolved(own);
-	measured("ownFloor");
-	measured("apiPrepare");
-	const routeImpact = prepared.amounts?.priceImpactPct;
-	if (typeof routeImpact === "number" && Number.isFinite(routeImpact) && Math.round(routeImpact * 1e4) > own.maxPriceImpactBps) throw new PriceImpactError(Math.round(routeImpact * 1e4), own.maxPriceImpactBps);
-	await holdSolFee(intent, prepared, {
-		fetchImpl,
-		jupiterApiKey: args.jupiterApiKey,
-		budget
-	});
-	const riskRead = tokenRisk(args.rpc, [intent.inputMint, intent.outputMint], within(args.requestTimeoutMs ?? 1e4));
-	riskRead.catch(() => void 0);
-	const problems = await checkPrepared(prepared, intent, args.rpc, {
-		requestTimeoutMs: within(args.requestTimeoutMs),
-		slippageCeilingBps: args.policy?.maxSlippageBps
-	});
-	if (problems.length) {
-		const refused = /* @__PURE__ */ new Error(`Not signing: ${problems.join("; ")}`);
-		if (problems.every(isRpcFailure)) refused.name = "RpcUnavailableError";
-		throw refused;
-	}
-	measured("localVerification");
-	const risk = await riskRead;
-	measured("tokenRisk");
-	if (timeLeftOf(budget) <= 0) throw outOfPreparationTime();
-	return {
-		prepared: preparedData(prepared),
-		intent,
-		notices: noticesOf(risk),
-		tokenRisk: risk
-	};
 }
 /**
 * A checked answer as it travels on: only the fields the skill reads, and only their data, never
