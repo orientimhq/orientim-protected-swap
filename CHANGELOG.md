@@ -3,6 +3,13 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.10.1 (2026-10-03)
+
+- A refusal of the agent's own (its owner's limits, the price impact, Jupiter finding no route)
+  that came while the first round of prepare was still out was left as an unhandled rejection,
+  which ends a Node process by default. It is now handled; the swap is refused as before, with the
+  agent's own reason. Found by the mainnet simulation matrix.
+
 ## 1.10.0 (2026-10-03)
 
 Faster swaps, the same checks:
