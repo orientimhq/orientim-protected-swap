@@ -3,6 +3,19 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.10.4 (2026-10-03)
+
+- A sender of your own (`sendTransaction` in code) is held to the same time as every read while
+  the outcome is awaited. One that never answered could hold the wait, and the wallet's lock, past
+  its deadline; now the status is still read, and a wait that ends without an outcome says
+  `unknown`, kept for recovery. `rpcSender` and `ORIENTIM_SEND_RPC_URL` already had a time limit.
+- `onTiming` times each step from its own start to its own end: the agent's quote and the first
+  prepare round run at the same time, and so do the check and the tokens' risk, so their times
+  overlap. The steps are reported in order once the preparation ends, with `readyToSign`, the
+  whole wait until a checked transaction is ready to sign. `apiPrepare` no longer reads 0 ms.
+- On Orientim's side, not the skill's: a fee in SOL from the wallet is now priced once per swap
+  while fresh, like the reference price for a fee on the output, instead of in every round.
+
 ## 1.10.3 (2026-10-03)
 
 - The API reference: with `"send": false`, Orientim's RPC sends nothing at finalize. The skill

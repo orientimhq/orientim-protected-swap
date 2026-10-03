@@ -334,7 +334,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.10.3';
+export const SKILL_VERSION = '1.10.4';
 
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res: Response) => {
@@ -545,6 +545,22 @@ const BASE58 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const hex = (b: ArrayBuffer) => Array.from(new Uint8Array(b), x => x.toString(16).padStart(2, '0')).join('');
 const sameBytes = (a: ArrayLike<number>, b: ArrayLike<number>) => a.length === b.length && Array.from(a).every((x, i) => x === b[i]);
 const wait = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+/**
+ * The steps `onTiming` reports for a preparation, each from its own start to its own end (some run
+ * at the same time), and `readyToSign`, the whole wait until a checked transaction is ready to sign.
+ */
+export type TimedPhase = 'ownFloor' | 'apiPrepare' | 'localVerification' | 'tokenRisk' | 'readyToSign';
+
+/** `work`, or a refusal once `signal` aborts: for a call that takes no signal of its own. */
+function withinTime<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const stop = () => reject(signal.reason);
+    signal.addEventListener('abort', stop, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener('abort', stop));
+  });
+}
 
 /**
  * What to check before signing. First that Orientim's answer agrees with itself and with what you
@@ -842,7 +858,9 @@ export async function confirm(
   let lastSend = 0;
   const resend = async () => {
     lastSend = Date.now();
-    if (opts.send) await opts.send(opts.signedTransaction!).catch(() => undefined);
+    // Your sender is held to the same time as every read: one that never answers cannot hold the
+    // wait past its deadline. The same bytes are sent again later; the chain says the outcome.
+    if (opts.send) await withinTime(Promise.resolve().then(() => opts.send!(opts.signedTransaction!)), bounded().abortSignal).catch(() => undefined);
     else await rpc.sendTransaction(opts.signedTransaction as never, { encoding: 'base64', skipPreflight: true, maxRetries: 0n }).send(bounded()).catch(() => undefined);
   };
   while (Date.now() < deadline) {
@@ -1822,7 +1840,7 @@ export async function prepareChecked(args: {
   apiUrl: string; apiKey: string; rpc: Rpc<SolanaRpcApi>; owner: string; intent: Omit<Intent, 'owner'>;
   fetchImpl?: Fetch; jupiterApiKey?: string; requestTimeoutMs?: number;
   /** Optional diagnostics. Exceptions from this observer never change the signing decision. */
-  onTiming?: (phase: 'ownFloor' | 'apiPrepare' | 'localVerification' | 'tokenRisk' | 'sign' | 'finalize', ms: number) => void;
+  onTiming?: (phase: TimedPhase | 'sign' | 'finalize', ms: number) => void;
   /** The owner's limits here: the ceilings on tolerance, floor and price impact, and whether a swap may go on without a price impact. */
   policy?: OwnerCeilings;
   /**
@@ -1844,79 +1862,90 @@ export async function prepareChecked(args: {
     if (left <= 0) throw outOfPreparationTime();
     return Math.max(1, Math.floor(Math.min(ms ?? 10_000, left)));
   };
-  let phaseStarted = performance.now();
-  const measured = (phase: Parameters<NonNullable<typeof args.onTiming>>[0]) => {
-    const now = performance.now();
-    try { args.onTiming?.(phase, Math.round(now - phaseStarted)); } catch { /* diagnostics cannot veto a swap */ }
-    phaseStarted = now;
+  // Each step is timed from its own start to its own end: the agent's quote and the first round
+  // run at the same time, and so do the check and the tokens' risk, so their times overlap and do
+  // not add up. readyToSign is the whole wait, from the start to a transaction ready to sign. They
+  // are reported in this order once the preparation ends, refused or not, with the steps that ran.
+  const started = performance.now();
+  const durations = new Map<TimedPhase, number>();
+  const timeOf = <T>(phase: TimedPhase, work: Promise<T>, from = performance.now()): Promise<T> => {
+    work.then(() => { durations.set(phase, performance.now() - from); }, () => undefined);
+    return work;
   };
-  const floor = ownFloor({ ...args.intent, owner }, {
-    rpc: args.rpc, fetchImpl, jupiterApiKey: args.jupiterApiKey, requestTimeoutMs: within(args.requestTimeoutMs), policy: args.policy, budget,
-  });
-  // Settled early, so that a refusal the code below has not awaited yet is not left unhandled.
-  floor.catch(() => undefined);
-  // The tolerance as resolved: "auto" becomes Jupiter's estimate, and the check holds the route to it.
-  const resolved = (o: Awaited<typeof floor>): Intent => withTolerance({ ...args.intent, owner, minOut: o.minOut }, o.slippageBps);
-  const fieldsOf = (i: Intent) => ({ ...(i.minOut ? { minOut: i.minOut } : {}), ...(i.slippageBps !== undefined ? { slippageBps: i.slippageBps } : {}) });
-  const body = {
-    owner, inputMint: args.intent.inputMint, outputMint: args.intent.outputMint, amountIn: args.intent.amountIn,
-    ...(args.intent.acceptCostBps ? { acceptCostBps: args.intent.acceptCostBps } : {}),
-    ...(args.intent.routingMode === 'fast' ? { routingMode: 'fast' } : {}),
-    ...(args.intent.version !== undefined ? { version: args.intent.version } : {}),
+  const report = () => {
+    for (const phase of ['ownFloor', 'apiPrepare', 'localVerification', 'tokenRisk', 'readyToSign'] as const) {
+      const ms = durations.get(phase);
+      if (ms !== undefined) try { args.onTiming?.(phase, Math.round(ms)); } catch { /* diagnostics cannot veto a swap */ }
+    }
   };
-  // With the agent's own routes, the first round only learns which routes to bring and needs no
-  // minimum: it goes out while the agent asks Jupiter for its own price. Not with "auto", whose
-  // tolerance, still unknown, names the routes.
-  const parallel = !!args.jupiterApiKey && args.ownRoutes !== false && args.intent.slippageBps !== 'auto';
-  // What the later rounds carry, settled early too: a refusal of the agent's own (its limits, its
-  // price impact, Jupiter's) may come while the first round is still out, and must not be left
-  // unhandled, which would end the agent's process.
-  const ownFields = parallel ? floor.then(o => fieldsOf(resolved(o))) : undefined;
-  ownFields?.catch(() => undefined);
-  let prepared: Prepared;
   try {
-    prepared = await preparedByOrientim(fetchImpl, args.apiUrl, args.apiKey, {
-      ...body,
-      ...(parallel && typeof args.intent.slippageBps === 'number' ? { slippageBps: args.intent.slippageBps } : {}),
-      ...(parallel ? {} : fieldsOf(resolved(await floor))),
-    }, args.requestTimeoutMs ?? PREPARE_WAIT_MS, {
-      jupiterApiKey: args.jupiterApiKey, ownRoutes: args.ownRoutes, budget,
-      ...(ownFields ? { floor: ownFields } : {}),
-    });
-  } catch (e) {
-    // The agent's own refusal (its floor, its price impact, its owner's limits) says more than
-    // whatever Orientim answered meanwhile.
-    await floor;
-    throw e;
+    const floor = timeOf('ownFloor', ownFloor({ ...args.intent, owner }, {
+      rpc: args.rpc, fetchImpl, jupiterApiKey: args.jupiterApiKey, requestTimeoutMs: within(args.requestTimeoutMs), policy: args.policy, budget,
+    }), started);
+    // Settled early, so that a refusal the code below has not awaited yet is not left unhandled.
+    floor.catch(() => undefined);
+    // The tolerance as resolved: "auto" becomes Jupiter's estimate, and the check holds the route to it.
+    const resolved = (o: Awaited<typeof floor>): Intent => withTolerance({ ...args.intent, owner, minOut: o.minOut }, o.slippageBps);
+    const fieldsOf = (i: Intent) => ({ ...(i.minOut ? { minOut: i.minOut } : {}), ...(i.slippageBps !== undefined ? { slippageBps: i.slippageBps } : {}) });
+    const body = {
+      owner, inputMint: args.intent.inputMint, outputMint: args.intent.outputMint, amountIn: args.intent.amountIn,
+      ...(args.intent.acceptCostBps ? { acceptCostBps: args.intent.acceptCostBps } : {}),
+      ...(args.intent.routingMode === 'fast' ? { routingMode: 'fast' } : {}),
+      ...(args.intent.version !== undefined ? { version: args.intent.version } : {}),
+    };
+    // With the agent's own routes, the first round only learns which routes to bring and needs no
+    // minimum: it goes out while the agent asks Jupiter for its own price. Not with "auto", whose
+    // tolerance, still unknown, names the routes.
+    const parallel = !!args.jupiterApiKey && args.ownRoutes !== false && args.intent.slippageBps !== 'auto';
+    // What the later rounds carry, settled early too: a refusal of the agent's own (its limits, its
+    // price impact, Jupiter's) may come while the first round is still out, and must not be left
+    // unhandled, which would end the agent's process.
+    const ownFields = parallel ? floor.then(o => fieldsOf(resolved(o))) : undefined;
+    ownFields?.catch(() => undefined);
+    let prepared: Prepared;
+    try {
+      prepared = await timeOf('apiPrepare', preparedByOrientim(fetchImpl, args.apiUrl, args.apiKey, {
+        ...body,
+        ...(parallel && typeof args.intent.slippageBps === 'number' ? { slippageBps: args.intent.slippageBps } : {}),
+        ...(parallel ? {} : fieldsOf(resolved(await floor))),
+      }, args.requestTimeoutMs ?? PREPARE_WAIT_MS, {
+        jupiterApiKey: args.jupiterApiKey, ownRoutes: args.ownRoutes, budget,
+        ...(ownFields ? { floor: ownFields } : {}),
+      }));
+    } catch (e) {
+      // The agent's own refusal (its floor, its price impact, its owner's limits) says more than
+      // whatever Orientim answered meanwhile.
+      await floor;
+      throw e;
+    }
+    const own = await floor;
+    const intent = resolved(own);
+    // The route Orientim built moves the market no more than the limit either: a costlier route, once
+    // approved, may move it more than the market's own best one did. Orientim's word can only refuse here.
+    const routeImpact = prepared.amounts?.priceImpactPct;
+    if (typeof routeImpact === 'number' && Number.isFinite(routeImpact) && Math.round(routeImpact * 10_000) > own.maxPriceImpactBps) {
+      throw new PriceImpactError(Math.round(routeImpact * 10_000), own.maxPriceImpactBps);
+    }
+    // A fee in SOL from the wallet: held to a price of your own, asked of Jupiter here.
+    await holdSolFee(intent, prepared, { fetchImpl, jupiterApiKey: args.jupiterApiKey, budget });
+    // The check and the tokens' risk are read from your RPC at the same time: neither needs the other.
+    const riskRead = timeOf('tokenRisk', tokenRisk(args.rpc, [intent.inputMint, intent.outputMint], within(args.requestTimeoutMs ?? 10_000)));
+    riskRead.catch(() => undefined);
+    const problems = await timeOf('localVerification', checkPrepared(prepared, intent, args.rpc, { requestTimeoutMs: within(args.requestTimeoutMs), slippageCeilingBps: args.policy?.maxSlippageBps }));
+    if (problems.length) {
+      const refused = new Error(`Not signing: ${problems.join('; ')}`);
+      // Your RPC did not answer: nothing is wrong with the transaction, and the check may run again.
+      if (problems.every(isRpcFailure)) refused.name = 'RpcUnavailableError';
+      throw refused;
+    }
+    const risk = await riskRead;
+    // Checked to the end within its time, or not signed: a check that ran past it is not taken.
+    if (timeLeftOf(budget) <= 0) throw outOfPreparationTime();
+    durations.set('readyToSign', performance.now() - started);
+    return { prepared: preparedData(prepared), intent, notices: noticesOf(risk), tokenRisk: risk };
+  } finally {
+    report();
   }
-  const own = await floor;
-  const intent = resolved(own);
-  measured('ownFloor');
-  measured('apiPrepare');
-  // The route Orientim built moves the market no more than the limit either: a costlier route, once
-  // approved, may move it more than the market's own best one did. Orientim's word can only refuse here.
-  const routeImpact = prepared.amounts?.priceImpactPct;
-  if (typeof routeImpact === 'number' && Number.isFinite(routeImpact) && Math.round(routeImpact * 10_000) > own.maxPriceImpactBps) {
-    throw new PriceImpactError(Math.round(routeImpact * 10_000), own.maxPriceImpactBps);
-  }
-  // A fee in SOL from the wallet: held to a price of your own, asked of Jupiter here.
-  await holdSolFee(intent, prepared, { fetchImpl, jupiterApiKey: args.jupiterApiKey, budget });
-  // The check and the tokens' risk are read from your RPC at the same time: neither needs the other.
-  const riskRead = tokenRisk(args.rpc, [intent.inputMint, intent.outputMint], within(args.requestTimeoutMs ?? 10_000));
-  riskRead.catch(() => undefined);
-  const problems = await checkPrepared(prepared, intent, args.rpc, { requestTimeoutMs: within(args.requestTimeoutMs), slippageCeilingBps: args.policy?.maxSlippageBps });
-  if (problems.length) {
-    const refused = new Error(`Not signing: ${problems.join('; ')}`);
-    // Your RPC did not answer: nothing is wrong with the transaction, and the check may run again.
-    if (problems.every(isRpcFailure)) refused.name = 'RpcUnavailableError';
-    throw refused;
-  }
-  measured('localVerification');
-  const risk = await riskRead;
-  measured('tokenRisk');
-  // Checked to the end within its time, or not signed: a check that ran past it is not taken.
-  if (timeLeftOf(budget) <= 0) throw outOfPreparationTime();
-  return { prepared: preparedData(prepared), intent, notices: noticesOf(risk), tokenRisk: risk };
 }
 
 /**
@@ -2213,7 +2242,7 @@ export async function protectedSwap(args: {
   /** Routes from Jupiter with `jupiterApiKey` (default with a key); false: Orientim builds with its own key. */
   ownRoutes?: boolean;
   /** Optional per-phase durations; never receives keys, mints or transaction bytes. */
-  onTiming?: (phase: 'ownFloor' | 'apiPrepare' | 'localVerification' | 'tokenRisk' | 'sign' | 'finalize', ms: number) => void;
+  onTiming?: (phase: TimedPhase | 'sign' | 'finalize', ms: number) => void;
   /**
    * Called before finalize with what to keep (see `Signed`). Unattended, persist it durably here
    * (`createFileStore`): if this throws, nothing is finalized.
