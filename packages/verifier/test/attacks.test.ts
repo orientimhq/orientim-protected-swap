@@ -68,7 +68,7 @@ describe('F_max is bounded by the verifier, not by the configuration', () => {
 });
 
 describe('W_out authorities', () => {
-  const OFF = { amount: 64, delegateTag: 72, delegate: 76, delegatedAmount: 121, closeTag: 129, close: 133 };
+  const OFF = { amount: 64, delegateTag: 72, state: 108, delegate: 76, delegatedAmount: 121, closeTag: 129, close: 133 };
 
   it('a delegate on W_out is neutralised by a trusted Revoke before the swap', async () => {
     const s = await scenario({ input: USDC, output: BONK });
@@ -107,6 +107,35 @@ describe('W_out authorities', () => {
     expect(v.violations.map(x => x.detail)).toContain('W_out has a close authority set');
   });
 
+  it('W_out of a Token-2022 output with a close authority is refused as well', async () => {
+    const s = await scenario({ input: USDC, output: BONK, outputProgram: TOKEN_2022_PROGRAM });
+    const wOut = s.policy.accounts.wOut!;
+    const base = accounts(s).get(wOut)!;
+    expect(base.owner).toBe(TOKEN_2022_PROGRAM);
+    const d = new Uint8Array(base.data);
+    new DataView(d.buffer).setUint32(OFF.closeTag, 1, true);
+    d.set(getAddressEncoder().encode(await randomAddress()), OFF.close);
+    accounts(s).set(wOut, { ...base, data: d });
+    const v = await verify(compileHonest(s), s.policy, s.snapshot);
+    expect(v.violations.map(x => x.detail)).toContain('W_out has a close authority set');
+  });
+
+  for (const [side, detail] of [['wOut', "the wallet's output token account is frozen"], ['wIn', "the wallet's input token account is frozen"]] as const) {
+    for (const outputProgram of [TOKEN_PROGRAM, TOKEN_2022_PROGRAM]) {
+      it(`a frozen ${side === 'wOut' ? 'W_out' : 'W_in'} is refused with its reason (${outputProgram === TOKEN_PROGRAM ? 'classic' : 'Token-2022'} output) → R1`, async () => {
+        const s = await scenario({ input: USDC, output: BONK, outputProgram });
+        const account = s.policy.accounts[side]!;
+        const base = accounts(s).get(account)!;
+        expect((await verify(compileHonest(s), s.policy, s.snapshot)).ok).toBe(true);
+        const d = new Uint8Array(base.data);
+        d[OFF.state] = 2; // AccountState::Frozen
+        accounts(s).set(account, { ...base, data: d });
+        const v = await verify(compileHonest(s), s.policy, s.snapshot);
+        expect(v.violations).toContainEqual(expect.objectContaining({ rule: 'R1', detail }));
+      });
+    }
+  }
+
   it('W_out missing from the snapshot fails closed', async () => {
     const s = await scenario({ input: USDC, output: BONK });
     accounts(s).delete(s.policy.accounts.wOut!);
@@ -144,6 +173,30 @@ describe('Orientim enforces the minimum output itself', () => {
     const s = await scenario({ input: USDC, output: BONK, wOutBalance: 7_000_000n });
     const ixs = honest({ ...s, wOutBalance: 0n }); // floor would be satisfied by the old balance alone
     expect(rules(await verify(compileRaw(s.W, [...cuIxs(), ...ixs], 0, s.lookupTables), s.policy, s.snapshot))).toContain('R2');
+  });
+
+  it('the check holds W_out to the balance the RPC states: a lower one asks for less, which is why the RPC must be the owner\'s', async () => {
+    // The truth: W_out holds 7 BONK. An RPC that says 1 lets a transaction built on that word pass,
+    // with a floor 6 BONK lower than promised (SECURITY.md: the check is only as good as its state).
+    const stated = await scenario({ input: USDC, output: BONK, wOutBalance: 1_000_000n });
+    const tx = compileHonest(stated);
+    expect((await verify(tx, stated.policy, stated.snapshot)).ok).toBe(true);
+    // The same transaction read against the true balance asks for less than the minimum → R2.
+    const wOut = stated.policy.accounts.wOut!;
+    const base = accounts(stated).get(wOut)!;
+    const d = new Uint8Array(base.data);
+    new DataView(d.buffer).setBigUint64(64, 7_000_000n, true);
+    accounts(stated).set(wOut, { ...base, data: d });
+    expect(rules(await verify(tx, stated.policy, stated.snapshot))).toContain('R2');
+    // A balance stated too high asks for more than the truth, never less: on chain such a swap could
+    // only fail, and read against the true balance its check is not the one expected → R2.
+    const high = await scenario({ input: USDC, output: BONK, wOutBalance: 9_000_000n });
+    const strict = compileHonest(high);
+    const hb = accounts(high).get(high.policy.accounts.wOut!)!;
+    const hd = new Uint8Array(hb.data);
+    new DataView(hd.buffer).setBigUint64(64, 7_000_000n, true);
+    accounts(high).set(high.policy.accounts.wOut!, { ...hb, data: hd });
+    expect(rules(await verify(strict, high.policy, high.snapshot))).toContain('R2');
   });
 
   it('a check placed after E_out is closed is rejected', async () => {

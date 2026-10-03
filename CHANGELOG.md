@@ -3,6 +3,15 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.10.6 (2026-10-03)
+
+- The verifier refuses a swap from or to a token account of the wallet that its issuer has frozen,
+  with the reason ("the wallet's output token account is frozen", or input), instead of letting it
+  fail in the simulation. Such a swap could never land; nothing was ever at risk.
+- Tests: a frozen account on either side, classic and Token-2022, and as a fuzz property at any
+  size; a Token-2022 output account with a close authority; the check held to the balance the RPC
+  states (a lower one asks for less, which is why the RPC must be the owner's).
+
 ## 1.10.5 (2026-10-03)
 
 - Jupiter's own service failing to find a token's program (a 400 wrapping its internal 500, "Missing

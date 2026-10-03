@@ -365,6 +365,8 @@ const u32At = (d, o) => new DataView(d.buffer, d.byteOffset, d.byteLength).getUi
 const u64At = (d, o) => new DataView(d.buffer, d.byteOffset, d.byteLength).getBigUint64(o, true);
 /** Token balance of a token account in the snapshot; 0 when it does not exist yet. */
 const tokenBalance = (s) => s && s.data.length >= 72 ? u64At(s.data, 64) : 0n;
+/** The account's state byte at offset 108 of an SPL token account: 2 is frozen. */
+const isFrozen = (s) => !!s && s.data.length >= 165 && s.data[108] === 2;
 /** COption<close_authority> tag at offset 129 of an SPL token account. */
 const hasCloseAuthority = (s) => !!s && s.data.length >= 165 && u32At(s.data, 129) === 1;
 /**
@@ -935,6 +937,8 @@ async function verify(transaction, policy, snapshot, opts = {}) {
 		if (!snapshot.accounts.has(wOut)) fail("R1", "W_out missing from the snapshot");
 		else if (hasCloseAuthority(snapshot.accounts.get(wOut))) fail("R1", "W_out has a close authority set");
 	}
+	if (wIn && isFrozen(snapshot.accounts.get(wIn))) fail("R1", "the wallet's input token account is frozen");
+	if (wOut && isFrozen(snapshot.accounts.get(wOut))) fail("R1", "the wallet's output token account is frozen");
 	const fromTables = new Set(loaded.slice(compiled.staticAccounts.length));
 	const own = [
 		["W_in", wIn],

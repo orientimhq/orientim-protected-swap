@@ -61,6 +61,9 @@ const u32At = (d: Uint8Array, o: number) => new DataView(d.buffer, d.byteOffset,
 const u64At = (d: Uint8Array, o: number) => new DataView(d.buffer, d.byteOffset, d.byteLength).getBigUint64(o, true);
 /** Token balance of a token account in the snapshot; 0 when it does not exist yet. */
 const tokenBalance = (s: AccountState | null | undefined) => (s && s.data.length >= 72 ? u64At(s.data, 64) : 0n);
+/** The account's state byte at offset 108 of an SPL token account: 2 is frozen. */
+const isFrozen = (s: AccountState | null | undefined) =>
+  !!s && s.data.length >= TOKEN_ACCOUNT_SIZE && s.data[108] === 2;
 /** COption<close_authority> tag at offset 129 of an SPL token account. */
 const hasCloseAuthority = (s: AccountState | null | undefined) =>
   !!s && s.data.length >= TOKEN_ACCOUNT_SIZE && u32At(s.data, 129) === 1;
@@ -762,6 +765,10 @@ export async function verify(transaction: Transaction, policy: Policy, snapshot:
     if (!snapshot.accounts.has(wOut)) fail('R1', 'W_out missing from the snapshot');
     else if (hasCloseAuthority(snapshot.accounts.get(wOut))) fail('R1', 'W_out has a close authority set');
   }
+  // A frozen token account of the wallet can neither send nor receive: the swap could only fail on
+  // chain. It is refused here, with the reason, instead of failing in the simulation.
+  if (wIn && isFrozen(snapshot.accounts.get(wIn))) fail('R1', "the wallet's input token account is frozen");
+  if (wOut && isFrozen(snapshot.accounts.get(wOut))) fail('R1', "the wallet's output token account is frozen");
 
   // Orientim's own accounts are named in the message itself, never loaded from a lookup table: a table is read from the RPC, and an address that resolves differently on chain than in
   // the snapshot would redirect a trusted transfer. Jupiter's tables hold pools, never these.
