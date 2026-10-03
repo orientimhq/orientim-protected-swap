@@ -265,7 +265,7 @@ Who asks what, for one swap:
 | --- | --- |
 | Your Jupiter key | Your own price (floor and price impact), always: one ask. With `ownRoutes`, the routes: usually two, at most 24. For a fee in SOL, one ask for your own limit on it. |
 | Orientim's Jupiter key | Without `ownRoutes`, the routes. With them: one ask for its own price when the fee is on the output (kept 15 seconds across the rounds), and the price of a fee in SOL. |
-| Orientim's RPC | The chain state it builds from, its own simulations, and sending once at finalize. |
+| Orientim's RPC | The chain state it builds from, its own simulations, and sending once at finalize (nothing with `"send": false`). |
 | Your RPC | Any Solana RPC of yours. The check before signing: a few account reads, one or two simulations and the token-risk read. After finalize: a status read about every second and a re-send of the same bytes every few seconds, until the swap confirms or its lifetime passes, then one read of the transaction for what arrived. |
 
 Routes come only from Jupiter: the verifier accepts Jupiter's program and no other.
