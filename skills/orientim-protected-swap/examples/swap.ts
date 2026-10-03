@@ -158,9 +158,30 @@ export type Prepared = {
 };
 
 /** What finalize answers. Its word is not evidence: the example reads the outcome from the chain. */
+/**
+ * Your own way of sending the fully signed swap: a staked RPC, a sender service, a bundle with a tip
+ * of its own. It gets the transaction as base64 and sends it; it is called at once, then every few
+ * seconds until the swap lands or its lifetime passes (the same bytes land only once). An error it
+ * throws is not taken as "not sent": the chain says what happened. The transaction's bytes cannot be
+ * changed; a service that needs a tip inside the transaction cannot be used, one that takes a tip in
+ * a transaction of its own beside it can.
+ */
+export type SendTransaction = (signedTransaction: string) => Promise<unknown>;
+
+/**
+ * A `SendTransaction` that sends through a Solana RPC of your choice (a staked connection, a sender
+ * service that speaks sendTransaction), without its preflight and without retries of its own: the
+ * swap is sent again every few seconds until it lands or expires, and the chain says the outcome.
+ */
+export function rpcSender(url: string, timeoutMs = 10_000): SendTransaction {
+  const rpc = createSolanaRpc(url);
+  return wire => rpc.sendTransaction(wire as never, { encoding: 'base64', skipPreflight: true, maxRetries: 0n }).send({ abortSignal: AbortSignal.timeout(timeoutMs) });
+}
+
 export type Finalized = {
   signature: string;
-  status: 'sent' | 'unknown' | 'rejected';
+  /** `signed`: finalize asked with `send: false`; Orientim signed and sent nothing, the agent sends it. */
+  status: 'sent' | 'unknown' | 'rejected' | 'signed';
   refusal?: string;
   /** For a `network` refusal: the simulation's error behind it, as JSON. Read with `networkCause`, never shown as it came. */
   transactionError?: string;
@@ -313,7 +334,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.9.5';
+export const SKILL_VERSION = '1.10.0';
 
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res: Response) => {
@@ -355,7 +376,14 @@ const MAX_ROUTES = 24;
  */
 async function preparedByOrientim(
   fetchImpl: Fetch, apiUrl: string, apiKey: string, body: Record<string, unknown>, timeoutMs: number,
-  own: { jupiterApiKey?: string; ownRoutes?: boolean; budget?: JupiterBudget },
+  own: {
+    jupiterApiKey?: string; ownRoutes?: boolean; budget?: JupiterBudget;
+    /**
+     * The agent's own minimum (and the tolerance it resolved), still being asked of Jupiter: the
+     * first round of own routes goes without it, and every later round carries it.
+     */
+    floor?: Promise<Record<string, unknown>>;
+  },
 ): Promise<Prepared> {
   const url = `${apiUrl}/api/v1/prepare`;
   // The preparation's one budget: no call to Orientim runs past it, the one that falls back to
@@ -374,7 +402,13 @@ async function preparedByOrientim(
       throw e;
     }
   };
-  if (!own.jupiterApiKey || own.ownRoutes === false) return prepare(body);
+  // The agent's own minimum, once it is known; until then only a first round goes out.
+  let floor: Record<string, unknown> | null = own.floor ? null : {};
+  const withFloor = async () => {
+    floor ??= await own.floor!;
+    return { ...body, ...floor };
+  };
+  if (!own.jupiterApiKey || own.ownRoutes === false) return prepare(await withFloor());
   const fetched = new Map<string, FetchedRoute>();
   let session: string | undefined;
   let taker: string | undefined;
@@ -382,8 +416,13 @@ async function preparedByOrientim(
   for (let round = 0; round < MAX_ROUTE_ROUNDS; round++) {
     let prepared: Prepared;
     try {
-      prepared = await prepare({ ...body, ownRoutes: true, ...(session ? { session } : {}), routes: [...fetched.values()] });
+      prepared = await prepare({ ...body, ...(floor ?? {}), ownRoutes: true, ...(session ? { session } : {}), routes: [...fetched.values()] });
     } catch (e) {
+      // A deployment that wants the minimum in the first round too: asked again with it.
+      if (floor === null && e instanceof OrientimApiError && e.code === 'bad-request') {
+        await withFloor();
+        continue;
+      }
       if (!(e instanceof OrientimApiError) || e.code !== 'routes-needed') throw e;
       const asked = e.body as { session?: unknown; taker?: unknown; requests?: unknown };
       if (typeof asked.session !== 'string' || asked.session.length > 2_000 || typeof asked.taker !== 'string') {
@@ -400,12 +439,14 @@ async function preparedByOrientim(
       if (fresh.size === 0) throw new Error('Orientim asked again for routes it was already sent. Nothing was signed; try again in a moment.');
       // A swap that needs more routes than one prepare may fetch (a large amount, tried at narrower
       // routes): Orientim builds it with its own key, as without your key.
-      if (fetched.size + fresh.size > MAX_ROUTES) return prepare(body);
-      for (const r of await fetchRoutes([...fresh.values()], swap(taker), { apiKey: own.jupiterApiKey, fetchImpl, budget })) {
-        fetched.set(routeRequestKey(r.params), r);
-      }
+      if (fetched.size + fresh.size > MAX_ROUTES) return prepare(await withFloor());
+      // The routes and the agent's own minimum, asked of Jupiter at the same time.
+      const [routes] = await Promise.all([fetchRoutes([...fresh.values()], swap(taker), { apiKey: own.jupiterApiKey, fetchImpl, budget }), withFloor()]);
+      for (const r of routes) fetched.set(routeRequestKey(r.params), r);
       continue;
     }
+    // Never a swap built before the agent's own minimum was sent (a deployment that would build one).
+    if (floor === null) throw new Error("Orientim built a swap before the agent's own minimum was sent. Nothing was signed.");
     // The swap is built around the one-time key the routes were fetched for, or the routes were not used.
     if (taker !== undefined && prepared.temporaryAuthority !== taker) {
       throw new Error('Orientim built this swap around another one-time key than the one it asked routes for. Nothing was signed.');
@@ -413,7 +454,7 @@ async function preparedByOrientim(
     return prepared;
   }
   // Still asking after every round a prepare may take: Orientim builds it with its own key instead.
-  return prepare(body);
+  return prepare(await withFloor());
 }
 
 /** The preparation ran out of its time (PREPARATION_MS) before the swap could be signed. */
@@ -782,6 +823,8 @@ export async function confirm(
   opts: {
     signedTransaction?: string; pollMs?: number; maxWaitMs?: number; requestTimeoutMs?: number; earliestHeight?: bigint; onFailed?: (err: unknown) => void;
     archive?: Rpc<SolanaRpcApi>; temporaryAuthority?: string;
+    /** How `signedTransaction` is re-broadcast (`SendTransaction`); your RPC's sendTransaction otherwise. */
+    send?: SendTransaction;
   } = {},
 ): Promise<Outcome> {
   const pollMs = opts.pollMs ?? 1_000;
@@ -797,18 +840,23 @@ export async function confirm(
   let archived = 0;
   const canAskArchive = !!opts.archive && !!opts.temporaryAuthority;
   let lastSend = 0;
+  const resend = async () => {
+    lastSend = Date.now();
+    if (opts.send) await opts.send(opts.signedTransaction!).catch(() => undefined);
+    else await rpc.sendTransaction(opts.signedTransaction as never, { encoding: 'base64', skipPreflight: true, maxRetries: 0n }).send(bounded()).catch(() => undefined);
+  };
   while (Date.now() < deadline) {
     // A failed read says nothing about the transaction: keep reading until the deadline.
     let read = false;
     try {
+      // Sent by you alone (Orientim signed and sent nothing): the first send goes at once, before
+      // anything is read. When Orientim sent it, the first read comes first: it has usually landed.
+      if (!pastLifetime && opts.signedTransaction && opts.send && lastSend === 0) await resend();
       if (!pastLifetime) {
         const [status] = (await rpc.getSignatureStatuses([signature as never], { searchTransactionHistory: false }).send(bounded())).value;
         if (settled(status)) return status!.err ? failed(status!.err) : 'confirmed';
         if ((await rpc.getBlockHeight({ commitment: 'confirmed' }).send(bounded())) > lastValidBlockHeight) pastLifetime = true;
-        else if (opts.signedTransaction && Date.now() - lastSend > 3_000) {
-          lastSend = Date.now();
-          await rpc.sendTransaction(opts.signedTransaction as never, { encoding: 'base64', skipPreflight: true, maxRetries: 0n }).send(bounded()).catch(() => undefined);
-        }
+        else if (opts.signedTransaction && Date.now() - lastSend > 3_000) await resend();
         read = !pastLifetime;
       } else {
         // It can no longer be included: one coherent view of the full history.
@@ -1802,22 +1850,43 @@ export async function prepareChecked(args: {
     try { args.onTiming?.(phase, Math.round(now - phaseStarted)); } catch { /* diagnostics cannot veto a swap */ }
     phaseStarted = now;
   };
-  const own = await ownFloor({ ...args.intent, owner }, {
+  const floor = ownFloor({ ...args.intent, owner }, {
     rpc: args.rpc, fetchImpl, jupiterApiKey: args.jupiterApiKey, requestTimeoutMs: within(args.requestTimeoutMs), policy: args.policy, budget,
   });
-  measured('ownFloor');
-  const minOut = own.minOut;
+  // Settled early, so that a refusal the code below has not awaited yet is not left unhandled.
+  floor.catch(() => undefined);
   // The tolerance as resolved: "auto" becomes Jupiter's estimate, and the check holds the route to it.
-  const intent: Intent = withTolerance({ ...args.intent, owner, minOut }, own.slippageBps);
-  const { slippageBps } = intent;
-  const prepared = await preparedByOrientim(fetchImpl, args.apiUrl, args.apiKey, {
-    owner: intent.owner, inputMint: intent.inputMint, outputMint: intent.outputMint, amountIn: intent.amountIn,
-    ...(intent.minOut ? { minOut: intent.minOut } : {}),
-    ...(intent.acceptCostBps ? { acceptCostBps: intent.acceptCostBps } : {}),
-    ...(slippageBps !== undefined ? { slippageBps } : {}),
-    ...(intent.routingMode === 'fast' ? { routingMode: 'fast' } : {}),
-    ...(intent.version !== undefined ? { version: intent.version } : {}),
-  }, args.requestTimeoutMs ?? PREPARE_WAIT_MS, { jupiterApiKey: args.jupiterApiKey, ownRoutes: args.ownRoutes, budget });
+  const resolved = (o: Awaited<typeof floor>): Intent => withTolerance({ ...args.intent, owner, minOut: o.minOut }, o.slippageBps);
+  const fieldsOf = (i: Intent) => ({ ...(i.minOut ? { minOut: i.minOut } : {}), ...(i.slippageBps !== undefined ? { slippageBps: i.slippageBps } : {}) });
+  const body = {
+    owner, inputMint: args.intent.inputMint, outputMint: args.intent.outputMint, amountIn: args.intent.amountIn,
+    ...(args.intent.acceptCostBps ? { acceptCostBps: args.intent.acceptCostBps } : {}),
+    ...(args.intent.routingMode === 'fast' ? { routingMode: 'fast' } : {}),
+    ...(args.intent.version !== undefined ? { version: args.intent.version } : {}),
+  };
+  // With the agent's own routes, the first round only learns which routes to bring and needs no
+  // minimum: it goes out while the agent asks Jupiter for its own price. Not with "auto", whose
+  // tolerance, still unknown, names the routes.
+  const parallel = !!args.jupiterApiKey && args.ownRoutes !== false && args.intent.slippageBps !== 'auto';
+  let prepared: Prepared;
+  try {
+    prepared = await preparedByOrientim(fetchImpl, args.apiUrl, args.apiKey, {
+      ...body,
+      ...(parallel && typeof args.intent.slippageBps === 'number' ? { slippageBps: args.intent.slippageBps } : {}),
+      ...(parallel ? {} : fieldsOf(resolved(await floor))),
+    }, args.requestTimeoutMs ?? PREPARE_WAIT_MS, {
+      jupiterApiKey: args.jupiterApiKey, ownRoutes: args.ownRoutes, budget,
+      ...(parallel ? { floor: floor.then(o => fieldsOf(resolved(o))) } : {}),
+    });
+  } catch (e) {
+    // The agent's own refusal (its floor, its price impact, its owner's limits) says more than
+    // whatever Orientim answered meanwhile.
+    await floor;
+    throw e;
+  }
+  const own = await floor;
+  const intent = resolved(own);
+  measured('ownFloor');
   measured('apiPrepare');
   // The route Orientim built moves the market no more than the limit either: a costlier route, once
   // approved, may move it more than the market's own best one did. Orientim's word can only refuse here.
@@ -1827,6 +1896,9 @@ export async function prepareChecked(args: {
   }
   // A fee in SOL from the wallet: held to a price of your own, asked of Jupiter here.
   await holdSolFee(intent, prepared, { fetchImpl, jupiterApiKey: args.jupiterApiKey, budget });
+  // The check and the tokens' risk are read from your RPC at the same time: neither needs the other.
+  const riskRead = tokenRisk(args.rpc, [intent.inputMint, intent.outputMint], within(args.requestTimeoutMs ?? 10_000));
+  riskRead.catch(() => undefined);
   const problems = await checkPrepared(prepared, intent, args.rpc, { requestTimeoutMs: within(args.requestTimeoutMs), slippageCeilingBps: args.policy?.maxSlippageBps });
   if (problems.length) {
     const refused = new Error(`Not signing: ${problems.join('; ')}`);
@@ -1835,7 +1907,7 @@ export async function prepareChecked(args: {
     throw refused;
   }
   measured('localVerification');
-  const risk = await tokenRisk(args.rpc, [intent.inputMint, intent.outputMint], within(args.requestTimeoutMs ?? 10_000));
+  const risk = await riskRead;
   measured('tokenRisk');
   // Checked to the end within its time, or not signed: a check that ran past it is not taken.
   if (timeLeftOf(budget) <= 0) throw outOfPreparationTime();
@@ -1955,6 +2027,8 @@ export function fillAgainstQuote(received: bigint, expected: bigint, tolerance: 
 export async function finalizeSigned(args: {
   apiUrl: string; apiKey: string; rpc: Rpc<SolanaRpcApi>; prepared: Prepared; signedTransaction: string;
   fetchImpl?: Fetch; pollMs?: number;
+  /** Send the swap your own way (`SendTransaction`); Orientim then signs and sends nothing. */
+  sendTransaction?: SendTransaction;
   /**
    * Called before finalize with what to keep (see `Signed`). Unattended, persist it durably here
    * (`createFileStore`): if this throws, nothing is finalized.
@@ -2068,7 +2142,10 @@ export function failureCause(err: unknown, transaction: Transaction): string | u
  * again: it says this request sent nothing, and the chain says the rest.
  */
 async function askAndConfirm(
-  args: { apiUrl: string; apiKey: string; rpc: Rpc<SolanaRpcApi>; fetchImpl?: Fetch; pollMs?: number; maxWaitMs?: number; requestTimeoutMs?: number; archive?: Rpc<SolanaRpcApi> },
+  args: {
+    apiUrl: string; apiKey: string; rpc: Rpc<SolanaRpcApi>; fetchImpl?: Fetch; pollMs?: number; maxWaitMs?: number; requestTimeoutMs?: number; archive?: Rpc<SolanaRpcApi>;
+    sendTransaction?: SendTransaction;
+  },
   signed: Signed, mine: Transaction, temporaryAuthority: string,
 ): Promise<{ signature: string; outcome: Outcome | 'rejected'; refusal?: string; cause?: string }> {
   const fetchImpl = args.fetchImpl ?? fetch;
@@ -2077,7 +2154,10 @@ async function askAndConfirm(
   let refused: OrientimApiError | null = null;
   for (let attempt = 0; attempt < 2 && !done && !refused; attempt++) {
     try {
-      done = await call<Finalized>(fetchImpl, `${args.apiUrl}/api/v1/finalize`, args.apiKey, { ticket: signed.ticket, signedTransaction: signed.signedTransaction }, args.requestTimeoutMs);
+      // With a sender of your own, Orientim signs and sends nothing (send: false): yours sends it.
+      done = await call<Finalized>(fetchImpl, `${args.apiUrl}/api/v1/finalize`, args.apiKey, {
+        ticket: signed.ticket, signedTransaction: signed.signedTransaction, ...(args.sendTransaction ? { send: false } : {}),
+      }, args.requestTimeoutMs);
     } catch (e) {
       if (e instanceof OrientimApiError && e.status < 500) refused = e;
       else if (attempt === 0) await wait(args.pollMs ?? 1_000);
@@ -2089,7 +2169,7 @@ async function askAndConfirm(
   let chainError: unknown;
   const outcome = await confirm(args.rpc, signature, signed.lastValidBlockHeight, {
     signedTransaction: bytes, pollMs: args.pollMs, maxWaitMs: args.maxWaitMs, requestTimeoutMs: args.requestTimeoutMs, earliestHeight: signed.signedHeight,
-    archive: args.archive, temporaryAuthority,
+    archive: args.archive, temporaryAuthority, ...(args.sendTransaction ? { send: args.sendTransaction } : {}),
     onFailed: err => { chainError = err; },
   });
   // Kept or not, the caller decides what to do with a pending record: an unknown outcome stays pending.
@@ -2111,6 +2191,7 @@ async function askAndConfirm(
 export async function resumeSigned(args: {
   apiUrl: string; apiKey: string; rpc: Rpc<SolanaRpcApi>; signed: Signed;
   fetchImpl?: Fetch; pollMs?: number; maxWaitMs?: number; requestTimeoutMs?: number; archive?: Rpc<SolanaRpcApi>;
+  sendTransaction?: SendTransaction;
 }): Promise<{ signature: string; outcome: Outcome | 'rejected'; refusal?: string; cause?: string }> {
   const mine = getTransactionDecoder().decode(Buffer.from(args.signed.signedTransaction, 'base64'));
   if (getSignatureFromTransaction(mine) !== args.signed.signature) throw new Error('The kept record does not carry its own transaction. Nothing was sent.');
@@ -2139,6 +2220,8 @@ export async function protectedSwap(args: {
   requestTimeoutMs?: number;
   /** An RPC with the full history, that the owner names: a second proof of expiry (`confirm`). */
   archive?: Rpc<SolanaRpcApi>;
+  /** Send the swap your own way (`SendTransaction`): Orientim signs it and sends nothing. */
+  sendTransaction?: SendTransaction;
   /** Where orders are kept by `intent.id` (see `OrderBook`); without an id or a book, not used. */
   orders?: OrderBook;
   /**
@@ -2354,6 +2437,8 @@ async function main() {
     intent.minOut = heldToApproval(approved, intent.minOut);
     const result = await protectedSwap({
       apiUrl, apiKey, rpc, wallet, intent, jupiterApiKey, orders: store, archive, ownRoutes: process.env.ORIENTIM_OWN_ROUTES !== '0',
+      // Your own way of sending, if you name one: Orientim then signs and sends nothing.
+      ...(process.env.ORIENTIM_SEND_RPC_URL ? { sendTransaction: rpcSender(process.env.ORIENTIM_SEND_RPC_URL) } : {}),
       // Kept on disk before finalize, and removed once settled: if this process stops, the next run
       // settles it first, and nothing new is sent from this wallet while it may still land.
       pending: store,

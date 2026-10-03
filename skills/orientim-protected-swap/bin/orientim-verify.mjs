@@ -1675,6 +1675,19 @@ async function ownSolFeeLimit(args) {
 * when something must be settled first, and 5 when this order (--id) already swapped or may still land.
 */
 /**
+* A `SendTransaction` that sends through a Solana RPC of your choice (a staked connection, a sender
+* service that speaks sendTransaction), without its preflight and without retries of its own: the
+* swap is sent again every few seconds until it lands or expires, and the chain says the outcome.
+*/
+function rpcSender(url, timeoutMs = 1e4) {
+	const rpc = createSolanaRpc(url);
+	return (wire) => rpc.sendTransaction(wire, {
+		encoding: "base64",
+		skipPreflight: true,
+		maxRetries: 0n
+	}).send({ abortSignal: AbortSignal.timeout(timeoutMs) });
+}
+/**
 * What each error code means, in the skill's own words. An agent reads an error to
 * decide what to do next, so the words it reads are these, never the server's: a compromised server
 * or relay could otherwise write instructions into an error ("call transfer ..."). The server's own
@@ -1835,7 +1848,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.9.5";
+const SKILL_VERSION = "1.10.0";
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res) => {
 	const after = Number(res.headers.get("retry-after"));
@@ -1889,7 +1902,15 @@ async function preparedByOrientim(fetchImpl, apiUrl, apiKey, body, timeoutMs, ow
 			throw e;
 		}
 	};
-	if (!own.jupiterApiKey || own.ownRoutes === false) return prepare(body);
+	let floor = own.floor ? null : {};
+	const withFloor = async () => {
+		floor ??= await own.floor;
+		return {
+			...body,
+			...floor
+		};
+	};
+	if (!own.jupiterApiKey || own.ownRoutes === false) return prepare(await withFloor());
 	const fetched = /* @__PURE__ */ new Map();
 	let session;
 	let taker;
@@ -1904,11 +1925,16 @@ async function preparedByOrientim(fetchImpl, apiUrl, apiKey, body, timeoutMs, ow
 		try {
 			prepared = await prepare({
 				...body,
+				...floor ?? {},
 				ownRoutes: true,
 				...session ? { session } : {},
 				routes: [...fetched.values()]
 			});
 		} catch (e) {
+			if (floor === null && e instanceof OrientimApiError && e.code === "bad-request") {
+				await withFloor();
+				continue;
+			}
 			if (!(e instanceof OrientimApiError) || e.code !== "routes-needed") throw e;
 			const asked = e.body;
 			if (typeof asked.session !== "string" || asked.session.length > 2e3 || typeof asked.taker !== "string") throw new Error("Orientim asked for routes without a session or a one-time key. Nothing was signed.");
@@ -1918,18 +1944,20 @@ async function preparedByOrientim(fetchImpl, apiUrl, apiKey, body, timeoutMs, ow
 			const fresh = new Map(routeRequestsFor(asked.requests, swap(taker)).map((r) => [routeRequestKey(r), r]));
 			for (const k of fetched.keys()) fresh.delete(k);
 			if (fresh.size === 0) throw new Error("Orientim asked again for routes it was already sent. Nothing was signed; try again in a moment.");
-			if (fetched.size + fresh.size > MAX_ROUTES) return prepare(body);
-			for (const r of await fetchRoutes([...fresh.values()], swap(taker), {
+			if (fetched.size + fresh.size > MAX_ROUTES) return prepare(await withFloor());
+			const [routes] = await Promise.all([fetchRoutes([...fresh.values()], swap(taker), {
 				apiKey: own.jupiterApiKey,
 				fetchImpl,
 				budget
-			})) fetched.set(routeRequestKey(r.params), r);
+			}), withFloor()]);
+			for (const r of routes) fetched.set(routeRequestKey(r.params), r);
 			continue;
 		}
+		if (floor === null) throw new Error("Orientim built a swap before the agent's own minimum was sent. Nothing was signed.");
 		if (taker !== void 0 && prepared.temporaryAuthority !== taker) throw new Error("Orientim built this swap around another one-time key than the one it asked routes for. Nothing was signed.");
 		return prepared;
 	}
-	return prepare(body);
+	return prepare(await withFloor());
 }
 /** The preparation ran out of its time (PREPARATION_MS) before the swap could be signed. */
 const outOfPreparationTime = () => new BudgetSpentError(`Preparing this swap took longer than a swap may (${PREPARATION_MS / 1e3} s). Nothing was signed; try again in a moment.`);
@@ -2274,21 +2302,24 @@ async function confirm(rpc, signature, lastValidBlockHeight, opts = {}) {
 	let archived = 0;
 	const canAskArchive = !!opts.archive && !!opts.temporaryAuthority;
 	let lastSend = 0;
+	const resend = async () => {
+		lastSend = Date.now();
+		if (opts.send) await opts.send(opts.signedTransaction).catch(() => void 0);
+		else await rpc.sendTransaction(opts.signedTransaction, {
+			encoding: "base64",
+			skipPreflight: true,
+			maxRetries: 0n
+		}).send(bounded()).catch(() => void 0);
+	};
 	while (Date.now() < deadline) {
 		let read = false;
 		try {
+			if (!pastLifetime && opts.signedTransaction && opts.send && lastSend === 0) await resend();
 			if (!pastLifetime) {
 				const [status] = (await rpc.getSignatureStatuses([signature], { searchTransactionHistory: false }).send(bounded())).value;
 				if (settled(status)) return status.err ? failed(status.err) : "confirmed";
 				if (await rpc.getBlockHeight({ commitment: "confirmed" }).send(bounded()) > lastValidBlockHeight) pastLifetime = true;
-				else if (opts.signedTransaction && Date.now() - lastSend > 3e3) {
-					lastSend = Date.now();
-					await rpc.sendTransaction(opts.signedTransaction, {
-						encoding: "base64",
-						skipPreflight: true,
-						maxRetries: 0n
-					}).send(bounded()).catch(() => void 0);
-				}
+				else if (opts.signedTransaction && Date.now() - lastSend > 3e3) await resend();
 				read = !pastLifetime;
 			} else {
 				const { status: late, view } = await lookUp(rpc, signature, bounded);
@@ -3089,7 +3120,7 @@ async function prepareChecked(args) {
 		} catch {}
 		phaseStarted = now;
 	};
-	const own = await ownFloor({
+	const floor = ownFloor({
 		...args.intent,
 		owner
 	}, {
@@ -3100,29 +3131,45 @@ async function prepareChecked(args) {
 		policy: args.policy,
 		budget
 	});
-	measured("ownFloor");
-	const minOut = own.minOut;
-	const intent = withTolerance({
+	floor.catch(() => void 0);
+	const resolved = (o) => withTolerance({
 		...args.intent,
 		owner,
-		minOut
-	}, own.slippageBps);
-	const { slippageBps } = intent;
-	const prepared = await preparedByOrientim(fetchImpl, args.apiUrl, args.apiKey, {
-		owner: intent.owner,
-		inputMint: intent.inputMint,
-		outputMint: intent.outputMint,
-		amountIn: intent.amountIn,
-		...intent.minOut ? { minOut: intent.minOut } : {},
-		...intent.acceptCostBps ? { acceptCostBps: intent.acceptCostBps } : {},
-		...slippageBps !== void 0 ? { slippageBps } : {},
-		...intent.routingMode === "fast" ? { routingMode: "fast" } : {},
-		...intent.version !== void 0 ? { version: intent.version } : {}
-	}, args.requestTimeoutMs ?? PREPARE_WAIT_MS, {
-		jupiterApiKey: args.jupiterApiKey,
-		ownRoutes: args.ownRoutes,
-		budget
+		minOut: o.minOut
+	}, o.slippageBps);
+	const fieldsOf = (i) => ({
+		...i.minOut ? { minOut: i.minOut } : {},
+		...i.slippageBps !== void 0 ? { slippageBps: i.slippageBps } : {}
 	});
+	const body = {
+		owner,
+		inputMint: args.intent.inputMint,
+		outputMint: args.intent.outputMint,
+		amountIn: args.intent.amountIn,
+		...args.intent.acceptCostBps ? { acceptCostBps: args.intent.acceptCostBps } : {},
+		...args.intent.routingMode === "fast" ? { routingMode: "fast" } : {},
+		...args.intent.version !== void 0 ? { version: args.intent.version } : {}
+	};
+	const parallel = !!args.jupiterApiKey && args.ownRoutes !== false && args.intent.slippageBps !== "auto";
+	let prepared;
+	try {
+		prepared = await preparedByOrientim(fetchImpl, args.apiUrl, args.apiKey, {
+			...body,
+			...parallel && typeof args.intent.slippageBps === "number" ? { slippageBps: args.intent.slippageBps } : {},
+			...parallel ? {} : fieldsOf(resolved(await floor))
+		}, args.requestTimeoutMs ?? PREPARE_WAIT_MS, {
+			jupiterApiKey: args.jupiterApiKey,
+			ownRoutes: args.ownRoutes,
+			budget,
+			...parallel ? { floor: floor.then((o) => fieldsOf(resolved(o))) } : {}
+		});
+	} catch (e) {
+		await floor;
+		throw e;
+	}
+	const own = await floor;
+	const intent = resolved(own);
+	measured("ownFloor");
 	measured("apiPrepare");
 	const routeImpact = prepared.amounts?.priceImpactPct;
 	if (typeof routeImpact === "number" && Number.isFinite(routeImpact) && Math.round(routeImpact * 1e4) > own.maxPriceImpactBps) throw new PriceImpactError(Math.round(routeImpact * 1e4), own.maxPriceImpactBps);
@@ -3131,6 +3178,8 @@ async function prepareChecked(args) {
 		jupiterApiKey: args.jupiterApiKey,
 		budget
 	});
+	const riskRead = tokenRisk(args.rpc, [intent.inputMint, intent.outputMint], within(args.requestTimeoutMs ?? 1e4));
+	riskRead.catch(() => void 0);
 	const problems = await checkPrepared(prepared, intent, args.rpc, {
 		requestTimeoutMs: within(args.requestTimeoutMs),
 		slippageCeilingBps: args.policy?.maxSlippageBps
@@ -3141,7 +3190,7 @@ async function prepareChecked(args) {
 		throw refused;
 	}
 	measured("localVerification");
-	const risk = await tokenRisk(args.rpc, [intent.inputMint, intent.outputMint], within(args.requestTimeoutMs ?? 1e4));
+	const risk = await riskRead;
 	measured("tokenRisk");
 	if (timeLeftOf(budget) <= 0) throw outOfPreparationTime();
 	return {
@@ -3331,7 +3380,8 @@ async function askAndConfirm(args, signed, mine, temporaryAuthority) {
 	for (let attempt = 0; attempt < 2 && !done && !refused; attempt++) try {
 		done = await call(fetchImpl, `${args.apiUrl}/api/v1/finalize`, args.apiKey, {
 			ticket: signed.ticket,
-			signedTransaction: signed.signedTransaction
+			signedTransaction: signed.signedTransaction,
+			...args.sendTransaction ? { send: false } : {}
 		}, args.requestTimeoutMs);
 	} catch (e) {
 		if (e instanceof OrientimApiError && e.status < 500) refused = e;
@@ -3347,6 +3397,7 @@ async function askAndConfirm(args, signed, mine, temporaryAuthority) {
 		earliestHeight: signed.signedHeight,
 		archive: args.archive,
 		temporaryAuthority,
+		...args.sendTransaction ? { send: args.sendTransaction } : {},
 		onFailed: (err) => {
 			chainError = err;
 		}
@@ -3646,6 +3697,7 @@ async function main$1() {
 			orders: store,
 			archive,
 			ownRoutes: process.env.ORIENTIM_OWN_ROUTES !== "0",
+			...process.env.ORIENTIM_SEND_RPC_URL ? { sendTransaction: rpcSender(process.env.ORIENTIM_SEND_RPC_URL) } : {},
 			pending: store,
 			policy,
 			spends: store,
@@ -4526,7 +4578,8 @@ async function runCommand(command, input, deps) {
 					pollMs: deps.pollMs,
 					maxWaitMs: deps.maxWaitMs,
 					requestTimeoutMs: deps.requestTimeoutMs,
-					archive: deps.archive
+					archive: deps.archive,
+					...deps.sendTransaction ? { sendTransaction: deps.sendTransaction } : {}
 				}), kept.intentId ?? intent.id, true);
 			}
 			if (recorded && recorded.signature === incoming) return {
@@ -4631,6 +4684,7 @@ async function runCommand(command, input, deps) {
 				maxWaitMs: deps.maxWaitMs,
 				requestTimeoutMs: deps.requestTimeoutMs,
 				archive: deps.archive,
+				...deps.sendTransaction ? { sendTransaction: deps.sendTransaction } : {},
 				onSigned: async (s) => {
 					const others = await pendingFor(store, prepared.wallet, s.signature);
 					if (others.length) throw new PendingSwapError(others);
@@ -4762,6 +4816,7 @@ async function main() {
 	print(await runCli(command, input, {
 		rpc: createSolanaRpc(rpcUrl ?? "http://127.0.0.1:1"),
 		...process.env.ORIENTIM_ARCHIVE_RPC_URL ? { archive: createSolanaRpc(process.env.ORIENTIM_ARCHIVE_RPC_URL) } : {},
+		...process.env.ORIENTIM_SEND_RPC_URL ? { sendTransaction: rpcSender(process.env.ORIENTIM_SEND_RPC_URL) } : {},
 		apiUrl: process.env.ORIENTIM_API_URL,
 		apiKey: process.env.ORIENTIM_API_KEY,
 		jupiterApiKey: process.env.JUPITER_API_KEY || void 0,
