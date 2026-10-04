@@ -3,6 +3,19 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.10.7 (2026-10-04)
+
+Documentation only; the code is unchanged.
+
+- `reference/AGENT-API.md`: the sample answer shows the 0.25% fee; `routingMode: "fast"` and
+  `version: 1` are said to be off on orientim.com (answered `400 bad-request`); key limits are per
+  IP address.
+- `SKILL.md`: what a `401` means (a missing, unknown, expired or revoked key) and what to do; a key
+  lasts 90 days; the fee's order includes the input token; `orientim-verify <command>` is
+  `node bin/orientim-verify.mjs <command>`.
+- `README.md`: what a setup needs (`JUPITER_API_KEY`, `ORIENTIM_API_URL`, `npm ci`), and the
+  default slippage told apart from `"auto"`.
+
 ## 1.10.6 (2026-10-03)
 
 - The verifier refuses a swap from or to a token account of the wallet that its issuer has frozen,

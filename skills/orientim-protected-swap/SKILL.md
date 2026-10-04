@@ -64,8 +64,7 @@ Read these first; they are what a coding agent most often gets wrong.
 The user provides these; never ask for them in chat, and never print or log them:
 
 - `ORIENTIM_API_URL`: Orientim's address, `https://orientim.com`
-- Routing is standard by default. `routingMode: "fast"` in an intent (or `--fast` in the example) requests Jupiter's beta fast route search only if the server operator enabled it. It can trade a shorter route search for a worse quote or priority fee. Keep the same independently obtained floor and all checks. `version: 1` (or `--v1`) is a separate opt-in pilot requiring server, RPC, and signer support; it may fit a larger transaction but is not a speed setting. The example's optional `onTiming(phase, ms)` reports each step's own duration (steps that run at the same time overlap) and `readyToSign`, the whole wait, without changing the signing decision.
-- `ORIENTIM_API_KEY`: `ori_...`, sent as `Authorization: Bearer <key>`. The wallet gets one itself, at once: `requestApiKey({ apiUrl, address, signMessage })` from `examples/swap.ts`, or `orientim-verify key-challenge` then `key`; both sign only Orientim's key message for that wallet. The key works for that wallet only
+- `ORIENTIM_API_KEY`: `ori_...`, sent as `Authorization: Bearer <key>`. The wallet gets one itself, at once: `requestApiKey({ apiUrl, address, signMessage })` from `examples/swap.ts`, or `orientim-verify key-challenge` then `key`; both sign only Orientim's key message for that wallet. The key works for that wallet only, for 90 days.
 - `SOLANA_RPC_URL`: the agent's **own** RPC. Never Orientim's: the verification is worth what the
   chain state it reads is worth.
 - `ORIENTIM_WALLET_KEYPAIR`: path to the wallet's keypair file. Load the key from the file in code; it
@@ -147,6 +146,8 @@ copy: `sha256sum -c SHA256SUMS`, against the list Orientim's site serves at `/sk
 ## The flow
 
 Run or adapt `examples/swap.ts`. Do not write the flow from scratch, and never drop the verification.
+The example's optional `onTiming(phase, ms)` reports each step's own duration (steps that run at the
+same time overlap) and `readyToSign`, the whole wait, without changing the signing decision.
 
 1. **Your own floor first.** The rules cannot see the price, so the agent brings a minimum of its
    own: the user's, or `ownMinimum(...)` from `lib/orientim-verify.mjs`, which asks Jupiter directly
@@ -162,7 +163,8 @@ Run or adapt `examples/swap.ts`. Do not write the flow from scratch, and never d
    `amountIn` includes Orientim's fee (0.25%) when it is taken in the input token. In the order Jupiter prefers for its own, the
    fee is taken in SOL first, then USDC or USDT, on whichever side of the swap they are
    (`amounts.feeMint`); taken from the output, it comes out of what arrives, and `amounts.minOut` is
-   what the wallet keeps after it. Your `minOut` means the same: what the wallet keeps. A swap between
+   what the wallet keeps after it. Your `minOut` means the same: what the wallet keeps. Otherwise it is taken in the input
+   token, when the treasury can receive it. A swap between
    two tokens neither of which can carry it pays the fee in SOL from the wallet, 0.25% of its value in
    SOL (`policy.feeSide` is `sol`), so the wallet needs that SOL besides the token: without it the swap
    is refused (`insufficient-sol`). Hold the fee to a price of your own with `maxSolFeeLamports`
@@ -288,6 +290,8 @@ names the transaction (`signature`, `lastValidBlockHeight`); follow step 7 befor
   estimate of the SOL the transaction needs while it runs: the deposits for the temporary accounts it
   opens and closes (they come back in the same transaction), the most the network fee may be, and a
   new account's rent. A wallet can be refused while holding more SOL than the swap finally costs.
+- `401 unauthorized`: the API key is missing, unknown, expired (keys last 90 days) or revoked. Get a new
+  one: `requestApiKey`, or `key-challenge` then `key`; nothing was prepared or sent.
 - `403 wallet-empty` (from the API-key endpoints): the wallet holds less than the least a wallet needs
   for an API key, 0.01 SOL unless Orientim set another amount (the message names it). Fund it, then ask again.
 
@@ -379,7 +383,8 @@ their own copy, knowingly; everything else is still checked.
 that can start a process: JSON in on stdin, JSON out on stdout, an exit code. The bot keeps its key
 and signs one message itself; the command does the rest with the example's own code: the floor, the
 check on your RPC, the record kept before finalize, finalize, and the outcome read on the chain.
-It needs Node 22.18 or later and `npm ci` in this folder, and reads `SOLANA_RPC_URL`,
+In this file, `orientim-verify <command>` stands for `node bin/orientim-verify.mjs <command>`, run in
+this folder. It needs Node 22.18 or later and `npm ci` in this folder, and reads `SOLANA_RPC_URL`,
 `ORIENTIM_API_URL`, `ORIENTIM_API_KEY`, `JUPITER_API_KEY`, `ORIENTIM_POLICY` (see Setup), `ORIENTIM_STATE_DIR` (default
 `./.orientim-state`) and, optionally, `ORIENTIM_ARCHIVE_RPC_URL` (an RPC with the full history, a second
 proof of expiry; see The flow) and `ORIENTIM_SEND_RPC_URL` (an RPC of yours that sends the swap, a
