@@ -69,7 +69,7 @@ POST /api/v1/keys
 → { "key": "ori_w1....", "wallet": "<address>", "expiresAt": "..." }
 ```
 
-The challenge must be signed within 10 minutes. From one address, Orientim answers 30 challenges and
+The challenge must be signed within 10 minutes. From one IP address, Orientim answers 30 challenges and
 issues 10 keys an hour; a `429` carries `Retry-After`. **Sign only Orientim's key message for your own
 wallet**: a signature over bytes someone else chose could be a signature for a transaction. The skill's
 `requestApiKey` (and `orientim-verify key-challenge`, then `key`) checks the message before anything is
@@ -124,10 +124,10 @@ Authorization: Bearer ori_...
 | `minOut` | required | A positive integer string in base units of the output: what your wallet must keep, after a fee taken from the output. Get this floor independently before prepare (`ownMinimum` asks Jupiter directly). For a large order, compare with another source as well. Supplying a number alone does not prove independent verification: check the exact transaction before signing. |
 | `acceptCostBps` | optional | Accept a protected route this many bps below the open market (see `costs-more`): a whole number, as a number or an integer string. A route up to 50 bps (0.5%) past it is also taken, so that a market that drifts by a few bps does not ask again; `minOut` still holds whatever the route. |
 | `slippageBps` | optional | The route's slippage tolerance, chosen by the owner or bot: how far below the quote the swap may fill, a whole number from 10 to 1500 (0.1% to 15%). Default 50, or 300 on a Pump.fun bonding curve. The route is built at it; the skill's check holds the route to the number in your own intent, never to Orientim's answer. The API takes a number: the skill's `"auto"` asks Jupiter for the trade's own tolerance first and sends that number. |
-| `routingMode` | optional | `standard` (default) or `fast`. Fast requires the operator's `ORIENTIM_ENABLE_FAST_ROUTING=1` and is an opt-in Jupiter beta. It may reduce route-search time but can yield a worse quote or priority fee. The independent price floor, standard-route comparison, simulation, and exact-byte checks still apply. Compare measured latency, price and completion before using it in production. |
-| `version` | optional | `0` (default). `1` is a pilot only when the deployment enables `NEXT_PUBLIC_ORIENTIM_ENABLE_V1=1`, and only for bots whose signer and RPC support Solana v1. It may fit a larger transaction, not necessarily execute faster. |
+| `routingMode` | optional | `standard` (default). `fast` is an opt-in Jupiter route search that orientim.com does not enable: a request with it is answered `400 bad-request`. |
+| `version` | optional | `0` (default). Version 1 transactions are not enabled on orientim.com: a request with `1` is answered `400 bad-request`. |
 
-A prepare answers within 45 seconds in all (reading the tokens, building the swap, reading the block height); one that takes longer, because Jupiter or the RPC is slow, ends in `503 unavailable` with nothing built, its RPC requests aborted and no new request to Jupiter or the RPC started, and the skill waits 60 seconds for it. Successful prepare responses include a `Server-Timing` header with `prepare`, `initial`, `jupiter-build`, `simulation`, `verification`, and `local` durations in milliseconds. Jupiter build calls can overlap, so their summed duration need not equal prepare wall time. The skill's `prepareChecked` and `protectedSwap` also accept an optional `onTiming(phase, ms)` observer for the bot's own quote, API prepare, local verification, the tokens' risk, signing and finalization, and `readyToSign`, the whole wait until a checked transaction is ready to sign. Each step is timed from its own start to its own end: the bot's quote and the first prepare round run at the same time, and so do the check and the risk read, so their times overlap and do not add up. Neither measurement changes approval or signing decisions; benchmark standard and fast on comparable orders and record quote quality and confirmed outcomes alongside latency.
+A prepare answers within 45 seconds in all (reading the tokens, building the swap, reading the block height); one that takes longer, because Jupiter or the RPC is slow, ends in `503 unavailable` with nothing built, its RPC requests aborted and no new request to Jupiter or the RPC started, and the skill waits 60 seconds for it. Successful prepare responses include a `Server-Timing` header with `prepare`, `initial`, `jupiter-build`, `simulation`, `verification`, and `local` durations in milliseconds. Jupiter build calls can overlap, so their summed duration need not equal prepare wall time. The skill's `prepareChecked` and `protectedSwap` also accept an optional `onTiming(phase, ms)` observer for the bot's own quote, API prepare, local verification, the tokens' risk, signing and finalization, and `readyToSign`, the whole wait until a checked transaction is ready to sign. Each step is timed from its own start to its own end: the bot's quote and the first prepare round run at the same time, and so do the check and the risk read, so their times overlap and do not add up. Neither measurement changes approval or signing decisions.
 
 `200` response:
 
@@ -140,13 +140,13 @@ A prepare answers within 45 seconds in all (reading the tokens, building the swa
   "temporaryAuthority": "<the one-time key E>",
   "lastValidBlockHeight": "312345678",
   "blocksLeft": "148",
-  "amounts": { "amountIn": "5000000", "fee": "127700", "feeMint": "So11111111111111111111111111111111111111112",
-               "feeBps": "30", "swapAmount": "5000000", "quotedOut": "42780667", "minOut": "42439063",
+  "amounts": { "amountIn": "5000000", "fee": "106363", "feeMint": "So11111111111111111111111111111111111111112",
+               "feeBps": "25", "swapAmount": "5000000", "quotedOut": "42780667", "minOut": "42439063",
                "priceImpactPct": 0.0001 },
   "costs": { "networkFeeLamports": "124480", "outputAccountRentLamports": "0", "routeRentLamports": "0", "routeRefundLamports": "0",
-             "routeKeptLamports": "0", "orientimFeeSolLamports": "127700", "keptSolLamports": "252180", "tokenTax": null,
+             "routeKeptLamports": "0", "orientimFeeSolLamports": "106363", "keptSolLamports": "230843", "tokenTax": null,
              "breakdown": { "principal": { "mint": "<inputMint>", "amount": "5000000" },
-                            "orientimFee": { "mint": "So11111111111111111111111111111111111111112", "amount": "127700" },
+                            "orientimFee": { "mint": "So11111111111111111111111111111111111111112", "amount": "106363" },
                             "networkFeeLamports": "124480", "rentReturnedLamports": "0", "rentKeptLamports": "0" } },
   "notices": { "removesDelegate": false, "networkBusy": false },
   "tokens": { "input": { "freezeAuthority": true, "mintAuthority": true, "permanentDelegate": false },
