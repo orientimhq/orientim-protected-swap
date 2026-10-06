@@ -83,7 +83,7 @@ export function autoSlippageBps(r: { outAmount?: string; otherAmountThreshold?: 
 export const MAX_BELOW_BPS = 2_000;
 export const MAX_PRICE_IMPACT_BPS = 2_000;
 export const MAX_FEE_BPS = 30;
-/** The fee limit the check applies: the agent's own, never above Orientim's pinned fee. */
+/** The fee limit the check applies: the agent's own, never above the ceiling pinned for Orientim's fee. */
 export const feeLimitBps = (maxFeeBps?: number) =>
   Number.isInteger(maxFeeBps) && (maxFeeBps as number) >= 0 ? Math.min(maxFeeBps as number, MAX_FEE_BPS) : MAX_FEE_BPS;
 export const isSlippageBps = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= MIN_SLIPPAGE_BPS && v <= MAX_SLIPPAGE_BPS;

@@ -3,6 +3,20 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.10.8 (2026-10-06)
+
+- The verifier (R4) bounds the rent a route may keep: SOL sent to the one-time key for rent, less
+  what closing the market's account returns in the same transaction, may be at most 0.001 SOL
+  (`MAX_ROUTE_KEPT_LAMPORTS`). Before, the rules bounded the rent and the refund each on its own, and
+  only the skill's simulation kept the rest from staying under the one-time key. A Pump.fun bonding
+  curve keeps about 0.00013 SOL; `maxRouteCostLamports` can only lower the limit.
+- A policy with a daily limit (`maxAmountInPerDay`) must name its own `stateDir`. A directory the
+  run chooses (`--state`, `ORIENTIM_STATE_DIR`) could be a fresh one with an empty record, and so a new
+  day's allowance; such a policy is now refused before anything starts.
+- `maxFeeBps` out of range says 30 bps is the most Orientim's fee may ever be (the fee is 0.25%).
+- `reference/AGENT-API.md`: the key endpoints answer `503 paused` while swaps are paused; selling a
+  token's whole balance below the minimum is for tokens, not SOL; the route-rent limit.
+
 ## 1.10.7 (2026-10-04)
 
 Documentation only; the code is unchanged.

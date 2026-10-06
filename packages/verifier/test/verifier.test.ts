@@ -10,7 +10,7 @@ import {
 import { getAssignInstruction, getTransferSolInstruction } from '@solana-program/system';
 import { createNoopSigner } from '@solana/kit';
 import {
-  compileProtectedSwap, JUPITER_PROGRAM, MAX_TAKER_RENT_LAMPORTS, protectedInstructions, PUMP_AMM_PROGRAM, PUMP_CURVE_PROGRAM,
+  compileProtectedSwap, JUPITER_PROGRAM, MAX_ROUTE_KEPT_LAMPORTS, MAX_TAKER_RENT_LAMPORTS, protectedInstructions, PUMP_AMM_PROGRAM, PUMP_CURVE_PROGRAM,
   routeAccountOf, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, withTakerRent, WSOL_MINT,
 } from '@orientim/core';
 import type { AccountState, RuleId, TxVersion } from '@orientim/core';
@@ -442,8 +442,9 @@ describe('more attacks', () => {
 });
 
 describe('rent a route needs the temporary key to pay (PumpSwap)', () => {
-  // PumpSwap opens a per-buyer account and charges its rent to the buyer, which here is E.
-  const RENT = 1_346_200n;
+  // A market charges its rent to the buyer, which here is E. With no account of its own to close, the
+  // route may keep only up to MAX_ROUTE_KEPT_LAMPORTS: here what a bonding curve takes for growing.
+  const RENT = 132_080n;
   const withRent = async (opts: Parameters<typeof scenario>[0] = {}) => {
     const s = await scenario(opts);
     return { ...s, policy: withTakerRent(s.policy, RENT) };
@@ -504,6 +505,19 @@ describe('rent a route needs the temporary key to pay (PumpSwap)', () => {
     const policy = { ...s.policy, takerRent: MAX_TAKER_RENT_LAMPORTS + 1n };
     const ixs = honest({ ...s, policy });
     expect(rules(await verify(mutated(s, ixs), policy, s.snapshot))).toContain('R4');
+  });
+
+  it('rent the route would keep beyond MAX_ROUTE_KEPT_LAMPORTS, with no refund → R4', async () => {
+    const s = await scenario();
+    const policy = withTakerRent(s.policy, MAX_ROUTE_KEPT_LAMPORTS + 1n);
+    const v = await verify(await compileHonest({ ...s, policy }, 0), policy, s.snapshot);
+    expect(v.violations).toEqual([expect.objectContaining({ rule: 'R4', detail: expect.stringContaining('the route keeps') })]);
+  });
+
+  it('the most rent with no refund, MAX_TAKER_RENT_LAMPORTS, sent to E and never returned → R4', async () => {
+    const s = await scenario();
+    const policy = withTakerRent(s.policy, MAX_TAKER_RENT_LAMPORTS);
+    expect(rules(await verify(await compileHonest({ ...s, policy }, 0), policy, s.snapshot))).toContain('R4');
   });
 });
 

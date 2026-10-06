@@ -34,7 +34,7 @@
  *   node swap.ts ... --owner <address> --dry-run      prepare and verify only: nothing is signed
  *
  * Unattended, the command line keeps every signed swap in a state directory (the policy's stateDir,
- * ORIENTIM_STATE_DIR or --state, default ./.orientim-state; absolute with a daily limit) before
+ * ORIENTIM_STATE_DIR or --state, default ./.orientim-state; the policy's own with a daily limit) before
  * finalize, settles what a stopped run left there before it starts another, and holds a lock per
  * wallet so that two workers never swap from it at once. It exits 0 only for a confirmed swap, 1 when
  * nothing was swapped, 2 on a usage error (a slippage or limit outside the allowed range included), 3
@@ -334,7 +334,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.10.7';
+export const SKILL_VERSION = '1.10.8';
 
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res: Response) => {
@@ -1069,7 +1069,7 @@ export type OwnerPolicy = {
    * Where swaps, orders and what the last 24 hours spent are kept, as an absolute path. With it,
    * every command uses this directory and refuses another (`--state`, `ORIENTIM_STATE_DIR`), so a
    * daily limit counts every swap wherever the command is started from. A policy with a daily limit
-   * and no `stateDir` needs `ORIENTIM_STATE_DIR` as an absolute path.
+   * needs it.
    */
   stateDir?: string;
   /**
@@ -1155,8 +1155,8 @@ export const DEFAULT_STATE_DIR = '.orientim-state';
 /**
  * The state directory a command uses: the policy's own when it names one (and nothing else is
  * accepted then), otherwise the one given (`--state`, `ORIENTIM_STATE_DIR`), otherwise
- * `DEFAULT_STATE_DIR`. A policy with a daily limit needs an absolute directory: a relative one is a
- * new, empty record for every place the command is started from, and so a new day's allowance.
+ * `DEFAULT_STATE_DIR`. A policy with a daily limit must name its own `stateDir`: any other directory
+ * would be a new, empty record, and so a new day's allowance.
  * `warning` says when the directory is the relative default.
  */
 export function stateDirFor(policy: OwnerPolicy | undefined, given: string | undefined): { dir: string; warning?: string } {
@@ -1166,9 +1166,11 @@ export function stateDirFor(policy: OwnerPolicy | undefined, given: string | und
     }
     return { dir: policy.stateDir };
   }
+  // A daily limit counts what one directory recorded: one the agent could choose (`--state`,
+  // ORIENTIM_STATE_DIR) would let a run start from an empty record, so only the policy names it.
   const dailyLimit = !!policy?.maxAmountInPerDay && Object.keys(policy.maxAmountInPerDay).length > 0;
-  if (dailyLimit && !(given && isAbsolute(given))) {
-    throw new ConfigError("The owner's policy sets a daily limit: name the state directory as an absolute path (the policy's stateDir, or ORIENTIM_STATE_DIR), so that every swap counts against it. Nothing was started.");
+  if (dailyLimit) {
+    throw new ConfigError("The owner's policy sets a daily limit but no stateDir: the policy must name the state directory as an absolute path, so that every swap counts against the limit wherever it is started. Nothing was started.");
   }
   if (given) return { dir: given };
   return {
@@ -1788,7 +1790,7 @@ export async function ownFloor(
     throw new PolicyError('impact-over-limit', `A price impact limit of ${maxImpact} bps is above the owner's limit of ${owner.maxPriceImpactBps}.`, { limit: String(owner.maxPriceImpactBps) });
   }
   if (intent.maxFeeBps !== undefined && feeLimitBps(intent.maxFeeBps) !== intent.maxFeeBps) {
-    throw new IntentError(`maxFeeBps must be a whole number of bps from 0 to ${feeLimitBps()}, Orientim's pinned fee. Nothing was sent.`);
+    throw new IntentError(`maxFeeBps must be a whole number of bps from 0 to ${feeLimitBps()}, the most Orientim's fee may ever be. Nothing was sent.`);
   }
   if (intent.minOut !== undefined && !/^\d{1,20}$/.test(intent.minOut)) throw new IntentError('minOut must be a whole number of base units, as a string. Nothing was sent.');
   for (const [name, v] of [

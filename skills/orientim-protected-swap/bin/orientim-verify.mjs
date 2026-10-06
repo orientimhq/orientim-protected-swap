@@ -60,6 +60,13 @@ const ABSOLUTE_MAX_NETWORK_FEE_LAMPORTS = 1000000n;
 */
 const MAX_TAKER_RENT_LAMPORTS = 5000000n;
 /**
+* The most of that rent the route may keep: what W sends E for rent, less what closing the market's
+* account returns in the same transaction. A Pump.fun bonding curve keeps 132,080 lamports for growing
+* its own account; anything else the route opens must be closed again. Without this bound, rent with
+* no refund could leave up to MAX_TAKER_RENT_LAMPORTS under a key only the server can derive.
+*/
+const MAX_ROUTE_KEPT_LAMPORTS = 1000000n;
+/**
 * The most tolerance an agent or its owner may choose (`slippageBps`): 15%. The agent API and the
 * skill's check ask the verifier for the number in the agent's own intent, never for more than this. Without a choice,
 * routes keep the two ceilings above.
@@ -867,6 +874,7 @@ async function verify(transaction, policy, snapshot, opts = {}) {
 	need("closeRouteAccount", p.routeRefund > 0n ? 1 : 0, "R5");
 	need("routeRefund", p.routeRefund > 0n ? 1 : 0, "R5");
 	if (p.takerRent < 0n || p.takerRent > 5000000n) fail("R4", `route rent ${p.takerRent} lamports is outside 0..${MAX_TAKER_RENT_LAMPORTS}`);
+	if (p.takerRent - p.routeRefund > 1000000n) fail("R4", `the route keeps ${p.takerRent - p.routeRefund} lamports of the rent sent to E, above ${MAX_ROUTE_KEPT_LAMPORTS}`);
 	if (version === 0) {
 		need("cuLimit", 1, "R4");
 		need("cuPrice", 1, "R4");
@@ -1023,7 +1031,7 @@ function autoSlippageBps(r) {
 */
 const MAX_BELOW_BPS = 2e3;
 const MAX_PRICE_IMPACT_BPS = 2e3;
-/** The fee limit the check applies: the agent's own, never above Orientim's pinned fee. */
+/** The fee limit the check applies: the agent's own, never above the ceiling pinned for Orientim's fee. */
 const feeLimitBps = (maxFeeBps) => Number.isInteger(maxFeeBps) && maxFeeBps >= 0 ? Math.min(maxFeeBps, 30) : 30;
 const isSlippageBps = (v) => typeof v === "number" && Number.isInteger(v) && v >= 10 && v <= 1500;
 /** A limit outside what the skill allows: a usage error (exit 2), not a refusal of this swap. */
@@ -1673,7 +1681,7 @@ async function ownSolFeeLimit(args) {
 *   node swap.ts ... --owner <address> --dry-run      prepare and verify only: nothing is signed
 *
 * Unattended, the command line keeps every signed swap in a state directory (the policy's stateDir,
-* ORIENTIM_STATE_DIR or --state, default ./.orientim-state; absolute with a daily limit) before
+* ORIENTIM_STATE_DIR or --state, default ./.orientim-state; the policy's own with a daily limit) before
 * finalize, settles what a stopped run left there before it starts another, and holds a lock per
 * wallet so that two workers never swap from it at once. It exits 0 only for a confirmed swap, 1 when
 * nothing was swapped, 2 on a usage error (a slippage or limit outside the allowed range included), 3
@@ -1853,7 +1861,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.10.7";
+const SKILL_VERSION = "1.10.8";
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res) => {
 	const after = Number(res.headers.get("retry-after"));
@@ -2498,8 +2506,8 @@ const DEFAULT_STATE_DIR = ".orientim-state";
 /**
 * The state directory a command uses: the policy's own when it names one (and nothing else is
 * accepted then), otherwise the one given (`--state`, `ORIENTIM_STATE_DIR`), otherwise
-* `DEFAULT_STATE_DIR`. A policy with a daily limit needs an absolute directory: a relative one is a
-* new, empty record for every place the command is started from, and so a new day's allowance.
+* `DEFAULT_STATE_DIR`. A policy with a daily limit must name its own `stateDir`: any other directory
+* would be a new, empty record, and so a new day's allowance.
 * `warning` says when the directory is the relative default.
 */
 function stateDirFor(policy, given) {
@@ -2507,7 +2515,7 @@ function stateDirFor(policy, given) {
 		if (given !== void 0 && resolve(given) !== resolve(policy.stateDir)) throw new ConfigError(`The owner's policy keeps the state in ${policy.stateDir}; another state directory (${given}) is not used. Nothing was started.`);
 		return { dir: policy.stateDir };
 	}
-	if (!!policy?.maxAmountInPerDay && Object.keys(policy.maxAmountInPerDay).length > 0 && !(given && isAbsolute(given))) throw new ConfigError("The owner's policy sets a daily limit: name the state directory as an absolute path (the policy's stateDir, or ORIENTIM_STATE_DIR), so that every swap counts against it. Nothing was started.");
+	if (!!policy?.maxAmountInPerDay && Object.keys(policy.maxAmountInPerDay).length > 0) throw new ConfigError("The owner's policy sets a daily limit but no stateDir: the policy must name the state directory as an absolute path, so that every swap counts against the limit wherever it is started. Nothing was started.");
 	if (given) return { dir: given };
 	return {
 		dir: DEFAULT_STATE_DIR,
@@ -3056,7 +3064,7 @@ async function ownFloor(intent, deps) {
 	const maxImpact = intent.maxPriceImpactBps ?? Math.min(500, owner.maxPriceImpactBps ?? 500);
 	if (!(Number.isInteger(maxImpact) && maxImpact >= 0 && maxImpact <= 2e3)) throw new IntentError(`maxPriceImpactBps must be a whole number of bps from 0 to ${MAX_PRICE_IMPACT_BPS}. Nothing was sent.`);
 	if (owner.maxPriceImpactBps !== void 0 && maxImpact > owner.maxPriceImpactBps) throw new PolicyError("impact-over-limit", `A price impact limit of ${maxImpact} bps is above the owner's limit of ${owner.maxPriceImpactBps}.`, { limit: String(owner.maxPriceImpactBps) });
-	if (intent.maxFeeBps !== void 0 && feeLimitBps(intent.maxFeeBps) !== intent.maxFeeBps) throw new IntentError(`maxFeeBps must be a whole number of bps from 0 to ${feeLimitBps()}, Orientim's pinned fee. Nothing was sent.`);
+	if (intent.maxFeeBps !== void 0 && feeLimitBps(intent.maxFeeBps) !== intent.maxFeeBps) throw new IntentError(`maxFeeBps must be a whole number of bps from 0 to ${feeLimitBps()}, the most Orientim's fee may ever be. Nothing was sent.`);
 	if (intent.minOut !== void 0 && !/^\d{1,20}$/.test(intent.minOut)) throw new IntentError("minOut must be a whole number of base units, as a string. Nothing was sent.");
 	for (const [name, v] of [
 		["maxNetworkFeeLamports", intent.maxNetworkFeeLamports],
@@ -3878,8 +3886,8 @@ if (process.argv[1] && /swap\.ts$/.test(process.argv[1]) && fileURLToPath(import
 * finalize), JUPITER_API_KEY (Jupiter throttles keyless calls), ORIENTIM_STATE_DIR (default ./.orientim-state; an
 * absolute path on a disk that outlives the process), ORIENTIM_TREASURY (only for another Orientim deployment),
 * ORIENTIM_POLICY (the owner's limits per swap and per day, a JSON file: see `OwnerPolicy`; a swap outside
-* them exits 1 with `error.code` `mint-not-allowed`, `amount-over-limit` or `daily-limit`; with a daily limit
-* the state directory must be absolute, the policy's `stateDir` or ORIENTIM_STATE_DIR). `check` counts a daily
+* them exits 1 with `error.code` `mint-not-allowed`, `amount-over-limit` or `daily-limit`; a policy with a daily
+* limit must name its own absolute `stateDir`). `check` counts a daily
 * limit against the swaps this state directory kept; a bot that sends through the API itself records none,
 * so for it a daily limit is only as good as its own record.
 * Finalize can take minutes (it reads the outcome on the chain): a run that is stopped anyway is settled

@@ -48,8 +48,8 @@
  * finalize), JUPITER_API_KEY (Jupiter throttles keyless calls), ORIENTIM_STATE_DIR (default ./.orientim-state; an
  * absolute path on a disk that outlives the process), ORIENTIM_TREASURY (only for another Orientim deployment),
  * ORIENTIM_POLICY (the owner's limits per swap and per day, a JSON file: see `OwnerPolicy`; a swap outside
- * them exits 1 with `error.code` `mint-not-allowed`, `amount-over-limit` or `daily-limit`; with a daily limit
- * the state directory must be absolute, the policy's `stateDir` or ORIENTIM_STATE_DIR). `check` counts a daily
+ * them exits 1 with `error.code` `mint-not-allowed`, `amount-over-limit` or `daily-limit`; a policy with a daily
+ * limit must name its own absolute `stateDir`). `check` counts a daily
  * limit against the swaps this state directory kept; a bot that sends through the API itself records none,
  * so for it a daily limit is only as good as its own record.
  * Finalize can take minutes (it reads the outcome on the chain): a run that is stopped anyway is settled
@@ -686,7 +686,7 @@ export async function main(): Promise<void> {
       if (command !== 'recover' && command !== 'resolve') return print(usage(messageOf(e)));
     }
   }
-  // The state directory: the policy's own when it names one, and absolute when it sets a daily limit.
+  // The state directory: the policy's own when it names one, which a daily limit requires.
   const given = process.env.ORIENTIM_STATE_DIR || undefined;
   let stateDir: string;
   try {
