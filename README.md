@@ -15,7 +15,7 @@ self-contained: copy that folder, run `npm ci` in it, and it needs nothing else 
 | A bot in Python, Rust, Go... | the `orientim-verify` command, `bin/orientim-verify.mjs` ("Bots in other languages" in `SKILL.md`) |
 | Calling the API yourself | [`reference/AGENT-API.md`](skills/orientim-protected-swap/reference/AGENT-API.md) |
 
-## What the check guarantees
+## What the check enforces
 
 Before your wallet signs, the verifier decodes the exact transaction bytes and checks them against
 seven rules (R1–R7), with every account read from your RPC, not from Orientim:
@@ -24,7 +24,7 @@ seven rules (R1–R7), with every account read from your RPC, not from Orientim:
 - it never receives your wallet or any of your token accounts except the one that receives the output;
 - the transaction grants no new authority over your assets;
 - you receive at least the minimum you accepted, enforced on chain in the same transaction;
-- Orientim's fee is 0.25% (never above 0.3%) and goes only to its pinned treasury.
+- Orientim's fee goes only to the treasury the skill pins, and the skill refuses it above 0.3% (the fee is 0.25%).
 
 On top of the rules, the skill brings a price floor of its own from Jupiter (a minimum more than 20%
 below it is refused), refuses a price impact above your limit, simulates the swap on your RPC, holds

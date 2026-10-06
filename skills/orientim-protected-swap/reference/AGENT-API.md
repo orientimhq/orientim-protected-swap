@@ -70,7 +70,8 @@ POST /api/v1/keys
 ```
 
 The challenge must be signed within 10 minutes. From one IP address, Orientim answers 30 challenges and
-issues 10 keys an hour; a `429` carries `Retry-After`. **Sign only Orientim's key message for your own
+issues 10 keys an hour; a `429` carries `Retry-After`. While protected swaps are paused, both answer
+`503 paused` and no key is issued. **Sign only Orientim's key message for your own
 wallet**: a signature over bytes someone else chose could be a signature for a transaction. The skill's
 `requestApiKey` (and `orientim-verify key-challenge`, then `key`) checks the message before anything is
 signed: this host, this wallet, the key statement, plain text and nothing more.
@@ -174,7 +175,8 @@ simulates the transaction there: nothing may stay under the one-time key, in its
 the account a Pump.fun market opens in its name, and no account the route opens may stay open,
 whatever market it belongs to. Rent the route keeps (`costs.routeRentLamports` less
 `costs.routeRefundLamports`) is accepted only up to your `maxRouteCostLamports`, 0.001 SOL unless you
-set it (a Pump.fun bonding curve keeps about 0.00013 SOL of every buy). `costs.keptSolLamports` is
+set it lower, and never more: the rules refuse a route that keeps more (R4). A Pump.fun bonding curve
+keeps about 0.00013 SOL of every buy. `costs.keptSolLamports` is
 all the SOL the swap costs and does not return, in one number: the network fee, rent the route keeps,
 and Orientim's fee whenever it is in SOL (`costs.orientimFeeSolLamports`: taken from SOL sold, from
 SOL bought, or from the wallet). The SOL the swap itself sells is not a cost, and a new output
@@ -410,13 +412,13 @@ one to ask") lists what to do with each code.
 | 409 | `output-balance-changed` | Your balance of the output token moved since prepare, so this request signed nothing. Check `signature` as above, then prepare again. |
 | 410 | `expired` | The transaction's lifetime passed before this finalize signed it. Check `signature` as above, then prepare again. |
 | 422 | `unsupported-token`, `no-route`, `bad-quote`, `insufficient-sol`, `insufficient-balance`, `simulation-failed`, `verification-failed`, `token-data-mismatch`, `output-account-restricted`, `input-account-restricted` | This swap cannot be built safely right now; `message` says why. |
-| 422 | `amount-too-small` | The amount is below the smallest swap Orientim takes, about 0.004 SOL, or $1 of USDC or USDT (for a swap between two other tokens, its value in SOL). Swap a larger amount. Selling the whole balance of a token is allowed at any size. |
+| 422 | `amount-too-small` | The amount is below the smallest swap Orientim takes, about 0.004 SOL, or $1 of USDC or USDT (for a swap between two other tokens, its value in SOL). Swap a larger amount. Selling the whole balance of a token (not SOL) is allowed at any size. |
 | 426 | `skill-outdated` | This copy of the skill is older than Orientim serves (`minimum`). Download the current one; a swap already signed still finalizes. |
 | 429 | `rate-limited` | Too many requests for this key (per wallet for a self-serve key). Wait `Retry-After` seconds. |
 | 500 | `internal` | Something unexpected failed; nothing was signed by Orientim or sent. Retry later. |
 | 503 | `busy`, `unavailable` | Jupiter or Orientim's Solana RPC is rate limited, overloaded or silent (from finalize: Orientim could not read whether the transaction was already sent). Wait `Retry-After` seconds and retry. |
 | 503 | `fee-unavailable` | Orientim cannot collect its fee on this swap right now, so it built nothing. Wait `Retry-After` (60) seconds and retry. |
-| 503 | `paused` | Orientim has paused protected swaps. Your funds are not affected. A transaction already on chain is still reported by finalize. |
+| 503 | `paused` | Orientim has paused protected swaps, and issues no API keys meanwhile. Your funds are not affected. A transaction already on chain is still reported by finalize. |
 | 503 | `route-format` | Jupiter changed its swap instruction and Orientim refuses what it cannot read. Nothing builds until Orientim is updated: wait `Retry-After` (300) seconds, not less. |
 
 The key endpoints answer, besides `400 bad-request`:

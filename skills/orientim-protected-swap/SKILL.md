@@ -113,8 +113,8 @@ The user provides these; never ask for them in chat, and never print or log them
   ```
 
   `stateDir` (optional) is the absolute path of the state directory every swap of this wallet uses;
-  with it, any other directory is refused. With a daily limit, the state directory must be an absolute
-  path (the policy's `stateDir` or `ORIENTIM_STATE_DIR`): the limit counts only the swaps kept there.
+  with it, any other directory is refused. A policy with a daily limit must set `stateDir`: the limit
+  counts only the swaps kept there, so no other directory may be chosen for a run.
 
   A swap outside it is refused before anything is prepared, and again before finalize (`mint-not-allowed`,
   `amount-over-limit`, `daily-limit`); the dry run checks the per-swap limits too. In your own code the
@@ -196,8 +196,9 @@ same time overlap) and `readyToSign`, the whole wait, without changing the signi
      key (not in its own account, and not in the account a Pump.fun market opens in its name) and no
      account the route opens may stay open, whatever market it belongs to;
    - rent the route keeps (`costs.routeRentLamports` less `costs.routeRefundLamports`), accepted only
-     up to your `maxRouteCostLamports`, 0.001 SOL unless you set it (the example's
-     `--max-route-cost-lamports`). A Pump.fun bonding curve keeps about 0.00013 SOL of every buy.
+     up to your `maxRouteCostLamports`, 0.001 SOL unless you set it lower (the example's
+     `--max-route-cost-lamports`); the rules refuse more (R4). A Pump.fun bonding curve keeps about
+     0.00013 SOL of every buy.
      This cap and the network fee cap are amounts, not shares of the swap: on a swap of a few dollars
      they allow several percent, so set both lower for small swaps.
    - optionally, one ceiling for all the SOL the swap costs and does not return

@@ -17,7 +17,7 @@ import type { Address, Transaction } from '@solana/kit';
 import { findAssociatedTokenPda } from '@solana-program/token';
 import {
   ABSOLUTE_MAX_NETWORK_FEE_LAMPORTS, BPS_DENOMINATOR, JUPITER_PROGRAM, LAMPORTS_PER_SIGNATURE, LEGACY_SIZE_LIMIT,
-  MAX_CHOSEN_SLIPPAGE_BPS, MAX_COMPUTE_UNITS, MAX_CURVE_SLIPPAGE_BPS, MAX_ROUTE_SLIPPAGE_BPS, MAX_TAKER_RENT_LAMPORTS, PUMP_AMM_PROGRAM, PUMP_CURVE_PROGRAM,
+  MAX_CHOSEN_SLIPPAGE_BPS, MAX_COMPUTE_UNITS, MAX_CURVE_SLIPPAGE_BPS, MAX_ROUTE_KEPT_LAMPORTS, MAX_ROUTE_SLIPPAGE_BPS, MAX_TAKER_RENT_LAMPORTS, PUMP_AMM_PROGRAM, PUMP_CURVE_PROGRAM,
   FEE_TOKENS, MAX_FEE_BPS, MAX_INTERMEDIATE_ACCOUNTS, MAX_LOADED_ACCOUNTS_DATA_SIZE, MINT_SIZE, TOKEN_2022_PROGRAM, TOKEN_ACCOUNT_SIZE, TOKEN_PROGRAM, V1_MAX_ACCOUNTS,
   V1_SIZE_LIMIT, WSOL_MINT,
 } from '@orientim/core/constants';
@@ -700,6 +700,11 @@ export async function verify(transaction: Transaction, policy: Policy, snapshot:
   need('routeRefund', p.routeRefund > 0n ? 1 : 0, 'R5');
   if (p.takerRent < 0n || p.takerRent > MAX_TAKER_RENT_LAMPORTS) {
     fail('R4', `route rent ${p.takerRent} lamports is outside 0..${MAX_TAKER_RENT_LAMPORTS}`);
+  }
+  // Rent goes to E only to be spent or returned: what is neither refunded nor allowed to be kept could
+  // stay under E, where only the server could reach it.
+  if (p.takerRent - p.routeRefund > MAX_ROUTE_KEPT_LAMPORTS) {
+    fail('R4', `the route keeps ${p.takerRent - p.routeRefund} lamports of the rent sent to E, above ${MAX_ROUTE_KEPT_LAMPORTS}`);
   }
   if (version === 0) { need('cuLimit', 1, 'R4'); need('cuPrice', 1, 'R4'); }
   for (const [address, m] of intermediates) {

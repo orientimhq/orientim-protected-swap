@@ -53,6 +53,13 @@ export const ABSOLUTE_MAX_NETWORK_FEE_LAMPORTS = 1_000_000n; // 0.001 SOL
  */
 export const MAX_TAKER_RENT_LAMPORTS = 5_000_000n; // 0.005 SOL
 /**
+ * The most of that rent the route may keep: what W sends E for rent, less what closing the market's
+ * account returns in the same transaction. A Pump.fun bonding curve keeps 132,080 lamports for growing
+ * its own account; anything else the route opens must be closed again. Without this bound, rent with
+ * no refund could leave up to MAX_TAKER_RENT_LAMPORTS under a key only the server can derive.
+ */
+export const MAX_ROUTE_KEPT_LAMPORTS = 1_000_000n; // 0.001 SOL
+/**
  * The most tolerance a Jupiter route may carry on chain. Jupiter's program stops the
  * swap when this instruction delivers less than its quoted amount less this tolerance, whatever the
  * destination held before, so it is a floor independent of the RPC. The verifier reads it from the

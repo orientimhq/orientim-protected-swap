@@ -56,6 +56,13 @@ const ABSOLUTE_MAX_NETWORK_FEE_LAMPORTS = 1000000n;
 */
 const MAX_TAKER_RENT_LAMPORTS = 5000000n;
 /**
+* The most of that rent the route may keep: what W sends E for rent, less what closing the market's
+* account returns in the same transaction. A Pump.fun bonding curve keeps 132,080 lamports for growing
+* its own account; anything else the route opens must be closed again. Without this bound, rent with
+* no refund could leave up to MAX_TAKER_RENT_LAMPORTS under a key only the server can derive.
+*/
+const MAX_ROUTE_KEPT_LAMPORTS = 1000000n;
+/**
 * The most tolerance an agent or its owner may choose (`slippageBps`): 15%. The agent API and the
 * skill's check ask the verifier for the number in the agent's own intent, never for more than this. Without a choice,
 * routes keep the two ceilings above.
@@ -877,6 +884,7 @@ async function verify(transaction, policy, snapshot, opts = {}) {
 	need("closeRouteAccount", p.routeRefund > 0n ? 1 : 0, "R5");
 	need("routeRefund", p.routeRefund > 0n ? 1 : 0, "R5");
 	if (p.takerRent < 0n || p.takerRent > 5000000n) fail("R4", `route rent ${p.takerRent} lamports is outside 0..${MAX_TAKER_RENT_LAMPORTS}`);
+	if (p.takerRent - p.routeRefund > 1000000n) fail("R4", `the route keeps ${p.takerRent - p.routeRefund} lamports of the rent sent to E, above ${MAX_ROUTE_KEPT_LAMPORTS}`);
 	if (version === 0) {
 		need("cuLimit", 1, "R4");
 		need("cuPrice", 1, "R4");
@@ -1078,7 +1086,7 @@ function autoSlippageBps(r) {
 const MAX_BELOW_BPS = 2e3;
 const MAX_PRICE_IMPACT_BPS = 2e3;
 const MAX_FEE_BPS = 30;
-/** The fee limit the check applies: the agent's own, never above Orientim's pinned fee. */
+/** The fee limit the check applies: the agent's own, never above the ceiling pinned for Orientim's fee. */
 const feeLimitBps = (maxFeeBps) => Number.isInteger(maxFeeBps) && maxFeeBps >= 0 ? Math.min(maxFeeBps, 30) : 30;
 const isSlippageBps = (v) => typeof v === "number" && Number.isInteger(v) && v >= 10 && v <= 1500;
 /** A limit outside what the skill allows: a usage error (exit 2), not a refusal of this swap. */
