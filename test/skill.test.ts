@@ -14,6 +14,7 @@ import {
   acquireLock, ApprovalError, approvalFor, checkPolicy, ConfigError, createFileStore, forgetApproval, heldToApproval, keptApproval, recordApproval, dataOnly, errorExitCode, errorLine, exitCodeOf, fillAgainstQuote, IntentError, isApiKeyMessage,
   loadPolicy, LockBusyError, OrientimApiError, OrientimOrderError, PendingSwapError, PolicyError, preparedData, receivedFor, recoverPending,
   releaseHeldLocks, safeCode, settleOrder, SKILL_VERSION, stateDirFor, untrustedLine,
+  policyPathFor,
 } from '../skills/orientim-protected-swap/examples/swap.ts';
 import { runCli } from '../skills/orientim-protected-swap/src/cli.ts';
 import {
@@ -460,6 +461,20 @@ describe('the skill holds its own state and limits against what it is handed', (
     expect(run.status).toBe(2);
     expect(run.stderr).toContain('not a solana-keygen file');
     expect(run.stderr).not.toContain('Nx8Tk');
+  });
+});
+
+describe("the owner's policy at the system path", () => {
+  it('is used whatever ORIENTIM_POLICY says, and another file is refused', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orientim-sys-'));
+    const system = join(dir, 'policy.json');
+    const other = join(dir, 'other.json');
+    expect(policyPathFor(undefined, system)).toBeUndefined();
+    expect(policyPathFor(other, system)).toBe(other);
+    writeFileSync(system, JSON.stringify({ maxAmountIn: { [USDC]: '1000000' } }));
+    expect(policyPathFor(undefined, system)).toBe(system);
+    expect(policyPathFor(system, system)).toBe(system);
+    expect(() => policyPathFor(other, system)).toThrow('which is not used');
   });
 });
 

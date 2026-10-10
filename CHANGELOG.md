@@ -3,6 +3,18 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.11.1 (2026-10-10)
+
+- The owner's policy at a system path: `/etc/orientim/policy.json` (`C:\ProgramData\Orientim\policy.json`
+  on Windows), when it exists, is the policy for `examples/swap.ts` and `orientim-verify` whatever the
+  environment says. An agent that runs the command with `ORIENTIM_POLICY` unset is held to it, and any
+  other file `ORIENTIM_POLICY` names is refused. Written by an administrator and read-only to the
+  agent's user, it is what "Safe setup for an agent" now asks for. Without that file, nothing changes.
+- `SKILL.md`: the first policy sample names its `stateDir` (a daily limit without one is refused
+  since 1.10.8); the swap command after the dry run; the fee as 0.25% under the 0.3% ceiling.
+- `README.md`: an API key from a keypair file in a few lines.
+- The command's usage line no longer offers `--fast`, `--v1` (off on orientim.com) or `--state`.
+
 ## 1.11.0 (2026-10-10)
 
 - The owner's policy takes `allowedOutputMints`, the tokens the wallet may buy. With it, a swap into

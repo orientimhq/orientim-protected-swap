@@ -23,12 +23,13 @@
  *                                                Orientim's own treasury is pinned in the skill)
  *   JUPITER_API_KEY=...                          (for your own price: Jupiter throttles keyless calls after one or two)
  *   ORIENTIM_POLICY=/path/to/policy.json         (optional: the owner's limits per swap and per day, and the
- *                                                ceilings on tolerance, floor and price impact; see OwnerPolicy)
+ *                                                ceilings on tolerance, floor and price impact; see OwnerPolicy;
+ *                                                /etc/orientim/policy.json, when it exists, is used instead)
  *   ORIENTIM_ARCHIVE_RPC_URL=https://<full history>  (optional: a second proof that a swap expired when your
  *                                                RPC missed the moment it could prove it; see confirm)
  *
  *   node swap.ts --in <mint> --out <mint> --amount <base units> --id <order id> [--slippage-bps N|auto] [--max-price-impact-bps N]
- *                [--min-out <base units>] [--max-below-bps N] [--max-fee-bps 30] [--max-route-cost-lamports N] [--accept-cost-bps N] [--v1]
+ *                [--min-out <base units>] [--max-below-bps N] [--max-fee-bps 30] [--max-route-cost-lamports N] [--accept-cost-bps N]
  *   (without --slippage-bps the tolerance is Orientim's default: 0.5%, or 3% on a Pump.fun curve; with auto,
  *   Jupiter's estimate for the trade, 0.5% to 3%; never above the owner's maxSlippageBps; above 5% price impact, refused)
  *   node swap.ts ... --owner <address> --dry-run      prepare and verify only: nothing is signed
@@ -41,7 +42,7 @@
  * when something must be settled first, and 5 when this order (--id) already swapped or may still land.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { chmodSync, closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { basename, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -334,7 +335,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.11.0';
+export const SKILL_VERSION = '1.11.1';
 
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res: Response) => {
@@ -1159,6 +1160,28 @@ export function loadPolicy(path: string): OwnerPolicy {
     ...(maxPriceImpactBps !== undefined ? { maxPriceImpactBps } : {}),
     ...(outputs !== undefined ? { allowedOutputMints: [...outputs as string[]] } : {}),
   };
+}
+
+/**
+ * Where the owner's policy is kept outside the agent's reach: a system path only an administrator
+ * writes (`/etc/orientim/policy.json`, or `C:\ProgramData\Orientim\policy.json` on Windows). It is
+ * named in the code, not in the environment, so that an agent which runs the command with
+ * `ORIENTIM_POLICY` unset or changed is held to the same limits.
+ */
+export const SYSTEM_POLICY_PATH = process.platform === 'win32' ? 'C:\\ProgramData\\Orientim\\policy.json' : '/etc/orientim/policy.json';
+
+/**
+ * The policy file a command reads: the system one when it exists (and nothing else is accepted then:
+ * `ORIENTIM_POLICY` may name it or be unset), otherwise the one `ORIENTIM_POLICY` names, otherwise none.
+ */
+export function policyPathFor(named: string | undefined, system: string = SYSTEM_POLICY_PATH): string | undefined {
+  if (existsSync(system)) {
+    if (named && resolve(named) !== resolve(system)) {
+      throw new ConfigError(`The owner's policy is ${system}; ORIENTIM_POLICY names another file (${named}), which is not used. Nothing was prepared.`);
+    }
+    return system;
+  }
+  return named || undefined;
 }
 
 /** The default state directory: relative to wherever the command is started, so named only as a last resort. */
@@ -2385,7 +2408,7 @@ async function main() {
   const need = (name: string) => process.env[name] ?? (console.error(`Set ${name}.`), process.exit(2));
   const [inputMint, outputMint, amountIn] = [flag('in'), flag('out'), flag('amount')];
   if (!inputMint || !outputMint || !amountIn) {
-    console.error('usage: node swap.ts --in <mint> --out <mint> --amount <base units> --id <order id> [--slippage-bps N|auto] [--max-price-impact-bps N] [--min-out N] [--max-below-bps N] [--max-fee-bps N] [--max-route-cost-lamports N] [--accept-cost-bps N] [--fast] [--v1] [--state <dir>] [--owner <address> --dry-run]');
+    console.error('usage: node swap.ts --in <mint> --out <mint> --amount <base units> --id <order id> [--slippage-bps N|auto] [--max-price-impact-bps N] [--min-out N] [--max-below-bps N] [--max-fee-bps N] [--max-route-cost-lamports N] [--accept-cost-bps N] [--owner <address> --dry-run]');
     process.exit(2);
   }
   const apiUrl = need('ORIENTIM_API_URL').replace(/\/+$/, '');
@@ -2409,7 +2432,8 @@ async function main() {
   // Optional: an RPC with the full history, for a second proof that a swap expired (`confirm`).
   const archive = process.env.ORIENTIM_ARCHIVE_RPC_URL ? createSolanaRpc(process.env.ORIENTIM_ARCHIVE_RPC_URL) : undefined;
   // The owner's limits, read first: a policy that cannot be read stops everything, the dry run included.
-  const policy = process.env.ORIENTIM_POLICY ? loadPolicy(process.env.ORIENTIM_POLICY) : undefined;
+  const policyPath = policyPathFor(process.env.ORIENTIM_POLICY || undefined);
+  const policy = policyPath ? loadPolicy(policyPath) : undefined;
 
   if (process.argv.includes('--dry-run')) {
     const owner = flag('owner') ?? (console.error('--dry-run needs --owner <address>.'), process.exit(2));

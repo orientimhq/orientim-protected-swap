@@ -28,9 +28,11 @@ seven rules (R1–R7), with every account read from your RPC, not from Orientim:
 
 On top of the rules, the skill brings a price floor of its own from Jupiter (a minimum more than 20%
 below it is refused), refuses a price impact above your limit, simulates the swap on your RPC, holds
-each swap to the owner's spending limits (`ORIENTIM_POLICY`), and never lets a server's text reach the
-agent as instructions. A compromised server, relay or DNS can refuse or delay a swap; it cannot make
-your wallet sign one that moves anything else.
+each swap to the owner's spending limits and the tokens the wallet may buy (`/etc/orientim/policy.json`
+or `ORIENTIM_POLICY`), and never lets a server's text reach the agent as instructions. A compromised
+server, relay or DNS can refuse or delay a swap; it cannot make your wallet sign one that moves
+anything else. Orientim's server is not open source and is not in this repository: the check is
+built so that you do not have to trust it.
 
 ## Repository layout
 

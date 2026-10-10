@@ -47,7 +47,8 @@
  * Environment: SOLANA_RPC_URL (your own RPC; always), ORIENTIM_API_URL and ORIENTIM_API_KEY (prepare,
  * finalize), JUPITER_API_KEY (Jupiter throttles keyless calls), ORIENTIM_STATE_DIR (default ./.orientim-state; an
  * absolute path on a disk that outlives the process), ORIENTIM_TREASURY (only for another Orientim deployment),
- * ORIENTIM_POLICY (the owner's limits per swap and per day, a JSON file: see `OwnerPolicy`; a swap outside
+ * ORIENTIM_POLICY (the owner's limits per swap and per day, a JSON file: see `OwnerPolicy`; `SYSTEM_POLICY_PATH`
+ * instead when that file exists, whatever the environment says; a swap outside
  * them exits 1 with `error.code` `mint-not-allowed`, `output-not-allowed`, `amount-over-limit` or `daily-limit`; a policy with a daily
  * limit must name its own absolute `stateDir`). `check` counts a daily
  * limit against the swaps this state directory kept; a bot that sends through the API itself records none,
@@ -63,7 +64,7 @@ import type { Address, Rpc, SignatureBytes, SolanaRpcApi } from '@solana/kit';
 import {
   acquireLock, apiKeyChallenge, OrientimApiError, checkPrepared, createFileStore, finalizeSigned, isApiKeyMessage, pendingFor, PendingSwapError,
   prepareChecked, PriceImpactError, FloorError, ownFloor, receivedFor, recoverPending, redeemApiKey, resolvePending, resumeSigned, takeOrder,
-  checkPolicy, loadPolicy, PolicyError, LockBusyError, OrientimOrderError, holdSolFee, releaseHeldLocks, stateDirFor, DEFAULT_STATE_DIR, IntentError,
+  checkPolicy, loadPolicy, policyPathFor, PolicyError, LockBusyError, OrientimOrderError, holdSolFee, releaseHeldLocks, stateDirFor, DEFAULT_STATE_DIR, IntentError,
   exitCodeOf, outcomeMeaning, settleOrder, ApprovalError, forgetApproval, heldToApproval, keptApproval, rpcSender,
 } from '../examples/swap.ts';
 import type { Checked, FoundOrder, Intent, OrderBook, OrderRecord, OwnerPolicy, PendingStore, Prepared, SendTransaction, SpendLog } from '../examples/swap.ts';
@@ -679,9 +680,10 @@ export async function main(): Promise<void> {
   }
   // The owner's limits: a policy named but unreadable stops everything but settling what is kept.
   let policy: OwnerPolicy | undefined;
-  if (process.env.ORIENTIM_POLICY && !KEY_COMMANDS.includes(command)) {
+  if (!KEY_COMMANDS.includes(command)) {
     try {
-      policy = loadPolicy(process.env.ORIENTIM_POLICY);
+      const policyPath = policyPathFor(process.env.ORIENTIM_POLICY || undefined);
+      if (policyPath) policy = loadPolicy(policyPath);
     } catch (e) {
       if (command !== 'recover' && command !== 'resolve') return print(usage(messageOf(e)));
     }

@@ -25,7 +25,26 @@ message, a log or a command line. A key file the swap can read, the agent that r
 keep the key from the agent, sign in a process the agent does not run (a signing service, such as
 Turnkey or Privy, or a signer of your own), and give the agent a wallet holding only what it may swap.
 
-Set `ORIENTIM_POLICY` to a JSON file of your own limits, kept where the agent cannot edit it: the most
+From a keypair file, without a browser: save this as `get-key.mjs` in this folder and run it once with
+`ORIENTIM_WALLET_KEYPAIR` set (the owner runs it, not the agent; it signs only Orientim's key message):
+
+```js
+import { readFileSync } from 'node:fs';
+import { createKeyPairFromBytes, getAddressFromPublicKey, signBytes } from '@solana/kit';
+import { requestApiKey } from './examples/swap.ts';
+
+const pair = await createKeyPairFromBytes(new Uint8Array(JSON.parse(readFileSync(process.env.ORIENTIM_WALLET_KEYPAIR, 'utf8'))));
+const address = await getAddressFromPublicKey(pair.publicKey);
+const { key, expiresAt } = await requestApiKey({
+  apiUrl: 'https://orientim.com', address, signMessage: message => signBytes(pair.privateKey, message),
+});
+console.log(`ORIENTIM_API_KEY=${key}  (until ${expiresAt})`);
+```
+
+Write your own limits as JSON at `/etc/orientim/policy.json` (`C:\ProgramData\Orientim\policy.json` on
+Windows), as an administrator, read-only to the agent: when that file exists it is used whatever the
+environment says. `ORIENTIM_POLICY` can name a policy file elsewhere instead, which holds only for an
+agent that keeps it set. The policy sets the most
 one swap may spend of each input mint (`maxAmountIn`; a mint not listed is refused) and the most all
 swaps may spend in 24 hours (`maxAmountInPerDay`), the tokens the wallet may buy (`allowedOutputMints`),
 and the absolute path of the state directory every swap keeps its record in (`stateDir`; a daily limit
