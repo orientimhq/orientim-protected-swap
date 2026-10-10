@@ -122,12 +122,22 @@ describe("the owner's policy", () => {
 
   it('refuses a mint not listed, an amount over the limit, and a daily limit it cannot count', async () => {
     const policy = { maxAmountIn: { [USDC]: '5000000' }, maxAmountInPerDay: { [USDC]: '8000000' } };
-    await expect(checkPolicy(policy, { owner: W, inputMint: BONK, amountIn: '1' })).rejects.toMatchObject({ code: 'mint-not-allowed' });
-    await expect(checkPolicy(policy, { owner: W, inputMint: USDC, amountIn: '5000001' })).rejects.toMatchObject({ code: 'amount-over-limit' });
-    await expect(checkPolicy(policy, { owner: W, inputMint: USDC, amountIn: '1' })).rejects.toMatchObject({ code: 'daily-limit' });
+    await expect(checkPolicy(policy, { owner: W, inputMint: BONK, outputMint: USDC, amountIn: '1' })).rejects.toMatchObject({ code: 'mint-not-allowed' });
+    await expect(checkPolicy(policy, { owner: W, inputMint: USDC, outputMint: BONK, amountIn: '5000001' })).rejects.toMatchObject({ code: 'amount-over-limit' });
+    await expect(checkPolicy(policy, { owner: W, inputMint: USDC, outputMint: BONK, amountIn: '1' })).rejects.toMatchObject({ code: 'daily-limit' });
     const spends = { spentSince: async () => 4_000_000n, recordSpend: async () => {} };
-    await expect(checkPolicy(policy, { owner: W, inputMint: USDC, amountIn: '4000000' }, spends)).resolves.toBeUndefined();
-    await expect(checkPolicy(policy, { owner: W, inputMint: USDC, amountIn: '4000001' }, spends)).rejects.toBeInstanceOf(PolicyError);
+    await expect(checkPolicy(policy, { owner: W, inputMint: USDC, outputMint: BONK, amountIn: '4000000' }, spends)).resolves.toBeUndefined();
+    await expect(checkPolicy(policy, { owner: W, inputMint: USDC, outputMint: BONK, amountIn: '4000001' }, spends)).rejects.toBeInstanceOf(PolicyError);
+  });
+
+  it('refuses buying a token the owner did not list, when the policy names the ones the wallet may buy', async () => {
+    expect(loadPolicy(write({ maxAmountIn: { [USDC]: '5' }, allowedOutputMints: [BONK] }))).toEqual({ maxAmountIn: { [USDC]: '5' }, allowedOutputMints: [BONK] });
+    for (const bad of [[], BONK, ['not-a-mint'], [1]]) {
+      expect(() => loadPolicy(write({ maxAmountIn: { [USDC]: '5' }, allowedOutputMints: bad }))).toThrow(/allowedOutputMints/);
+    }
+    const policy = { maxAmountIn: { [USDC]: '5000000' }, allowedOutputMints: [BONK] };
+    await expect(checkPolicy(policy, { owner: W, inputMint: USDC, outputMint: 'So11111111111111111111111111111111111111112', amountIn: '1' })).rejects.toMatchObject({ code: 'output-not-allowed' });
+    await expect(checkPolicy(policy, { owner: W, inputMint: USDC, outputMint: BONK, amountIn: '1' })).resolves.toBeUndefined();
   });
 });
 

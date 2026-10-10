@@ -290,9 +290,12 @@ run them itself before signing.
   `minOut` more than 20% below it before anything is prepared (`FloorError`, `floor-too-low` from the
   command line), and holds Orientim's fee to 0.3% whatever `maxFeeBps` says.
 - **The owner's limits.** `ORIENTIM_POLICY` names a JSON file of the owner's own: `maxAmountIn` per
-  input mint for one swap (a mint not listed is refused) and `maxAmountInPerDay` for all swaps from
-  the wallet in 24 hours. The skill and the command line refuse a swap outside it before anything is
-  prepared and again before finalize (`mint-not-allowed`, `amount-over-limit`, `daily-limit`).
+  input mint for one swap (a mint not listed is refused), `maxAmountInPerDay` for all swaps from
+  the wallet in 24 hours, and `allowedOutputMints`, the tokens the wallet may buy. The skill and the
+  command line refuse a swap outside it before anything is prepared and again before finalize
+  (`mint-not-allowed`, `output-not-allowed`, `amount-over-limit`, `daily-limit`). With the key out of
+  the agent's reach, the policy read-only to it and this skill as its only way to move funds, a misled
+  agent can only swap within these limits, into the wallet itself (`SKILL.md`, "Safe setup for an agent").
 - **Token notes.** An issuer that can freeze balances or mint more (`tokenNotices`).
 - **What arrived.** The amount received is read from the confirmed transaction (`receivedFor`).
   `protectedSwap` returns it as `received`, and `orientim-verify finalize` as `received` too.

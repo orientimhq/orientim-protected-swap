@@ -1861,7 +1861,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.10.8";
+const SKILL_VERSION = "1.11.0";
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res) => {
 	const after = Number(res.headers.get("retry-after"));
@@ -2467,7 +2467,8 @@ function loadPolicy(path) {
 		"allowUnknownPriceImpact",
 		"maxSlippageBps",
 		"maxBelowBps",
-		"maxPriceImpactBps"
+		"maxPriceImpactBps",
+		"allowedOutputMints"
 	];
 	const unknown = Object.keys(raw).filter((k) => !known.includes(k));
 	if (unknown.length) throw bad(`has fields it does not know: ${unknown.join(", ")}`);
@@ -2488,6 +2489,8 @@ function loadPolicy(path) {
 		if (!(typeof v === "number" && Number.isInteger(v) && v >= least && v <= most)) throw bad(`needs ${name} as a whole number of bps from ${least} to ${most}`);
 		return v;
 	};
+	const outputs = policy.allowedOutputMints;
+	if (outputs !== void 0 && !(Array.isArray(outputs) && outputs.length > 0 && outputs.every((m) => typeof m === "string" && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(m)))) throw bad("needs allowedOutputMints as a list of at least one mint address");
 	const maxSlippageBps = ceiling("maxSlippageBps", 10, MAX_SLIPPAGE_BPS);
 	const maxBelowBps = ceiling("maxBelowBps", 0, MAX_BELOW_BPS);
 	const maxPriceImpactBps = ceiling("maxPriceImpactBps", 0, MAX_PRICE_IMPACT_BPS);
@@ -2498,7 +2501,8 @@ function loadPolicy(path) {
 		...policy.allowUnknownPriceImpact === true ? { allowUnknownPriceImpact: true } : {},
 		...maxSlippageBps !== void 0 ? { maxSlippageBps } : {},
 		...maxBelowBps !== void 0 ? { maxBelowBps } : {},
-		...maxPriceImpactBps !== void 0 ? { maxPriceImpactBps } : {}
+		...maxPriceImpactBps !== void 0 ? { maxPriceImpactBps } : {},
+		...outputs !== void 0 ? { allowedOutputMints: [...outputs] } : {}
 	};
 }
 /** The default state directory: relative to wherever the command is started, so named only as a last resort. */
@@ -2596,14 +2600,16 @@ var PolicyError = class extends Error {
 	}
 };
 /**
-* Holds one swap to the owner's policy: the mint must be listed, the amount within the per-swap
-* limit, and, with a daily limit, this amount and what the last 24 hours spent within it. A daily
+* Holds one swap to the owner's policy: the mint must be listed, the token bought allowed when the
+* policy names the ones it may buy, the amount within the per-swap limit, and, with a daily limit,
+* this amount and what the last 24 hours spent within it. A daily
 * limit needs `spends`; without it the swap is refused rather than let through uncounted.
 */
 async function checkPolicy(policy, swap, spends, except) {
 	const amount = BigInt(swap.amountIn);
 	const most = policy.maxAmountIn[swap.inputMint];
 	if (most === void 0) throw new PolicyError("mint-not-allowed", `The owner's policy does not allow swapping from ${swap.inputMint}.`);
+	if (policy.allowedOutputMints && !policy.allowedOutputMints.includes(swap.outputMint)) throw new PolicyError("output-not-allowed", `The owner's policy does not allow buying ${swap.outputMint}.`);
 	if (amount > BigInt(most)) throw new PolicyError("amount-over-limit", `${swap.amountIn} is above the owner's limit of ${most} per swap from ${swap.inputMint}.`, { limit: most });
 	const daily = policy.maxAmountInPerDay?.[swap.inputMint];
 	if (daily === void 0) return;
@@ -3484,6 +3490,7 @@ async function protectedSwap(args) {
 	const spend = {
 		owner,
 		inputMint: args.intent.inputMint,
+		outputMint: args.intent.outputMint,
 		amountIn: args.intent.amountIn
 	};
 	if (args.policy) await checkPolicy(args.policy, spend, args.spends);
@@ -3615,11 +3622,18 @@ async function main$1() {
 		const owner = flag("owner") ?? (console.error("--dry-run needs --owner <address>."), process.exit(2));
 		const { dir: dryStateDir, warning: dryWarning } = stateDirFor(policy, flag("state") ?? (process.env.ORIENTIM_STATE_DIR || void 0));
 		if (dryWarning) console.error(dryWarning);
-		if (policy) await checkPolicy({ maxAmountIn: policy.maxAmountIn }, {
-			owner,
-			inputMint,
-			amountIn
-		});
+		if (policy) {
+			const { maxAmountIn, allowedOutputMints } = policy;
+			await checkPolicy({
+				maxAmountIn,
+				...allowedOutputMints ? { allowedOutputMints } : {}
+			}, {
+				owner,
+				inputMint,
+				outputMint,
+				amountIn
+			});
+		}
 		const budget = preparationBudget();
 		const own = await ownFloor({
 			...intent,
@@ -3886,7 +3900,7 @@ if (process.argv[1] && /swap\.ts$/.test(process.argv[1]) && fileURLToPath(import
 * finalize), JUPITER_API_KEY (Jupiter throttles keyless calls), ORIENTIM_STATE_DIR (default ./.orientim-state; an
 * absolute path on a disk that outlives the process), ORIENTIM_TREASURY (only for another Orientim deployment),
 * ORIENTIM_POLICY (the owner's limits per swap and per day, a JSON file: see `OwnerPolicy`; a swap outside
-* them exits 1 with `error.code` `mint-not-allowed`, `amount-over-limit` or `daily-limit`; a policy with a daily
+* them exits 1 with `error.code` `mint-not-allowed`, `output-not-allowed`, `amount-over-limit` or `daily-limit`; a policy with a daily
 * limit must name its own absolute `stateDir`). `check` counts a daily
 * limit against the swaps this state directory kept; a bot that sends through the API itself records none,
 * so for it a daily limit is only as good as its own record.
@@ -4731,6 +4745,7 @@ async function runCommand(command, input, deps) {
 					if (deps.policy) await checkPolicy(deps.policy, {
 						owner: prepared.wallet,
 						inputMint: intent.inputMint,
+						outputMint: intent.outputMint,
 						amountIn: intent.amountIn
 					}, spends, s.signature);
 					await spends?.recordSpend({

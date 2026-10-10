@@ -3,6 +3,16 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.11.0 (2026-10-10)
+
+- The owner's policy takes `allowedOutputMints`, the tokens the wallet may buy. With it, a swap into
+  a token not listed is refused (`output-not-allowed`) before anything is prepared, in the dry run,
+  and again before finalize, by `protectedSwap` and by `orientim-verify`. A misled agent can no longer
+  be talked into buying a token someone else chose, within its limits. Without it, nothing changes.
+- `SKILL.md`: "Safe setup for an agent". With the key out of the agent's reach, the policy read-only
+  to it and this skill as its only way to move funds, a prompt injection can only swap within the
+  owner's limits, into the wallet itself. `README.md` and `reference/AGENT-API.md` point to it.
+
 ## 1.10.8 (2026-10-06)
 
 - The verifier (R4) bounds the rent a route may keep: SOL sent to the one-time key for rent, less

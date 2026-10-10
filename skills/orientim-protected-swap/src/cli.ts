@@ -48,7 +48,7 @@
  * finalize), JUPITER_API_KEY (Jupiter throttles keyless calls), ORIENTIM_STATE_DIR (default ./.orientim-state; an
  * absolute path on a disk that outlives the process), ORIENTIM_TREASURY (only for another Orientim deployment),
  * ORIENTIM_POLICY (the owner's limits per swap and per day, a JSON file: see `OwnerPolicy`; a swap outside
- * them exits 1 with `error.code` `mint-not-allowed`, `amount-over-limit` or `daily-limit`; a policy with a daily
+ * them exits 1 with `error.code` `mint-not-allowed`, `output-not-allowed`, `amount-over-limit` or `daily-limit`; a policy with a daily
  * limit must name its own absolute `stateDir`). `check` counts a daily
  * limit against the swaps this state directory kept; a bot that sends through the API itself records none,
  * so for it a daily limit is only as good as its own record.
@@ -606,7 +606,7 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
           // recorded, with a policy or without, so that a daily limit set later counts it too. A swap
           // refused before it is kept was never sent, and its spend is taken back.
           const spends = spendsOf(store);
-          if (deps.policy) await checkPolicy(deps.policy, { owner: prepared.wallet, inputMint: intent.inputMint, amountIn: intent.amountIn }, spends, s.signature);
+          if (deps.policy) await checkPolicy(deps.policy, { owner: prepared.wallet, inputMint: intent.inputMint, outputMint: intent.outputMint, amountIn: intent.amountIn }, spends, s.signature);
           await spends?.recordSpend({ signature: s.signature, owner: prepared.wallet, mint: intent.inputMint, amountIn: intent.amountIn, at: Date.now() });
           try {
             const orderId = intent.id;

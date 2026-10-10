@@ -334,7 +334,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.10.8';
+export const SKILL_VERSION = '1.11.0';
 
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res: Response) => {
@@ -1094,6 +1094,13 @@ export type OwnerPolicy = {
    * refused (`impact-over-limit`), and the default of 5% is lowered to it.
    */
   maxPriceImpactBps?: number;
+  /**
+   * The tokens the wallet may buy, as mint addresses. With it, a swap into a token not listed is
+   * refused (`output-not-allowed`), so a misled agent cannot be talked into buying a token someone
+   * else chose; selling back counts too, so list SOL or USDC if the agent sells into them. Without
+   * it, any token may be bought.
+   */
+  allowedOutputMints?: string[];
 };
 
 /** The owner's ceilings on what an intent may choose: the route's tolerance, the floor, the price impact. */
@@ -1111,7 +1118,7 @@ export function loadPolicy(path: string): OwnerPolicy {
   }
   const bad = (why: string) => new ConfigError(`The owner's policy ${path} ${why}. Nothing was prepared.`);
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw bad('is not a JSON object');
-  const known = ['maxAmountIn', 'maxAmountInPerDay', 'stateDir', 'allowUnknownPriceImpact', 'maxSlippageBps', 'maxBelowBps', 'maxPriceImpactBps'];
+  const known = ['maxAmountIn', 'maxAmountInPerDay', 'stateDir', 'allowUnknownPriceImpact', 'maxSlippageBps', 'maxBelowBps', 'maxPriceImpactBps', 'allowedOutputMints'];
   const unknown = Object.keys(raw).filter(k => !known.includes(k));
   if (unknown.length) throw bad(`has fields it does not know: ${unknown.join(', ')}`);
   const limits = (name: string, value: unknown): Record<string, string> => {
@@ -1135,6 +1142,10 @@ export function loadPolicy(path: string): OwnerPolicy {
     if (!(typeof v === 'number' && Number.isInteger(v) && v >= least && v <= most)) throw bad(`needs ${name} as a whole number of bps from ${least} to ${most}`);
     return v;
   };
+  const outputs = policy.allowedOutputMints;
+  if (outputs !== undefined && !(Array.isArray(outputs) && outputs.length > 0 && outputs.every(m => typeof m === 'string' && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(m)))) {
+    throw bad('needs allowedOutputMints as a list of at least one mint address');
+  }
   const maxSlippageBps = ceiling('maxSlippageBps', MIN_SLIPPAGE_BPS, MAX_SLIPPAGE_BPS);
   const maxBelowBps = ceiling('maxBelowBps', 0, MAX_BELOW_BPS);
   const maxPriceImpactBps = ceiling('maxPriceImpactBps', 0, MAX_PRICE_IMPACT_BPS);
@@ -1146,6 +1157,7 @@ export function loadPolicy(path: string): OwnerPolicy {
     ...(maxSlippageBps !== undefined ? { maxSlippageBps } : {}),
     ...(maxBelowBps !== undefined ? { maxBelowBps } : {}),
     ...(maxPriceImpactBps !== undefined ? { maxPriceImpactBps } : {}),
+    ...(outputs !== undefined ? { allowedOutputMints: [...outputs as string[]] } : {}),
   };
 }
 
@@ -1263,7 +1275,7 @@ export function keptApproval(dir: string, key: ApprovalKey, now = Date.now()): A
 
 /** The swap is outside the owner's policy: refused before anything was prepared or sent. */
 export class PolicyError extends Error {
-  readonly code: 'mint-not-allowed' | 'amount-over-limit' | 'daily-limit' | 'slippage-over-limit' | 'floor-over-limit' | 'impact-over-limit';
+  readonly code: 'mint-not-allowed' | 'output-not-allowed' | 'amount-over-limit' | 'daily-limit' | 'slippage-over-limit' | 'floor-over-limit' | 'impact-over-limit';
   readonly limit?: string;
   readonly spent?: string;
   constructor(code: PolicyError['code'], message: string, figures: { limit?: string; spent?: string } = {}) {
@@ -1286,16 +1298,20 @@ export type SpendLog = {
 };
 
 /**
- * Holds one swap to the owner's policy: the mint must be listed, the amount within the per-swap
- * limit, and, with a daily limit, this amount and what the last 24 hours spent within it. A daily
+ * Holds one swap to the owner's policy: the mint must be listed, the token bought allowed when the
+ * policy names the ones it may buy, the amount within the per-swap limit, and, with a daily limit,
+ * this amount and what the last 24 hours spent within it. A daily
  * limit needs `spends`; without it the swap is refused rather than let through uncounted.
  */
 export async function checkPolicy(
-  policy: OwnerPolicy, swap: { owner: string; inputMint: string; amountIn: string }, spends?: SpendLog, except?: string,
+  policy: OwnerPolicy, swap: { owner: string; inputMint: string; outputMint: string; amountIn: string }, spends?: SpendLog, except?: string,
 ): Promise<void> {
   const amount = BigInt(swap.amountIn);
   const most = policy.maxAmountIn[swap.inputMint];
   if (most === undefined) throw new PolicyError('mint-not-allowed', `The owner's policy does not allow swapping from ${swap.inputMint}.`);
+  if (policy.allowedOutputMints && !policy.allowedOutputMints.includes(swap.outputMint)) {
+    throw new PolicyError('output-not-allowed', `The owner's policy does not allow buying ${swap.outputMint}.`);
+  }
   if (amount > BigInt(most)) {
     throw new PolicyError('amount-over-limit', `${swap.amountIn} is above the owner's limit of ${most} per swap from ${swap.inputMint}.`, { limit: most });
   }
@@ -2293,7 +2309,7 @@ export async function protectedSwap(args: {
   const waiting = args.pending ? await pendingFor(args.pending, owner) : [];
   if (waiting.length) throw new PendingSwapError(waiting);
   // The owner's limits, from their own file: nothing the intent says can raise them.
-  const spend = { owner, inputMint: args.intent.inputMint, amountIn: args.intent.amountIn };
+  const spend = { owner, inputMint: args.intent.inputMint, outputMint: args.intent.outputMint, amountIn: args.intent.amountIn };
   if (args.policy) await checkPolicy(args.policy, spend, args.spends);
   const { prepared, notices = [], tokenRisk: risk } = await prepareChecked({ ...args, owner });
   const signStarted = performance.now();
@@ -2400,9 +2416,12 @@ async function main() {
     // The same state directory as the real swap: the user's approval is kept there for it.
     const { dir: dryStateDir, warning: dryWarning } = stateDirFor(policy, flag('state') ?? (process.env.ORIENTIM_STATE_DIR || undefined));
     if (dryWarning) console.error(dryWarning);
-    // A swap the owner's policy refuses is refused here too, before anything is prepared: its mint
+    // A swap the owner's policy refuses is refused here too, before anything is prepared: its mints
     // and its amount. The daily limit is counted by the swap itself, against what the day spent.
-    if (policy) await checkPolicy({ maxAmountIn: policy.maxAmountIn }, { owner, inputMint, amountIn });
+    if (policy) {
+      const { maxAmountIn, allowedOutputMints } = policy;
+      await checkPolicy({ maxAmountIn, ...(allowedOutputMints ? { allowedOutputMints } : {}) }, { owner, inputMint, outputMint, amountIn });
+    }
     const budget = preparationBudget();
     const own = await ownFloor({ ...intent, owner }, { rpc, jupiterApiKey, policy, budget });
     const minOut = own.minOut;

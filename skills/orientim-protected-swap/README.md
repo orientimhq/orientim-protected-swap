@@ -27,8 +27,9 @@ Turnkey or Privy, or a signer of your own), and give the agent a wallet holding 
 
 Set `ORIENTIM_POLICY` to a JSON file of your own limits, kept where the agent cannot edit it: the most
 one swap may spend of each input mint (`maxAmountIn`; a mint not listed is refused) and the most all
-swaps may spend in 24 hours (`maxAmountInPerDay`), and the absolute path of the state directory every
-swap keeps its record in (`stateDir`; a daily limit needs one). See Setup in `SKILL.md`.
+swaps may spend in 24 hours (`maxAmountInPerDay`), the tokens the wallet may buy (`allowedOutputMints`),
+and the absolute path of the state directory every swap keeps its record in (`stateDir`; a daily limit
+needs one). See "Safe setup for an agent" and Setup in `SKILL.md`.
 
 Slippage defaults to 0.5%, or 3% on a Pump.fun curve. Set `slippageBps` (10 to 1500) for your own, or
 `"auto"` to ask Jupiter for the trade's own tolerance (0.5% to 3%). A swap that would move the market more than 5% is refused
