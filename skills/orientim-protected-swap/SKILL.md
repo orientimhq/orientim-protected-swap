@@ -188,8 +188,7 @@ The user provides these; never ask for them in chat, and never print or log them
   Jupiter asks for a key on every endpoint, and without one it answers a request or two and then
   refuses, so the agent's own floor cannot be priced and the swap stops before anything is signed.
   With it, the skill also fetches the routes Orientim builds around, with this key, which never
-  leaves this process (AGENT-API.md, "Your own Jupiter key"): Orientim's own Jupiter quota is not
-  shared with other agents' swaps. One preparation, from the agent's own quote to the last check
+  leaves this process (AGENT-API.md, "Your own Jupiter key"). One preparation, from the agent's own quote to the last check
   before signing, spends at most 48 asks of this key and 110 seconds, and waits out Jupiter's rate
   limit when it says how long and that fits; spent, nothing is signed (`BudgetSpentError`, or
   `error.code` `unavailable` from `orientim-verify`): prepare again in a moment. A swap that needs

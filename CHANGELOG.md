@@ -3,6 +3,16 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.11.3 (2026-10-11)
+
+Documentation only; the code is unchanged.
+
+- `reference/AGENT-API.md` keeps to what a client needs: the server's own settings and internals
+  (how a deployment turns features off, its timing header, how long it keeps its own price, how it
+  derives the one-time key) are no longer in it. Prepare options orientim.com does not take
+  (`routingMode: "fast"`, `version: 1`) are no longer listed.
+- `SKILL.md`: your own Jupiter key, said for what it does for you.
+
 ## 1.11.2 (2026-10-11)
 
 - The fee the check accepts is Orientim's 0.25% (`DEFAULT_FEE_BPS`), no longer the 0.3% ceiling: a

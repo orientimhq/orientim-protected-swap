@@ -47,7 +47,7 @@ Every request carries an API key:
 Authorization: Bearer ori_...
 ```
 
-Requests are limited to 60 a minute for each endpoint by default (the operator may set another number), counted per wallet for a self-serve key and per key for
+Requests are limited to 60 a minute for each endpoint, counted per wallet for a self-serve key and per key for
 a key issued by hand. A `429` carries `Retry-After`: the seconds until the count starts again.
 
 ### API access: a key for your wallet, at once
@@ -56,7 +56,7 @@ A key comes from the wallet itself, with no form: the wallet signs Orientim's me
 Solana text that names it, and gets a key bound to it. Signing moves nothing. The key prepares swaps
 for that wallet only (another `owner` is refused with `403 wrong-wallet`), so a leaked key is worth
 nothing for any other wallet; its limits count per wallet. It lasts 90 days; sign again for a new
-one. The wallet must hold at least 0.01 SOL by default; a refusal names the amount this deployment asks.
+one. The wallet must hold at least 0.01 SOL; a refusal names the amount.
 
 ```http
 GET /api/v1/keys/challenge?wallet=<address>
@@ -100,7 +100,7 @@ skill's check requires a limit of your own for it (`maxSolFeeLamports`; `ownSolF
 for one). The example and `orientim-verify` always ask Jupiter themselves and hold the fee to that
 limit, or to `maxSolFeeLamports` when it is lower: a limit in the intent can only lower it. When the treasury's wallet cannot receive the fee yet, or
 the swap cannot be priced in SOL, the swap is refused with `503 fee-unavailable` and nothing is built:
-Orientim never builds a swap free instead. Only a test deployment, without a treasury, is fee-free.
+Orientim never builds a swap free instead.
 
 ## 1. Prepare
 
@@ -126,10 +126,8 @@ Authorization: Bearer ori_...
 | `minOut` | required | A positive integer string in base units of the output: what your wallet must keep, after a fee taken from the output. Get this floor independently before prepare (`ownMinimum` asks Jupiter directly). For a large order, compare with another source as well. Supplying a number alone does not prove independent verification: check the exact transaction before signing. |
 | `acceptCostBps` | optional | Accept a protected route this many bps below the open market (see `costs-more`): a whole number, as a number or an integer string. A route up to 50 bps (0.5%) past it is also taken, so that a market that drifts by a few bps does not ask again; `minOut` still holds whatever the route. |
 | `slippageBps` | optional | The route's slippage tolerance, chosen by the owner or bot: how far below the quote the swap may fill, a whole number from 10 to 1500 (0.1% to 15%). Default 50, or 300 on a Pump.fun bonding curve. The route is built at it; the skill's check holds the route to the number in your own intent, never to Orientim's answer. The API takes a number: the skill's `"auto"` asks Jupiter for the trade's own tolerance first and sends that number. |
-| `routingMode` | optional | `standard` (default). `fast` is an opt-in Jupiter route search that orientim.com does not enable: a request with it is answered `400 bad-request`. |
-| `version` | optional | `0` (default). Version 1 transactions are not enabled on orientim.com: a request with `1` is answered `400 bad-request`. |
 
-A prepare answers within 45 seconds in all (reading the tokens, building the swap, reading the block height); one that takes longer, because Jupiter or the RPC is slow, ends in `503 unavailable` with nothing built, its RPC requests aborted and no new request to Jupiter or the RPC started, and the skill waits 60 seconds for it. Successful prepare responses include a `Server-Timing` header with `prepare`, `initial`, `jupiter-build`, `simulation`, `verification`, and `local` durations in milliseconds. Jupiter build calls can overlap, so their summed duration need not equal prepare wall time. The skill's `prepareChecked` and `protectedSwap` also accept an optional `onTiming(phase, ms)` observer for the bot's own quote, API prepare, local verification, the tokens' risk, signing and finalization, and `readyToSign`, the whole wait until a checked transaction is ready to sign. Each step is timed from its own start to its own end: the bot's quote and the first prepare round run at the same time, and so do the check and the risk read, so their times overlap and do not add up. Neither measurement changes approval or signing decisions.
+A prepare answers within 45 seconds in all; one that takes longer, because Jupiter or the RPC is slow, ends in `503 unavailable` with nothing built, and the skill waits 60 seconds for it. The skill's `prepareChecked` and `protectedSwap` also accept an optional `onTiming(phase, ms)` observer for the bot's own quote, API prepare, local verification, the tokens' risk, signing and finalization, and `readyToSign`, the whole wait until a checked transaction is ready to sign. Each step is timed from its own start to its own end: the bot's quote and the first prepare round run at the same time, and so do the check and the risk read, so their times overlap and do not add up. Neither measurement changes approval or signing decisions.
 
 `200` response:
 
@@ -188,7 +186,7 @@ the bytes, not from this statement. The `certificate` and `amounts` are Orientim
 evidence, and holds the amounts stated to the policy the bytes are checked against.
 
 `notices.networkBusy` means the network fee is at its limit, so the swap may land late or expire.
-`amounts.feeBps` is 0 when the swap is fee-free. `amounts.priceImpactPct` is `null` when Jupiter
+`amounts.priceImpactPct` is `null` when Jupiter
 did not state it: unknown, never none (the skill refuses such a swap unless the owner's policy says
 `allowUnknownPriceImpact`). `tokens` says what each mint allows its issuer: to freeze balances, to
 mint more, or to move and burn them from any wallet (`permanentDelegate`, a Token-2022 extension). The prepare response states each notice, and the skill reads the same
@@ -214,9 +212,6 @@ Orientim's fee is exactly this:
   tolerance, is not used. Within that 1%, the fee follows your route's minimum, so it may be up to
   1% of the fee lower than with Orientim's own routes. What your wallet keeps is that minimum less
   the fee, and never less than your `minOut`.
-
-Orientim's price is asked once with its key and kept in the session for the rounds that follow
-while it is fresh (15 seconds) and asked for the same tolerance and fee; otherwise it is asked again.
 
 What Orientim cannot check this way, it does not take on trust: a route more than 1% below its
 price, an excluded DEX it cannot tell by its programs (Jupiter's labels unavailable), or routes that
@@ -259,15 +254,15 @@ sharing that wait among the swaps of one process; a spent budget is `BudgetSpent
 route does not fit, prepare asks for every narrower one in the same round. Every round is one
 prepare request toward the rate limit. A free Jupiter key allows one request a second, so a swap
 takes a few seconds longer; a busy bot does well with a paid key. Without `ownRoutes`, prepare works
-as before, and a deployment whose operator turned own routes off (`ORIENTIM_OWN_ROUTES=0` on the
-server) builds with its own key and ignores `ownRoutes`, `routes` and `session`.
+as before; while Orientim has own routes turned off, it builds with its own key and ignores
+`ownRoutes`, `routes` and `session`.
 
 Who asks what, for one swap:
 
 | Who | What |
 | --- | --- |
 | Your Jupiter key | Your own price (floor and price impact), always: one ask. With `ownRoutes`, the routes: usually two, at most 24. For a fee in SOL, one ask for your own limit on it. |
-| Orientim's Jupiter key | Without `ownRoutes`, the routes. With them: one ask for its own price when the fee is on the output (kept 15 seconds across the rounds), and the price of a fee in SOL. |
+| Orientim's Jupiter key | Without `ownRoutes`, the routes. With them: one ask for its own price when the fee is on the output, and the price of a fee in SOL. |
 | Orientim's RPC | The chain state it builds from, its own simulations, and sending once at finalize (nothing with `"send": false`). |
 | Your RPC | Any Solana RPC of yours. The check before signing: a few account reads, one or two simulations and the token-risk read. After finalize: a status read about every second and a re-send of the same bytes every few seconds, until the swap confirms or its lifetime passes, then one read of the transaction for what arrived. |
 
@@ -478,8 +473,7 @@ Keep an agent wallet funded only for the work it is allowed to do.
   open. Orientim's server can derive the key again from its secret, so whoever holds that secret could
   collect what stayed under it: that is why nothing may, and why the skill's check simulates the
   transaction on your RPC and refuses one that leaves anything under the key or any account the
-  route opened, and rent that does not come back beyond your limit. Orientim derives a key only for its
-  ticket's finalize, repeated or not, and never logs the nonces it derives from.
+  route opened, and rent that does not come back beyond your limit.
 - It keeps no state (no database): two prepares for the same order are two different transactions
   to it. One swap per order is kept by your order book, not by Orientim.
 - It can refuse or delay: a signed transaction it holds back simply expires, in about 40 seconds.
