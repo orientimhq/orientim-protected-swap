@@ -537,7 +537,7 @@ describe('the shipped files', () => {
   it('SHA256SUMS lists every file the skill ships, with its hash', async () => {
     const { createHash } = await import('node:crypto');
     const lines = readFileSync(join(SKILL, 'SHA256SUMS'), 'utf8').trim().split('\n');
-    expect(lines.length).toBe(13);
+    expect(lines.length).toBe(16);
     for (const line of lines) {
       const [hash, file] = line.split(/\s+/);
       expect(createHash('sha256').update(readFileSync(join(SKILL, file))).digest('hex'), file).toBe(hash);

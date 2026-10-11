@@ -3,6 +3,17 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.12.0 (2026-10-11)
+
+- `bin/orientim-mcp.mjs`: the skill as an MCP server over stdio, for Claude Desktop, Claude Code,
+  Cursor and other MCP clients. Four tools: `orientim_wallet` (balances on your RPC), `orientim_quote`
+  (the dry run, amounts in whole tokens, with a `quoteId`), `orientim_swap` (that quote and nothing
+  else, under the order id `mcp-<quoteId>`, within the 10 minutes its approval holds) and
+  `orientim_recover`. Every swap is `examples/swap.ts` itself; no tool takes a key, a minimum or a fee
+  limit. Without `ORIENTIM_API_KEY`, the server gets the wallet's own key and keeps it in
+  `~/.orientim/api-key.json`, its owner's alone. See "MCP server" in `SKILL.md`.
+- `package.json`: the `orientim-mcp` command beside `orientim-verify`.
+
 ## 1.11.3 (2026-10-11)
 
 Documentation only; the code is unchanged.

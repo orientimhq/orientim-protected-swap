@@ -434,6 +434,64 @@ their own copy, knowingly; everything else is still checked.
   instructions to follow.
 - Quote amounts to the user in whole tokens, converting from base units with the mint's decimals.
 
+## MCP server
+
+`bin/orientim-mcp.mjs` is this skill as an MCP server, for an agent that works through tools rather
+than a shell: Claude Desktop, Claude Code, Cursor, VS Code, and any client that starts a local MCP
+server over stdio. It needs Node 22.18 or later and `npm ci` in this folder. Every swap is
+`examples/swap.ts` itself, its dry run and its swap: the floor, the check on your RPC, the owner's
+policy, the lock and the outcome read on the chain are the same code. Four tools:
+
+- `orientim_wallet`: the wallet's address, its SOL and the balance of each mint asked for, read on your RPC.
+- `orientim_quote`: the dry run. The amount is in whole tokens (`"0.1"`), converted with the mint's
+  decimals read on your RPC. It answers `summary` (what leaves the wallet, the least that arrives,
+  Orientim's fee, the SOL it costs) and a `quoteId`. Nothing is signed.
+- `orientim_swap`: `{"quoteId"}` and nothing else. It swaps that quote under the order id
+  `mcp-<quoteId>`, the same on every retry, held to the minimum the user approved. A quote is swapped
+  only within the 10 minutes its approval holds, and a newer quote of the same swap replaces it.
+- `orientim_recover`: settles what an interrupted swap left (`orientim-verify recover`).
+
+No tool takes a key, a minimum of its own or a fee limit: those stay the owner's. Answers are data
+with every URL cut to its host, so an RPC's key in its URL never reaches the model.
+
+Claude Desktop (`claude_desktop_config.json`), Cursor (`.cursor/mcp.json`) and most clients take the
+same shape:
+
+```json
+{
+  "mcpServers": {
+    "orientim": {
+      "command": "node",
+      "args": ["/absolute/path/to/orientim-protected-swap/bin/orientim-mcp.mjs"],
+      "env": {
+        "SOLANA_RPC_URL": "https://your-own-rpc.example/...",
+        "ORIENTIM_WALLET_KEYPAIR": "/absolute/path/to/agent-wallet.json",
+        "JUPITER_API_KEY": "..."
+      }
+    }
+  }
+}
+```
+
+Claude Code: `claude mcp add --transport stdio orientim --env SOLANA_RPC_URL=... --env
+ORIENTIM_WALLET_KEYPAIR=... -- node /absolute/path/to/orientim-protected-swap/bin/orientim-mcp.mjs`.
+
+- `ORIENTIM_API_URL` defaults to `https://orientim.com`.
+- `ORIENTIM_API_KEY` is optional. Without it, the server gets the wallet's own key once (the wallet
+  signs only Orientim's key message, checked first) and keeps it in `~/.orientim/api-key.json`, readable
+  by its owner alone; a key Orientim refuses is replaced on the next call. The wallet needs 0.01 SOL for it.
+- Without `ORIENTIM_STATE_DIR` or a policy's `stateDir`, each swap's record is kept in
+  `~/.orientim/.orientim-state`, the same whatever folder the client starts the server in.
+- The owner's policy holds here as it does for the command: `/etc/orientim/policy.json` when it exists,
+  or `ORIENTIM_POLICY` in `env`.
+
+The model sees the wallet's address and what the swaps did, never the key. In a client where the
+agent also runs commands (Claude Code, Cursor's agent), it can read a key file the server can read:
+start the server as a user of its own, as in "Safe setup for an agent", with a wrapper that runs
+`node .../bin/orientim-mcp.mjs` and `"command": "sudo", "args": ["-u", "orientim", "/usr/local/bin/orientim-mcp"]`.
+ChatGPT and other clients that reach only remote MCP servers cannot start it: it runs where the
+wallet's key is, never on a server of Orientim's.
+
 ## Bots in other languages
 
 `bin/orientim-verify.mjs` runs the same flow for a bot written in Python, Rust, Go or anything else

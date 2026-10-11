@@ -1,0 +1,428 @@
+/**
+ * The skill's MCP server (src/mcp.ts, bin/orientim-mcp.mjs): the protocol, the four tools, whole
+ * tokens to base units and back, a swap tied to the quote the user saw, and answers that never carry
+ * an RPC's key. The swap itself is the example's command line, tested in skill.test.ts; here it is a
+ * fake that answers as the command does.
+ */
+import { spawn } from 'node:child_process';
+import { generateKeyPairSync } from 'node:crypto';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import {
+  commandEnv, createServer, fromBaseUnits, InputError, PROTOCOL_VERSIONS, SERVER_VERSION, toBaseUnits, TOOLS, withoutSecrets,
+  type McpDeps, type Run, type RunOptions,
+} from '../skills/orientim-protected-swap/src/mcp.ts';
+import { SKILL_VERSION } from '../skills/orientim-protected-swap/examples/swap.ts';
+
+const ROOT = join(import.meta.dirname, '..');
+const SKILL = join(ROOT, 'skills/orientim-protected-swap');
+const W = 'Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr';
+const SOL = 'So11111111111111111111111111111111111111112';
+const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const BONK = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
+const SIG = '5'.repeat(87);
+
+type Call = { command: 'swap' | 'verify'; args: string[]; options: RunOptions };
+
+/** The dry run's answer, as examples/swap.ts prints it. */
+const dryRun = (over: Record<string, unknown> = {}) => JSON.stringify({
+  yourFloor: '1490000',
+  approval: { minOut: '1490000', until: new Date(Date.UTC(2026, 9, 11, 12, 10)).toISOString() },
+  priceImpactBps: 3, slippageBps: 50,
+  amounts: { amountIn: '10000000', fee: '25000', feeBps: 25, swapAmount: '9975000', quotedOut: '1500000', minOut: '1490000' },
+  costs: { networkFeeLamports: '5000', outputAccountRentLamports: '0', routeRentLamports: '0', routeRefundLamports: '0', keptSolLamports: '5000' },
+  blocksLeft: 140, problems: [], notices: [], tokenRisk: {},
+  ...over,
+});
+
+function harness(runs: ((call: Call) => Run | Promise<Run>)[], over: Partial<McpDeps> = {}) {
+  const calls: Call[] = [];
+  let clock = Date.UTC(2026, 9, 11, 12, 0);
+  let ids = 0;
+  const deps: McpDeps = {
+    run: async (command, args, options) => {
+      const call = { command, args, options };
+      calls.push(call);
+      const next = runs.shift();
+      if (!next) throw new Error(`no run expected: ${command} ${args.join(' ')}`);
+      return next(call);
+    },
+    wallet: async () => W,
+    decimals: async mint => (mint === BONK ? 5 : Promise.reject(new InputError(`${mint} is not a token mint on your RPC.`))),
+    balances: async (_owner, mints) => ({ lamports: 1_500_000_000n, tokens: Object.fromEntries(mints.map(m => [m, 123_45000n])) }),
+    now: () => clock,
+    newId: () => `0000000${++ids}-aaaa-bbbb-cccc-dddddddddddd`,
+    ...over,
+  };
+  const server = createServer(deps);
+  const sent: Record<string, unknown>[] = [];
+  const send = (m: unknown) => { sent.push(m as Record<string, unknown>); };
+  let next = 100;
+  const request = async (method: string, params?: unknown) => {
+    const id = next++;
+    await server.receive(JSON.stringify({ jsonrpc: '2.0', id, method, ...(params ? { params } : {}) }), send);
+    return sent.find(m => m.id === id) as { result?: Record<string, unknown>; error?: { code: number; message: string } } | undefined;
+  };
+  const tool = async (name: string, args: Record<string, unknown> = {}, meta?: Record<string, unknown>) => {
+    const r = await request('tools/call', { name, arguments: args, ...(meta ? { _meta: meta } : {}) });
+    const result = r?.result as { content: { type: string; text: string }[]; structuredContent?: Record<string, unknown>; isError: boolean };
+    return { ...result, answer: JSON.parse(result.content[0].text) as Record<string, any> };
+  };
+  return { server, calls, sent, send, request, tool, advance: (ms: number) => { clock += ms; } };
+}
+
+const ok = (stdout: string, stderr = ''): Run => ({ code: 0, stdout, stderr });
+
+describe('whole tokens and base units', () => {
+  it('converts exactly, both ways', () => {
+    expect(toBaseUnits('0.1', 9)).toBe(100_000_000n);
+    expect(toBaseUnits('25', 6)).toBe(25_000_000n);
+    expect(toBaseUnits('1.500000', 6)).toBe(1_500_000n);
+    expect(toBaseUnits('0.00001', 5)).toBe(1n);
+    expect(toBaseUnits('7', 0)).toBe(7n);
+    expect(fromBaseUnits('1500000', 6)).toBe('1.5');
+    expect(fromBaseUnits(1n, 9)).toBe('0.000000001');
+    expect(fromBaseUnits('25000000', 6)).toBe('25');
+    expect(fromBaseUnits('0', 6)).toBe('0');
+    expect(fromBaseUnits('7', 0)).toBe('7');
+  });
+
+  it('never rounds, and refuses what is not an amount', () => {
+    expect(() => toBaseUnits('0.0000000001', 9)).toThrow(/9 decimals/);
+    expect(() => toBaseUnits('0', 9)).toThrow(/more than zero/);
+    expect(() => toBaseUnits('-1', 9)).toThrow(InputError);
+    expect(() => toBaseUnits('1e3', 9)).toThrow(InputError);
+    expect(() => toBaseUnits('1,5', 9)).toThrow(InputError);
+    expect(() => toBaseUnits('.5', 9)).toThrow(InputError);
+    expect(() => toBaseUnits('99999999999999999999', 9)).toThrow(/larger than any/);
+  });
+});
+
+describe('the protocol', () => {
+  it('answers initialize in the version the client asked for, or the newest', async () => {
+    const h = harness([]);
+    const old = await h.request('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 't', version: '1' } });
+    expect(old?.result?.protocolVersion).toBe('2024-11-05');
+    const unknown = await h.request('initialize', { protocolVersion: '1999-01-01' });
+    expect(unknown?.result?.protocolVersion).toBe(PROTOCOL_VERSIONS[0]);
+    expect(unknown?.result?.serverInfo).toMatchObject({ name: 'orientim-protected-swap', version: SERVER_VERSION });
+    expect(unknown?.result?.capabilities).toEqual({ tools: { listChanged: false } });
+    expect(String(unknown?.result?.instructions)).toContain('orientim_quote first');
+  });
+
+  it('is the version the skill ships', () => {
+    expect(SERVER_VERSION).toBe(SKILL_VERSION);
+  });
+
+  it('lists four tools, each with a schema that refuses anything else', async () => {
+    const h = harness([]);
+    const list = await h.request('tools/list');
+    const tools = list?.result?.tools as typeof TOOLS;
+    expect(tools.map(t => t.name)).toEqual(['orientim_wallet', 'orientim_quote', 'orientim_swap', 'orientim_recover']);
+    for (const t of tools) {
+      expect(t.inputSchema.additionalProperties).toBe(false);
+      expect(t.description.length).toBeGreaterThan(40);
+    }
+    expect(tools.find(t => t.name === 'orientim_wallet')?.annotations.readOnlyHint).toBe(true);
+    expect(tools.find(t => t.name === 'orientim_swap')?.annotations).toMatchObject({ destructiveHint: true, idempotentHint: true });
+    // No tool takes a key, a floor of its own or a fee limit: those stay the owner's.
+    const inputs = tools.flatMap(t => Object.keys(t.inputSchema.properties));
+    expect(inputs.sort()).toEqual(['acceptCostBps', 'amount', 'inputMint', 'maxPriceImpactBps', 'mints', 'outputMint', 'quoteId', 'slippageBps']);
+  });
+
+  it('answers ping, and refuses unknown methods, bad JSON and bad requests', async () => {
+    const h = harness([]);
+    expect((await h.request('ping'))?.result).toEqual({});
+    expect((await h.request('resources/list'))?.error?.code).toBe(-32601);
+    await h.server.receive('{not json', h.send);
+    expect(h.sent.at(-1)).toMatchObject({ id: null, error: { code: -32700 } });
+    await h.server.receive(JSON.stringify({ id: 9, method: 'ping' }), h.send);
+    expect(h.sent.at(-1)).toMatchObject({ id: 9, error: { code: -32600 } });
+    await h.server.receive(JSON.stringify([]), h.send);
+    expect(h.sent.at(-1)).toMatchObject({ error: { code: -32600 } });
+    const count = h.sent.length;
+    await h.server.receive(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }), h.send);
+    await h.server.receive('   ', h.send);
+    expect(h.sent.length).toBe(count);
+  });
+
+  it('answers a batch in one message', async () => {
+    const h = harness([]);
+    await h.server.receive(JSON.stringify([{ jsonrpc: '2.0', id: 1, method: 'ping' }, { jsonrpc: '2.0', method: 'notifications/initialized' }, { jsonrpc: '2.0', id: 2, method: 'tools/list' }]), h.send);
+    const batch = h.sent.at(-1) as unknown as { id: number }[];
+    expect(batch.map(m => m.id)).toEqual([1, 2]);
+  });
+
+  it('refuses an unknown tool as a protocol error, and bad arguments as a tool error', async () => {
+    const h = harness([]);
+    expect((await h.request('tools/call', { name: 'orientim_drain', arguments: {} }))?.error?.code).toBe(-32602);
+    const bad = await h.tool('orientim_quote', { inputMint: 'USDC', outputMint: SOL, amount: '1' });
+    expect(bad.isError).toBe(true);
+    expect(bad.answer.error).toEqual({ code: 'input', line: 'inputMint must be a mint address.' });
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it('gives structured content from 2025-06-18 on, text alone before', async () => {
+    const h = harness([]);
+    await h.request('initialize', { protocolVersion: '2025-03-26' });
+    expect((await h.tool('orientim_wallet')).structuredContent).toBeUndefined();
+    await h.request('initialize', { protocolVersion: '2025-06-18' });
+    expect((await h.tool('orientim_wallet')).structuredContent).toMatchObject({ ok: true, wallet: W });
+  });
+});
+
+describe('orientim_wallet', () => {
+  it('reads SOL and each mint asked for, in whole tokens', async () => {
+    const h = harness([]);
+    const { answer, isError } = await h.tool('orientim_wallet', { mints: [BONK, SOL, BONK] });
+    expect(isError).toBe(false);
+    expect(answer).toEqual({
+      ok: true, wallet: W,
+      sol: { mint: SOL, amount: '1.5', baseUnits: '1500000000' },
+      tokens: [{ mint: BONK, amount: '123.45', baseUnits: '12345000', decimals: 5 }],
+    });
+  });
+
+  it('says plainly when a mint is not a token', async () => {
+    const h = harness([]);
+    const { answer } = await h.tool('orientim_wallet', { mints: [W] });
+    expect(answer.error).toEqual({ code: 'input', line: `${W} is not a token mint on your RPC.` });
+  });
+});
+
+describe('orientim_quote', () => {
+  it('runs the dry run in base units for this wallet, and answers in whole tokens with a quoteId', async () => {
+    const h = harness([() => ok(dryRun())]);
+    const { answer, isError } = await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01', slippageBps: 'auto', maxPriceImpactBps: 100 });
+    expect(isError).toBe(false);
+    expect(h.calls[0].command).toBe('swap');
+    expect(h.calls[0].args).toEqual(['--in', SOL, '--out', USDC, '--amount', '10000000', '--owner', W, '--dry-run', '--slippage-bps', 'auto', '--max-price-impact-bps', '100']);
+    expect(answer.quoteId).toBe('00000001-aaaa-bbbb-cccc-dddddddddddd');
+    expect(answer.summary).toEqual({
+      pay: { amount: '0.01', mint: SOL },
+      receiveAtLeast: { amount: '1.49', mint: USDC },
+      expected: { amount: '1.5', mint: USDC },
+      orientimFee: { amount: '0.000025', mint: SOL },
+      solCost: '0.000005',
+      priceImpactBps: 3,
+      slippageBps: 50,
+      approvedUntil: '2026-10-11T12:10:00.000Z',
+    });
+    expect(answer.meaning).toMatch(/ask for a clear yes/);
+  });
+
+  it('gives no quoteId when the dry run found problems', async () => {
+    const h = harness([() => ({ code: 1, stdout: dryRun({ approval: undefined, problems: ['R3: the route can take more than the amount'] }), stderr: '' })]);
+    const { answer, isError } = await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01' });
+    expect(isError).toBe(true);
+    expect(answer.quoteId).toBeUndefined();
+    expect(answer.answer.problems).toEqual(['R3: the route can take more than the amount']);
+  });
+
+  it("names the command's error, with every URL cut to its host", async () => {
+    const h = harness([() => ({
+      code: 1, stdout: '',
+      stderr: '(node:1) ExperimentalWarning: Type Stripping\nprice-impact-high: The price impact is 7.20%, above 5%. Seen on https://mainnet.helius-rpc.com/?api-key=SECRET123 today.\n',
+    })]);
+    const { answer } = await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01' });
+    expect(answer.error.code).toBe('price-impact-high');
+    expect(JSON.stringify(answer)).not.toContain('SECRET123');
+    expect(answer.error.line).toContain('https://mainnet.helius-rpc.com/…');
+    expect(answer.log.join('\n')).not.toContain('ExperimentalWarning');
+  });
+
+  it('reads the decimals of a token that is not SOL, USDC or USDT', async () => {
+    const h = harness([() => ok(dryRun())]);
+    await h.tool('orientim_quote', { inputMint: BONK, outputMint: USDC, amount: '1000.5' });
+    expect(h.calls[0].args.slice(4, 6)).toEqual(['--amount', '100050000']);
+  });
+
+  it('refuses limits out of range before anything runs', async () => {
+    const h = harness([]);
+    for (const extra of [{ slippageBps: 5 }, { slippageBps: 2000 }, { slippageBps: 'max' }, { maxPriceImpactBps: 5000 }, { acceptCostBps: -1 }, { acceptCostBps: 1.5 }]) {
+      const { answer } = await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '1', ...extra });
+      expect(answer.error.code).toBe('input');
+    }
+    const same = await h.tool('orientim_quote', { inputMint: USDC, outputMint: USDC, amount: '1' });
+    expect(same.answer.error.line).toMatch(/same token/);
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it('reports progress to a client that asked for it', async () => {
+    const h = harness([({ options }) => {
+      options.onLine?.('Pricing on https://rpc.example/key/abc');
+      return ok(dryRun());
+    }]);
+    await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01' }, { progressToken: 'p1' });
+    const progress = h.sent.filter(m => m.method === 'notifications/progress').map(m => m.params as { progressToken: string; progress: number; message: string });
+    expect(progress.map(p => p.progress)).toEqual([1, 2]);
+    expect(progress.every(p => p.progressToken === 'p1')).toBe(true);
+    expect(progress[1].message).toBe('Pricing on https://rpc.example/…');
+  });
+});
+
+describe('orientim_swap', () => {
+  it("swaps the quote under an order id the model never chooses, with the quote's own limits", async () => {
+    const h = harness([
+      () => ok(dryRun()),
+      () => ok(JSON.stringify({ signature: SIG, outcome: 'confirmed', refusal: null, meaning: 'Swapped.', amounts: {}, received: '1497000' })),
+    ]);
+    const { answer: q } = await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01', slippageBps: 100 });
+    const { answer, isError } = await h.tool('orientim_swap', { quoteId: q.quoteId });
+    expect(isError).toBe(false);
+    expect(h.calls[1].args).toEqual(['--in', SOL, '--out', USDC, '--amount', '10000000', '--id', `mcp-${q.quoteId}`, '--slippage-bps', '100']);
+    // Never stopped by the client: what it signed is settled on the chain.
+    expect(h.calls[1].options.signal).toBeUndefined();
+    expect(answer).toMatchObject({
+      ok: true, outcome: 'confirmed', signature: SIG, explorer: `https://solscan.io/tx/${SIG}`, received: { amount: '1.497', mint: USDC }, exitCode: 0,
+    });
+  });
+
+  it('takes the same quote again under the same order, even after the yes expired', async () => {
+    const h = harness([
+      () => ok(dryRun()),
+      () => ({ code: 3, stdout: '', stderr: 'The outcome of an earlier swap is still unknown.\n' }),
+      () => ({ code: 5, stdout: '', stderr: 'This order already swapped.\n' }),
+    ]);
+    const { answer: q } = await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01' });
+    const first = await h.tool('orientim_swap', { quoteId: q.quoteId });
+    expect(first.answer.meaning).toMatch(/orientim_recover/);
+    h.advance(60 * 60_000);
+    const again = await h.tool('orientim_swap', { quoteId: q.quoteId });
+    expect(h.calls[2].args).toContain(`mcp-${q.quoteId}`);
+    expect(again.answer.exitCode).toBe(5);
+  });
+
+  it('refuses a quote it never gave, one a newer quote replaced, and one whose yes expired', async () => {
+    const h = harness([() => ok(dryRun()), () => ok(dryRun()), () => ok(dryRun())]);
+    expect((await h.tool('orientim_swap', { quoteId: '12345678-0000' })).answer.error.line).toMatch(/No quote with this id/);
+    const { answer: a } = await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01' });
+    const { answer: b } = await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01' });
+    expect((await h.tool('orientim_swap', { quoteId: a.quoteId })).answer.error.line).toMatch(/newer quote/);
+    h.advance(11 * 60_000);
+    expect((await h.tool('orientim_swap', { quoteId: b.quoteId })).answer.error.line).toMatch(/has expired/);
+    const { answer: c } = await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.02' });
+    expect(c.quoteId).toBeDefined();
+    expect(h.calls).toHaveLength(3);
+  });
+
+  it('lets a newer quote of the same swap replace one already tried', async () => {
+    const h = harness([
+      () => ok(dryRun()),
+      () => ({ code: 1, stdout: JSON.stringify({ outcome: 'failed', meaning: 'Nothing was swapped.' }), stderr: '' }),
+      () => ok(dryRun()),
+    ]);
+    const { answer: a } = await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01' });
+    expect((await h.tool('orientim_swap', { quoteId: a.quoteId })).answer.ok).toBe(false);
+    await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01' });
+    expect((await h.tool('orientim_swap', { quoteId: a.quoteId })).answer.error.line).toMatch(/newer quote/);
+  });
+
+  it('cuts URLs in the command\'s answer too', async () => {
+    const h = harness([() => ok(dryRun({ problems: ['simulation failed on https://rpc.example/secret-path?key=K'] }))]);
+    const { answer } = await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01' });
+    expect(answer.answer.problems).toEqual(['simulation failed on https://rpc.example/…']);
+  });
+
+  it('runs one quote once at a time', async () => {
+    let finish: (r: Run) => void = () => {};
+    const h = harness([() => ok(dryRun()), () => new Promise<Run>(r => { finish = r; })]);
+    const { answer: q } = await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01' });
+    const first = h.tool('orientim_swap', { quoteId: q.quoteId });
+    await new Promise(r => setTimeout(r, 0));
+    const second = await h.tool('orientim_swap', { quoteId: q.quoteId });
+    expect(second.answer.error.line).toMatch(/already running/);
+    finish(ok(JSON.stringify({ signature: SIG, outcome: 'confirmed' })));
+    expect((await first).answer.ok).toBe(true);
+  });
+
+  it('refuses when the wallet changed since the quote', async () => {
+    let wallet = W;
+    const h = harness([() => ok(dryRun())], { wallet: async () => wallet });
+    const { answer: q } = await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01' });
+    wallet = BONK;
+    expect((await h.tool('orientim_swap', { quoteId: q.quoteId })).answer.error.line).toMatch(/wallet changed/);
+  });
+
+  it('answers nothing to a call the client cancelled, but lets the swap finish', async () => {
+    let finish: (r: Run) => void = () => {};
+    const h = harness([() => ok(dryRun()), () => new Promise<Run>(r => { finish = r; })]);
+    const { answer: q } = await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01' });
+    const id = 900;
+    const done = h.server.receive(JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'orientim_swap', arguments: { quoteId: q.quoteId } } }), h.send);
+    await new Promise(r => setTimeout(r, 0));
+    await h.server.receive(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: id } }), h.send);
+    finish(ok(JSON.stringify({ signature: SIG, outcome: 'confirmed' })));
+    await done;
+    expect(h.sent.some(m => m.id === id)).toBe(false);
+    expect(h.calls).toHaveLength(2);
+  });
+});
+
+describe('orientim_recover', () => {
+  it('runs orientim-verify recover and passes on its words', async () => {
+    const h = harness([
+      () => ok(JSON.stringify({ ok: true, settled: [] })),
+      () => ({ code: 2, stdout: JSON.stringify({ ok: false, error: 'Set SOLANA_RPC_URL to your own RPC.' }), stderr: '' }),
+    ]);
+    const first = await h.tool('orientim_recover');
+    expect(h.calls[0]).toMatchObject({ command: 'verify', args: ['recover'] });
+    expect(first.answer).toMatchObject({ ok: true, exitCode: 0, meaning: 'Everything kept is settled: new swaps may start.' });
+    const second = await h.tool('orientim_recover');
+    expect(second.answer.error).toEqual({ code: 'setup', line: 'Set SOLANA_RPC_URL to your own RPC.' });
+  });
+});
+
+describe('the environment of the commands', () => {
+  it("defaults Orientim's address and makes every path absolute", () => {
+    const env = commandEnv({ ORIENTIM_WALLET_KEYPAIR: 'keys/w.json', ORIENTIM_POLICY: '/etc/orientim/policy.json', ORIENTIM_STATE_DIR: 'state', SOLANA_RPC_URL: 'https://rpc' }, '/home/me');
+    expect(env.ORIENTIM_API_URL).toBe('https://orientim.com');
+    expect(env.ORIENTIM_WALLET_KEYPAIR).toBe(join('/home/me', 'keys/w.json'));
+    expect(env.ORIENTIM_POLICY).toBe('/etc/orientim/policy.json');
+    expect(env.ORIENTIM_STATE_DIR).toBe(join('/home/me', 'state'));
+    expect(commandEnv({ ORIENTIM_API_URL: 'https://staging.example' }).ORIENTIM_API_URL).toBe('https://staging.example');
+  });
+
+  it('cuts every URL to its host', () => {
+    expect(withoutSecrets('rpc https://a.example/v2/KEY?x=1 and wss://b.example:443/k')).toBe('rpc https://a.example/… and wss://b.example:443/…');
+  });
+});
+
+describe('bin/orientim-mcp.mjs', () => {
+  it('speaks MCP on stdio, and runs the real dry run for a quote', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'orientim-mcp-'));
+    const keypair = join(home, 'wallet.json');
+    // A solana-keygen file: the ed25519 seed, then the public key.
+    const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+    const seed = privateKey.export({ format: 'der', type: 'pkcs8' }).subarray(16);
+    const pub = publicKey.export({ format: 'der', type: 'spki' }).subarray(12);
+    writeFileSync(keypair, JSON.stringify([...seed, ...pub]));
+    const lines = [
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'test', version: '1' } } },
+      { jsonrpc: '2.0', method: 'notifications/initialized' },
+      { jsonrpc: '2.0', id: 2, method: 'tools/list' },
+      { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'orientim_quote', arguments: { inputMint: SOL, outputMint: USDC, amount: '0.01' } } },
+    ];
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, ORIENTIM_WALLET_KEYPAIR: keypair, ORIENTIM_API_KEY: 'ori_test' };
+    delete env.SOLANA_RPC_URL;
+    const out = await new Promise<string>((done, fail) => {
+      const child = spawn(process.execPath, [join(SKILL, 'bin/orientim-mcp.mjs')], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+      let stdout = '';
+      child.stdout.setEncoding('utf8').on('data', (d: string) => { stdout += d; });
+      child.on('error', fail);
+      child.on('close', () => done(stdout));
+      child.stdin.end(lines.map(l => JSON.stringify(l)).join('\n') + '\n');
+    });
+    const answers = out.trim().split('\n').map(l => JSON.parse(l) as { id: number; result: any });
+    expect(answers.map(a => a.id).sort()).toEqual([1, 2, 3]);
+    const quote = answers.find(a => a.id === 3)!.result;
+    expect(quote.isError).toBe(true);
+    // The wallet's address, never its key; the command's own words on what to set.
+    expect(quote.structuredContent.wallet).toMatch(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/);
+    expect(quote.structuredContent.exitCode).toBe(2);
+    expect(quote.structuredContent.error.line).toMatch(/SOLANA_RPC_URL/);
+    expect(quote.content[0].text).not.toContain('ori_test');
+  }, 30_000);
+});

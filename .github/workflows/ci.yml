@@ -35,6 +35,8 @@ jobs:
           npm ci --ignore-scripts
           status=0; node bin/orientim-verify.mjs > /dev/null || status=$?
           test "$status" -eq 2
+          echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}' \
+            | node bin/orientim-mcp.mjs | grep -q '"protocolVersion":"2025-11-25"'
 
   windows:
     # The skill runs on Windows too: its policy path, its state directory and the command.

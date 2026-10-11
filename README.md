@@ -13,6 +13,7 @@ self-contained: copy that folder, run `npm ci` in it, and it needs nothing else 
 | An agent (Claude and other coding agents) | [`SKILL.md`](skills/orientim-protected-swap/SKILL.md) |
 | A bot in JavaScript or TypeScript | `protectedSwap` in [`examples/swap.ts`](skills/orientim-protected-swap/examples/swap.ts) |
 | A bot in Python, Rust, Go... | the `orientim-verify` command, `bin/orientim-verify.mjs` ("Bots in other languages" in `SKILL.md`) |
+| Claude Desktop, Cursor or another MCP client | the MCP server, `bin/orientim-mcp.mjs` ("MCP server" in `SKILL.md`) |
 | Calling the API yourself | [`reference/AGENT-API.md`](skills/orientim-protected-swap/reference/AGENT-API.md) |
 
 ## What the check enforces
@@ -40,9 +41,10 @@ built so that you do not have to trust it.
 skills/orientim-protected-swap/   the skill, exactly as it is distributed
   SKILL.md, README.md, LICENSE      what an agent and a person read
   examples/swap.ts                  the whole flow, with recovery and one worker per wallet
-  src/                              sources of the verifier entry point and the command
+  src/                              sources of the verifier entry point, the command and the MCP server
   lib/orientim-verify.mjs           the verifier, bundled (generated)
   bin/orientim-verify.mjs           the command, bundled (generated)
+  bin/orientim-mcp.mjs              the MCP server, bundled (generated)
   reference/AGENT-API.md            the API reference
   SHA256SUMS                        the hash of every file above (generated)
 packages/verifier/                the verifier: rules R1–R7 on the transaction bytes
