@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   commandEnv, createServer, fromBaseUnits, InputError, PROTOCOL_VERSIONS, SERVER_VERSION, toBaseUnits, TOOLS, withoutSecrets,
@@ -379,9 +379,9 @@ describe('the environment of the commands', () => {
   it("defaults Orientim's address and makes every path absolute", () => {
     const env = commandEnv({ ORIENTIM_WALLET_KEYPAIR: 'keys/w.json', ORIENTIM_POLICY: '/etc/orientim/policy.json', ORIENTIM_STATE_DIR: 'state', SOLANA_RPC_URL: 'https://rpc' }, '/home/me');
     expect(env.ORIENTIM_API_URL).toBe('https://orientim.com');
-    expect(env.ORIENTIM_WALLET_KEYPAIR).toBe(join('/home/me', 'keys/w.json'));
+    expect(env.ORIENTIM_WALLET_KEYPAIR).toBe(resolve('/home/me', 'keys/w.json'));
     expect(env.ORIENTIM_POLICY).toBe('/etc/orientim/policy.json');
-    expect(env.ORIENTIM_STATE_DIR).toBe(join('/home/me', 'state'));
+    expect(env.ORIENTIM_STATE_DIR).toBe(resolve('/home/me', 'state'));
     expect(commandEnv({ ORIENTIM_API_URL: 'https://staging.example' }).ORIENTIM_API_URL).toBe('https://staging.example');
   });
 
