@@ -5,7 +5,7 @@
  * own tests in packages/verifier/test.
  */
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Rpc, SolanaRpcApi } from '@solana/kit';
@@ -18,7 +18,7 @@ import {
 } from '../skills/orientim-protected-swap/examples/swap.ts';
 import { runCli } from '../skills/orientim-protected-swap/src/cli.ts';
 import {
-  feeLimitBps, isSlippageBps, MAX_BELOW_BPS, MAX_FEE_BPS, MAX_PRICE_IMPACT_BPS, noticesOf, ORIENTIM_TREASURY, ownMinimum, ownQuote, solFeeOf, tokenRisk,
+  DEFAULT_FEE_BPS, feeLimitBps, isSlippageBps, MAX_BELOW_BPS, MAX_FEE_BPS, MAX_PRICE_IMPACT_BPS, noticesOf, ORIENTIM_TREASURY, ownMinimum, ownQuote, solFeeOf, tokenRisk,
 } from '../skills/orientim-protected-swap/lib/orientim-verify.mjs';
 
 const ROOT = join(import.meta.dirname, '..');
@@ -27,6 +27,7 @@ const W = 'Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr';
 const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const BONK = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
 const tmp = () => mkdtempSync(join(tmpdir(), 'orientim-skill-'));
+const POSIX = process.platform !== 'win32';
 
 describe('the skill names its version', () => {
   it("SKILL_VERSION is the package's version", () => {
@@ -38,12 +39,15 @@ describe('the skill names its version', () => {
 describe('hard limits no intent can raise', () => {
   it("Orientim's fee and treasury are pinned", () => {
     expect(ORIENTIM_TREASURY).toBe('ARzSA3sZGhf5t4UnYrmB3TWyZ5m3Wo1nA9zWBcoiTqLE');
+    // The fee charged today is the most accepted unless the agent allows up to the ceiling itself.
+    expect(DEFAULT_FEE_BPS).toBe(25);
     expect(MAX_FEE_BPS).toBe(30);
-    expect(feeLimitBps()).toBe(30);
+    expect(feeLimitBps()).toBe(25);
     expect(feeLimitBps(10)).toBe(10);
+    expect(feeLimitBps(30)).toBe(30);
     expect(feeLimitBps(500)).toBe(30);
-    expect(feeLimitBps(-1)).toBe(30);
-    expect(feeLimitBps(1.5)).toBe(30);
+    expect(feeLimitBps(-1)).toBe(25);
+    expect(feeLimitBps(1.5)).toBe(25);
   });
 
   it('a floor at most 20% below the market, price impact at most 20%, slippage 0.1% to 15%', () => {
@@ -229,12 +233,48 @@ describe('the skill holds its own state and limits against what it is handed', (
   it("the state directory is the owner's alone, and spends older than two days are cleared", async () => {
     const dir = join(tmp(), 'state');
     const store = createFileStore(dir);
-    expect(statSync(dir).mode & 0o777).toBe(0o700);
+    // Windows keeps no POSIX modes: there the directory's place on disk is what keeps it the owner's.
+    if (POSIX) expect(statSync(dir).mode & 0o777).toBe(0o700);
     await store.recordSpend({ signature: 'old', owner: W, mint: USDC, amountIn: '5', at: Date.now() - 3 * 24 * 3_600_000 });
     await store.recordSpend({ signature: 'new', owner: W, mint: USDC, amountIn: '7', at: Date.now() });
-    expect(statSync(join(dir, 'spend-new.json')).mode & 0o777).toBe(0o600);
+    if (POSIX) expect(statSync(join(dir, 'spend-new.json')).mode & 0o777).toBe(0o600);
     expect(await store.spentSince(W, USDC, Date.now() - 24 * 3_600_000)).toBe(7n);
     expect(readdirSync(dir).filter(f => f.startsWith('spend-'))).toEqual(['spend-new.json']);
+    // Every write went through a temporary file of its own, renamed into place: none is left.
+    expect(readdirSync(dir).filter(f => f.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it('a state directory others could change is made the owner\'s alone, and what a crash left is cleared', () => {
+    const dir = join(tmp(), 'state');
+    createFileStore(dir);
+    const left = join(dir, 'spend-x.json.0.tmp');
+    writeFileSync(left, '{}');
+    const anHourAgo = (Date.now() - 2 * 3_600_000) / 1000;
+    utimesSync(left, anHourAgo, anHourAgo);
+    const fresh = join(dir, 'spend-y.json.0.tmp');
+    writeFileSync(fresh, '{}');
+    if (POSIX) chmodSync(dir, 0o777);
+    createFileStore(dir);
+    if (POSIX) expect(statSync(dir).mode & 0o777).toBe(0o700);
+    // Only what is old enough that no writer can still be using it.
+    expect(readdirSync(dir).filter(f => f.endsWith('.tmp'))).toEqual(['spend-y.json.0.tmp']);
+  });
+
+  it('the daily limit counts what this wallet spent in the last 24 hours, read from the state directory', async () => {
+    const store = createFileStore(join(tmp(), 'state'));
+    const policy = { maxAmountIn: { [USDC]: '6000000' }, maxAmountInPerDay: { [USDC]: '8000000' } };
+    const swap = (amountIn: string) => ({ owner: W, inputMint: USDC, outputMint: BONK, amountIn });
+    const hour = 3_600_000;
+    // A day ago and a minute: no longer counted. Just inside the day: counted.
+    await store.recordSpend({ signature: 'a', owner: W, mint: USDC, amountIn: '5000000', at: Date.now() - 24 * hour - 60_000 });
+    await store.recordSpend({ signature: 'b', owner: W, mint: USDC, amountIn: '3000000', at: Date.now() - 24 * hour + 60_000 });
+    // Another wallet's, and another mint's, count for neither.
+    await store.recordSpend({ signature: 'c', owner: BONK, mint: USDC, amountIn: '5000000', at: Date.now() });
+    await store.recordSpend({ signature: 'd', owner: W, mint: BONK, amountIn: '5000000', at: Date.now() });
+    await expect(checkPolicy(policy, swap('5000000'), store)).resolves.toBeUndefined();
+    await expect(checkPolicy(policy, swap('5000001'), store)).rejects.toMatchObject({ code: 'daily-limit' });
+    await store.recordSpend({ signature: 'e', owner: W, mint: USDC, amountIn: '5000000', at: Date.now() });
+    await expect(checkPolicy(policy, swap('1'), store)).rejects.toMatchObject({ code: 'daily-limit' });
   });
 
   it('a daily limit needs one absolute state directory; the policy may name it', () => {
@@ -287,7 +327,7 @@ describe('the skill holds its own state and limits against what it is handed', (
     expect(heldToApproval(null, undefined)).toBeUndefined();
     const now = Date.now();
     recordApproval(dir, { ...key, minOut: '100', expiresAt: now + 60_000 });
-    expect(statSync(dir).mode & 0o777).toBe(0o700);
+    if (POSIX) expect(statSync(dir).mode & 0o777).toBe(0o700);
     const approved = approvalFor(dir, key);
     expect(approved?.minOut).toBe('100');
     // Another amount, mint or wallet has no approval of its own.
@@ -475,6 +515,21 @@ describe("the owner's policy at the system path", () => {
     expect(policyPathFor(undefined, system)).toBe(system);
     expect(policyPathFor(system, system)).toBe(system);
     expect(() => policyPathFor(other, system)).toThrow('which is not used');
+  });
+});
+
+describe('the Python example in SKILL.md', () => {
+  // Run as written, against the command itself: its answer is JSON on every exit code.
+  const python = ['python3', 'python'].find(p => spawnSync(p, ['--version']).status === 0);
+  it.runIf(python)('reads the exit code and the JSON answer, on a usage error too', () => {
+    const block = /```python\n([\s\S]*?)```/.exec(readFileSync(join(SKILL, 'SKILL.md'), 'utf8'))![1];
+    // The function only: the swap after it needs a keypair and Orientim.
+    const fn = block.slice(0, block.indexOf('\ncode, settled'));
+    const run = spawnSync(python!, ['-c', `${fn}\nimport sys\ncode, answer = orientim("no-such-command")\nprint(json.dumps({"code": code, "ok": answer["ok"]}))`], {
+      cwd: SKILL, encoding: 'utf8', env: { PATH: process.env.PATH ?? '', SYSTEMROOT: process.env.SYSTEMROOT ?? '' },
+    });
+    expect(run.stderr).toBe('');
+    expect(JSON.parse(run.stdout)).toEqual({ code: 2, ok: false });
   });
 });
 

@@ -26,7 +26,9 @@ export declare const MAX_BELOW_BPS: 2000;
 export declare const MAX_PRICE_IMPACT_BPS: 2000;
 /** Orientim's fee is never accepted above this, bps. */
 export declare const MAX_FEE_BPS: 30;
-/** The fee limit the check applies: the agent's own, never above MAX_FEE_BPS. */
+/** Orientim's fee today, and the most the check accepts unless the agent's maxFeeBps allows more (up to MAX_FEE_BPS). */
+export declare const DEFAULT_FEE_BPS: 25;
+/** The fee limit the check applies: the agent's own, never above MAX_FEE_BPS; DEFAULT_FEE_BPS without one. */
 export declare function feeLimitBps(maxFeeBps?: number): number;
 export function isSlippageBps(v: unknown): v is number;
 /** A problem that says your RPC did not answer, not that the transaction is wrong: worth running the check again. */

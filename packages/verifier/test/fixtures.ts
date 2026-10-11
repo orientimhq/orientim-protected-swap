@@ -64,7 +64,7 @@ export function routeV2Data(inAmount: bigint, quotedOut: bigint, slippageBps = 5
 
 
 export const CONFIG = (treasury: Address | null) => ({
-  feeBps: 50n,
+  feeBps: 25n,
   treasury,
   maxNetworkFeeLamports: 200_000n,
   jupiterProgram: JUPITER_PROGRAM,

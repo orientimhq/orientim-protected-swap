@@ -89,7 +89,8 @@ which. On the input it is 0.25% of `amountIn`; on the output it is 0.25% of the 
 after the minimum is checked, and `amounts.minOut` is what your wallet keeps after it. With your own
 routes (`ownRoutes`, below), that minimum is checked against Orientim's own price within up to 1%. It
 is part of the message you sign, and Orientim signs only the exact message it built, so a transaction with the fee
-removed is not signed. The agent API and shipped skill both refuse an Orientim fee above 0.3%.
+removed is not signed. The agent API refuses an Orientim fee above 0.3%; the shipped skill refuses one above 0.25%, unless
+the agent's `maxFeeBps` allows up to 0.3%.
 
 A swap between two tokens neither of which can carry the fee (no SOL, USDC or USDT on it, and no
 treasury account for the input) pays it in SOL from your wallet, before the swap: 0.25% of what the
@@ -288,7 +289,7 @@ run them itself before signing.
   liquidity, as when a token's pool is being drained.
 - **Your floor's own limit.** The skill asks Jupiter for its price on every swap and refuses a
   `minOut` more than 20% below it before anything is prepared (`FloorError`, `floor-too-low` from the
-  command line), and holds Orientim's fee to 0.3% whatever `maxFeeBps` says.
+  command line), and holds Orientim's fee to 0.25% (0.3% at most, when `maxFeeBps` says so).
 - **The owner's limits.** `/etc/orientim/policy.json` (`C:\ProgramData\Orientim\policy.json` on
   Windows), when it exists, or else the file `ORIENTIM_POLICY` names, holds the owner's own: `maxAmountIn` per
   input mint for one swap (a mint not listed is refused), `maxAmountInPerDay` for all swaps from

@@ -83,9 +83,14 @@ export function autoSlippageBps(r: { outAmount?: string; otherAmountThreshold?: 
 export const MAX_BELOW_BPS = 2_000;
 export const MAX_PRICE_IMPACT_BPS = 2_000;
 export const MAX_FEE_BPS = 30;
-/** The fee limit the check applies: the agent's own, never above the ceiling pinned for Orientim's fee. */
+/**
+ * Orientim's fee today, and the most the check accepts unless the agent's `maxFeeBps` allows more (up
+ * to `MAX_FEE_BPS`): a server that raised the fee by even 1 bps is refused, not trusted.
+ */
+export const DEFAULT_FEE_BPS = 25;
+/** The fee limit the check applies: the agent's own, never above the ceiling pinned for Orientim's fee; 0.25% without one. */
 export const feeLimitBps = (maxFeeBps?: number) =>
-  Number.isInteger(maxFeeBps) && (maxFeeBps as number) >= 0 ? Math.min(maxFeeBps as number, MAX_FEE_BPS) : MAX_FEE_BPS;
+  Number.isInteger(maxFeeBps) && (maxFeeBps as number) >= 0 ? Math.min(maxFeeBps as number, MAX_FEE_BPS) : DEFAULT_FEE_BPS;
 export const isSlippageBps = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= MIN_SLIPPAGE_BPS && v <= MAX_SLIPPAGE_BPS;
 /** A limit outside what the skill allows: a usage error (exit 2), not a refusal of this swap. */
 const usageError = (message: string) => Object.assign(new Error(message), { name: 'IntentError' });
@@ -909,7 +914,7 @@ export async function inputTransferFee(rpc: Rpc<SolanaRpcApi>, mint: string, tim
 
 /**
  * The most Orientim's fee in SOL may be for a swap that neither token can carry the fee for, from a
- * price the agent asks Jupiter for itself: `maxFeeBps` (default 30) of what `amountIn` of the input
+ * price the agent asks Jupiter for itself: `maxFeeBps` (default 25) of what `amountIn` of the input
  * is worth in SOL, plus 2% for the price moving between the server's quote and this one. In
  * lamports.
  */

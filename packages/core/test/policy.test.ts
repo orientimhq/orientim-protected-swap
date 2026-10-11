@@ -12,13 +12,21 @@ describe('the minimum that keeps what the user accepted', () => {
 
   it('is the least minimum that keeps at least the amount, for every amount and fee tried', () => {
     const wrong: string[] = [];
-    for (const feeBps of [0n, 1n, 20n, 50n, 100n, 999n]) {
+    for (const feeBps of [0n, 1n, 20n, 25n, 30n, 50n, 100n, 999n]) {
       for (let received = 0n; received <= 20_000n; received++) {
         const gross = minimumForReceived(received, feeBps);
         if (keeps(gross, feeBps) < received || (gross > 0n && keeps(gross - 1n, feeBps) >= received)) wrong.push(`${received} at ${feeBps} bps`);
       }
     }
     expect(wrong).toEqual([]);
+  });
+
+  it("at Orientim's 0.25%, the fee is a quarter of a percent, rounded down", () => {
+    // Worked out by hand: 1 USDC pays 2,500 base units; 399 units pay nothing.
+    expect(outputFeeFor(1_000_000n, 25n)).toBe(2_500n);
+    expect(outputFeeFor(399n, 25n)).toBe(0n);
+    expect(outputFeeFor(400n, 25n)).toBe(1n);
+    expect(keeps(minimumForReceived(997_500n, 25n), 25n)).toBeGreaterThanOrEqual(997_500n);
   });
 
   it('holds for amounts far larger than a test can count through', () => {

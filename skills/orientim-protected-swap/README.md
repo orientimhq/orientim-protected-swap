@@ -63,5 +63,5 @@ Orientim's site serves the same list at `/skill/SHA256SUMS`: compare the two, th
 exactly the versions in `package-lock.json`, each checked against its recorded hash.
 
 Contents: `lib/orientim-verify.mjs` is Orientim's verifier, bundled; `bin/orientim-verify.mjs` the command;
-`src/` their sources. Orientim's fee ceiling (0.3%; the fee is 0.25%) and treasury are pinned in the check: a swap that
+`src/` their sources. Orientim's fee (0.25%, which `maxFeeBps` may raise to a 0.3% ceiling, never more) and treasury are pinned in the check: a swap that
 charges more or pays anyone else is refused before your wallet signs.

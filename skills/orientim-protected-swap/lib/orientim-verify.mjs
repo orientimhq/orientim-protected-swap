@@ -46,7 +46,7 @@ const V1_SIZE_LIMIT = 4096;
 */
 const LAMPORTS_PER_SIGNATURE = 5000n;
 const BPS_DENOMINATOR = 10000n;
-const MAX_FEE_BPS$1 = 100n;
+const MAX_FEE_BPS$1 = 30n;
 const ABSOLUTE_MAX_NETWORK_FEE_LAMPORTS = 1000000n;
 /**
 * The most W may send E for rent of an account the route opens in E's name. Both of Pump.fun's
@@ -651,7 +651,7 @@ async function verify(transaction, policy, snapshot, opts = {}) {
 	const feeOnInput = p.feeSide === "input" ? p.fee : 0n;
 	if (p.fee !== expectedFee || p.swapAmount + feeOnInput !== p.amountIn || p.swapAmount <= 0n) fail("R2", "policy amounts are inconsistent");
 	if (p.inputMint === p.outputMint) fail("R2", "input and output token are the same");
-	if (p.feeBps < 0n || p.feeBps > 100n) fail("R2", `fee of ${p.feeBps} bps is above the maximum of ${MAX_FEE_BPS$1}`);
+	if (p.feeBps < 0n || p.feeBps > 30n) fail("R2", `fee of ${p.feeBps} bps is above the maximum of ${MAX_FEE_BPS$1}`);
 	if (p.maxNetworkFeeLamports > 1000000n) fail("R4", `configured network fee limit ${p.maxNetworkFeeLamports} is above the absolute maximum`);
 	if (p.minOut <= 0n) fail("R2", "the policy has no minimum output");
 	for (const [mint, decimals, side] of [[
@@ -1086,8 +1086,13 @@ function autoSlippageBps(r) {
 const MAX_BELOW_BPS = 2e3;
 const MAX_PRICE_IMPACT_BPS = 2e3;
 const MAX_FEE_BPS = 30;
-/** The fee limit the check applies: the agent's own, never above the ceiling pinned for Orientim's fee. */
-const feeLimitBps = (maxFeeBps) => Number.isInteger(maxFeeBps) && maxFeeBps >= 0 ? Math.min(maxFeeBps, 30) : 30;
+/**
+* Orientim's fee today, and the most the check accepts unless the agent's `maxFeeBps` allows more (up
+* to `MAX_FEE_BPS`): a server that raised the fee by even 1 bps is refused, not trusted.
+*/
+const DEFAULT_FEE_BPS = 25;
+/** The fee limit the check applies: the agent's own, never above the ceiling pinned for Orientim's fee; 0.25% without one. */
+const feeLimitBps = (maxFeeBps) => Number.isInteger(maxFeeBps) && maxFeeBps >= 0 ? Math.min(maxFeeBps, 30) : 25;
 const isSlippageBps = (v) => typeof v === "number" && Number.isInteger(v) && v >= 10 && v <= 1500;
 /** A limit outside what the skill allows: a usage error (exit 2), not a refusal of this swap. */
 const usageError = (message) => Object.assign(new Error(message), { name: "IntentError" });
@@ -1701,7 +1706,7 @@ async function inputTransferFee(rpc, mint, timeoutMs = 1e4) {
 }
 /**
 * The most Orientim's fee in SOL may be for a swap that neither token can carry the fee for, from a
-* price the agent asks Jupiter for itself: `maxFeeBps` (default 30) of what `amountIn` of the input
+* price the agent asks Jupiter for itself: `maxFeeBps` (default 25) of what `amountIn` of the input
 * is worth in SOL, plus 2% for the price moving between the server's quote and this one. In
 * lamports.
 */
@@ -1724,4 +1729,4 @@ async function ownSolFeeLimit(args) {
 	return Number(limit);
 }
 //#endregion
-export { AUTO_MAX_SLIPPAGE_BPS, AUTO_MIN_SLIPPAGE_BPS, BudgetSpentError, CURVE_SLIPPAGE_BPS, DEFAULT_MAX_PRICE_IMPACT_BPS, DEFAULT_SLIPPAGE_BPS, MAX_BELOW_BPS, MAX_FEE_BPS, MAX_PRICE_IMPACT_BPS, MAX_ROUTE_REQUESTS_PER_ROUND, MAX_SLIPPAGE_BPS, MIN_SLIPPAGE_BPS, ORIENTIM_TREASURY, PREPARATION_ASKS, PREPARATION_MS, STATUS_CACHE_BLOCKS, autoSlippageBps, feeLimitBps, fetchRoutes, inputTransferFee, isRpcFailure, isSlippageBps, noticesOf, ownMinimum, ownQuote, ownSolFeeLimit, pastProof, preparationBudget, provesNeverLanded, rateLimitResetMs, routeRequestKey, routeRequestsFor, solFeeOf, timeLeftOf, tokenNotices, tokenRisk, verifyPrepared };
+export { AUTO_MAX_SLIPPAGE_BPS, AUTO_MIN_SLIPPAGE_BPS, BudgetSpentError, CURVE_SLIPPAGE_BPS, DEFAULT_FEE_BPS, DEFAULT_MAX_PRICE_IMPACT_BPS, DEFAULT_SLIPPAGE_BPS, MAX_BELOW_BPS, MAX_FEE_BPS, MAX_PRICE_IMPACT_BPS, MAX_ROUTE_REQUESTS_PER_ROUND, MAX_SLIPPAGE_BPS, MIN_SLIPPAGE_BPS, ORIENTIM_TREASURY, PREPARATION_ASKS, PREPARATION_MS, STATUS_CACHE_BLOCKS, autoSlippageBps, feeLimitBps, fetchRoutes, inputTransferFee, isRpcFailure, isSlippageBps, noticesOf, ownMinimum, ownQuote, ownSolFeeLimit, pastProof, preparationBudget, provesNeverLanded, rateLimitResetMs, routeRequestKey, routeRequestsFor, solFeeOf, timeLeftOf, tokenNotices, tokenRisk, verifyPrepared };

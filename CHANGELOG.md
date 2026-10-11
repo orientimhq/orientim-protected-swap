@@ -3,6 +3,24 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.11.2 (2026-10-11)
+
+- The fee the check accepts is Orientim's 0.25% (`DEFAULT_FEE_BPS`), no longer the 0.3% ceiling: a
+  server that charged even 1 bps more is refused. An agent may allow up to 0.3% with `maxFeeBps`,
+  never more. The verifier's own ceiling (`MAX_FEE_BPS` in `packages/core`) is 0.3%, not 1%.
+- The state directory: each write goes through a temporary file of its own, created only if none of
+  that name exists, so a link planted there is never followed. A directory this process owns is made
+  its owner's alone; one another user owns and others may change is refused. Temporary files a crash
+  left behind are removed.
+- `SKILL.md`, "Safe setup for an agent": the swap command as a user of its own (a `sudo` rule), for a
+  daily limit that holds against an agent that runs commands of its own. The Python example fails
+  clearly when the command gives no answer.
+- Faster: the confirmation is read every 0.5 s, its status and the block height together; the price
+  is asked while the input's transfer fee is read.
+- CI runs the tests on Windows. Releases carry a GitHub build attestation
+  (`gh attestation verify orientim-protected-swap.zip -R orientimhq/orientim-protected-swap`), files
+  once attached are never replaced, and no package runs install scripts in CI.
+
 ## 1.11.1 (2026-10-10)
 
 - The owner's policy at a system path: `/etc/orientim/policy.json` (`C:\ProgramData\Orientim\policy.json`

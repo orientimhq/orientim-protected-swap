@@ -76,7 +76,7 @@ skill you received, from Orientim or anywhere else:
 ```bash
 git clone https://github.com/orientimhq/orientim-protected-swap && cd orientim-protected-swap
 git checkout v<version>          # the version in skills/orientim-protected-swap/package.json
-npm ci && npm run check          # the committed files are what this source builds
+npm ci --ignore-scripts && npm run check   # the committed files are what this source builds
 cd skills/orientim-protected-swap && sha256sum -c SHA256SUMS
 ```
 
@@ -84,6 +84,13 @@ then compare that `SHA256SUMS` with the one in your copy and with the list Orien
 `https://orientim.com/skill/SHA256SUMS`. All three must be the same. `npm run build` also writes
 `dist/orientim-protected-swap.zip`, byte for byte the archive Orientim serves at
 `/skill/orientim-protected-swap.zip` for the same version.
+
+From 1.11.2, each release's zip and `SHA256SUMS` also carry GitHub's signed statement that this
+repository's release workflow built them from that tag:
+
+```bash
+gh attestation verify orientim-protected-swap.zip -R orientimhq/orientim-protected-swap
+```
 
 ## Using it
 

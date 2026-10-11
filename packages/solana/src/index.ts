@@ -139,12 +139,15 @@ export async function fetchSnapshot(args: {
   lookupTableAddresses: readonly Address[];
   minContextSlot?: bigint;
 }): Promise<ChainSnapshot> {
-  const { accounts, slot } = await readAccounts(args.rpc, args.addresses, { minContextSlot: args.minContextSlot });
-  const lookupTables: Record<string, readonly Address[]> = args.lookupTableAddresses.length
-    ? await notOlderThan(() => fetchAddressesForLookupTables([...args.lookupTableAddresses], args.rpc, {
-      ...(args.minContextSlot !== undefined ? { minContextSlot: args.minContextSlot } : {}),
-    }), args.minContextSlot)
-    : {};
+  // Read together: each read is held to `minContextSlot` on its own, as it was when one followed the other.
+  const [{ accounts, slot }, lookupTables] = await Promise.all([
+    readAccounts(args.rpc, args.addresses, { minContextSlot: args.minContextSlot }),
+    args.lookupTableAddresses.length
+      ? notOlderThan(() => fetchAddressesForLookupTables([...args.lookupTableAddresses], args.rpc, {
+        ...(args.minContextSlot !== undefined ? { minContextSlot: args.minContextSlot } : {}),
+      }), args.minContextSlot) as Promise<Record<string, readonly Address[]>>
+      : Promise.resolve({} as Record<string, readonly Address[]>),
+  ]);
   return { accounts, lookupTables, slot };
 }
 

@@ -50,7 +50,7 @@ const V1_SIZE_LIMIT = 4096;
 */
 const LAMPORTS_PER_SIGNATURE = 5000n;
 const BPS_DENOMINATOR = 10000n;
-const MAX_FEE_BPS$1 = 100n;
+const MAX_FEE_BPS$1 = 30n;
 const ABSOLUTE_MAX_NETWORK_FEE_LAMPORTS = 1000000n;
 /**
 * The most W may send E for rent of an account the route opens in E's name. Both of Pump.fun's
@@ -641,7 +641,7 @@ async function verify(transaction, policy, snapshot, opts = {}) {
 	const feeOnInput = p.feeSide === "input" ? p.fee : 0n;
 	if (p.fee !== expectedFee || p.swapAmount + feeOnInput !== p.amountIn || p.swapAmount <= 0n) fail("R2", "policy amounts are inconsistent");
 	if (p.inputMint === p.outputMint) fail("R2", "input and output token are the same");
-	if (p.feeBps < 0n || p.feeBps > 100n) fail("R2", `fee of ${p.feeBps} bps is above the maximum of ${MAX_FEE_BPS$1}`);
+	if (p.feeBps < 0n || p.feeBps > 30n) fail("R2", `fee of ${p.feeBps} bps is above the maximum of ${MAX_FEE_BPS$1}`);
 	if (p.maxNetworkFeeLamports > 1000000n) fail("R4", `configured network fee limit ${p.maxNetworkFeeLamports} is above the absolute maximum`);
 	if (p.minOut <= 0n) fail("R2", "the policy has no minimum output");
 	for (const [mint, decimals, side] of [[
@@ -1031,8 +1031,8 @@ function autoSlippageBps(r) {
 */
 const MAX_BELOW_BPS = 2e3;
 const MAX_PRICE_IMPACT_BPS = 2e3;
-/** The fee limit the check applies: the agent's own, never above the ceiling pinned for Orientim's fee. */
-const feeLimitBps = (maxFeeBps) => Number.isInteger(maxFeeBps) && maxFeeBps >= 0 ? Math.min(maxFeeBps, 30) : 30;
+/** The fee limit the check applies: the agent's own, never above the ceiling pinned for Orientim's fee; 0.25% without one. */
+const feeLimitBps = (maxFeeBps) => Number.isInteger(maxFeeBps) && maxFeeBps >= 0 ? Math.min(maxFeeBps, 30) : 25;
 const isSlippageBps = (v) => typeof v === "number" && Number.isInteger(v) && v >= 10 && v <= 1500;
 /** A limit outside what the skill allows: a usage error (exit 2), not a refusal of this swap. */
 const usageError = (message) => Object.assign(new Error(message), { name: "IntentError" });
@@ -1621,7 +1621,7 @@ async function inputTransferFee(rpc, mint, timeoutMs = 1e4) {
 }
 /**
 * The most Orientim's fee in SOL may be for a swap that neither token can carry the fee for, from a
-* price the agent asks Jupiter for itself: `maxFeeBps` (default 30) of what `amountIn` of the input
+* price the agent asks Jupiter for itself: `maxFeeBps` (default 25) of what `amountIn` of the input
 * is worth in SOL, plus 2% for the price moving between the server's quote and this one. In
 * lamports.
 */
@@ -1862,7 +1862,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.11.1";
+const SKILL_VERSION = "1.11.2";
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res) => {
 	const after = Number(res.headers.get("retry-after"));
@@ -2310,7 +2310,7 @@ async function archiveOutcome(archive, signature, temporaryAuthority, lastValidB
 * a bot whose RPC was down while the status cache could prove it is not left with `unknown`.
 */
 async function confirm(rpc, signature, lastValidBlockHeight, opts = {}) {
-	const pollMs = opts.pollMs ?? 1e3;
+	const pollMs = opts.pollMs ?? 500;
 	const deadline = Date.now() + (opts.maxWaitMs ?? 18e4);
 	const bounded = () => ({ abortSignal: AbortSignal.timeout(Math.max(1, Math.min(opts.requestTimeoutMs ?? 1e4, deadline - Date.now()))) });
 	const settled = (s) => !!s && (s.confirmationStatus === "confirmed" || s.confirmationStatus === "finalized");
@@ -2339,9 +2339,9 @@ async function confirm(rpc, signature, lastValidBlockHeight, opts = {}) {
 		try {
 			if (!pastLifetime && opts.signedTransaction && opts.send && lastSend === 0) await resend();
 			if (!pastLifetime) {
-				const [status] = (await rpc.getSignatureStatuses([signature], { searchTransactionHistory: false }).send(bounded())).value;
+				const [{ value: [status] }, height] = await Promise.all([rpc.getSignatureStatuses([signature], { searchTransactionHistory: false }).send(bounded()), rpc.getBlockHeight({ commitment: "confirmed" }).send(bounded())]);
 				if (settled(status)) return status.err ? failed(status.err) : "confirmed";
-				if (await rpc.getBlockHeight({ commitment: "confirmed" }).send(bounded()) > lastValidBlockHeight) pastLifetime = true;
+				if (height > lastValidBlockHeight) pastLifetime = true;
 				else if (opts.signedTransaction && Date.now() - lastSend > 3e3) await resend();
 				read = !pastLifetime;
 			} else {
@@ -2557,14 +2557,15 @@ function recordApproval(dir, approval) {
 		mode: 448
 	});
 	const path = approvalFile(dir, approval);
-	const fd = openSync(`${path}.tmp`, "w", 384);
+	const temporary = temporaryFor(path);
+	const fd = openSync(temporary, "wx", 384);
 	try {
 		writeSync(fd, JSON.stringify(approval));
 		fsyncSync(fd);
 	} finally {
 		closeSync(fd);
 	}
-	renameSync(`${path}.tmp`, path);
+	renameSync(temporary, path);
 }
 /** The approval kept for this wallet, these mints and this amount; null when there is none. */
 function approvalFor(dir, key) {
@@ -2665,6 +2666,28 @@ const RETRY_MARKER_STALE_MS = 6e4;
 const DIR_MODE = 448;
 const FILE_MODE = 384;
 /**
+* A temporary file of its own for each write, created only if no file of that name exists ('wx'), so
+* that a link planted in the directory is never followed and two writers never share one.
+*/
+const temporaryFor = (path) => `${path}.${randomUUID()}.tmp`;
+/**
+* The state directory, held to its owner: made the owner's alone when this process owns it, and
+* refused when another user owns it and others may change it, since the daily limit counts what it records.
+* Temporary files a crash left behind are removed.
+*/
+function ownStateDir(dir) {
+	if (process.platform !== "win32" && typeof process.geteuid === "function") {
+		const st = statSync(dir);
+		if (st.uid === process.geteuid()) {
+			if (st.mode & 63) chmodSync(dir, DIR_MODE);
+		} else if (st.mode & 18) throw new ConfigError(`The state directory ${dir} belongs to another user and others may change it: the record of swaps would not be the owner's alone. Nothing was started.`);
+	}
+	const stale = Date.now() - 36e5;
+	for (const f of readdirSync(dir).filter((f) => f.endsWith(".tmp"))) try {
+		if (lstatSync(join(dir, f)).mtimeMs < stale) rmSync(join(dir, f), { force: true });
+	} catch {}
+}
+/**
 * Pending swaps as files in `dir`, one per signature, each written to a temporary file, flushed to
 * disk and renamed into place, so a record is either whole or absent. The directory is made readable
 * by its owner only.
@@ -2678,17 +2701,18 @@ function createFileStore(dir) {
 	} catch (e) {
 		throw new ConfigError(`The state directory ${dir} cannot be made (${e.code ?? e.message}); nothing was started. Fix it first.`);
 	}
+	ownStateDir(dir);
 	const file = (signature) => join(dir, `pending-${signature}.json`);
 	const orderFile = (id) => join(dir, `order-${createHash("sha256").update(id).digest("hex").slice(0, 40)}.json`);
-	const writeDurably = (path, text, flag) => {
-		const fd = openSync(path, flag, FILE_MODE);
+	/** Creates `path`, which must not exist yet: a temporary file (`temporaryFor`), or a claim. */
+	const writeDurably = (path, text) => {
+		const fd = openSync(path, "wx", FILE_MODE);
 		try {
 			writeSync(fd, text);
 			fsyncSync(fd);
 		} finally {
 			closeSync(fd);
 		}
-		if (flag === "w") chmodSync(path, FILE_MODE);
 	};
 	/** Renames a flushed temporary file into place, and flushes the directory that now names it. */
 	const commit = (temporary, path) => {
@@ -2707,11 +2731,11 @@ function createFileStore(dir) {
 		}
 	};
 	const writeOrder = (id, record) => {
-		const temporary = `${orderFile(id)}.tmp`;
+		const temporary = temporaryFor(orderFile(id));
 		writeDurably(temporary, JSON.stringify({
 			id,
 			...record
-		}), "w");
+		}));
 		commit(temporary, orderFile(id));
 	};
 	/** A retry marker no worker can still be using: see `reclaimOrder`. */
@@ -2744,7 +2768,7 @@ function createFileStore(dir) {
 				writeDurably(orderFile(id), JSON.stringify({
 					id,
 					...record
-				}), "wx");
+				}));
 			} catch {
 				return false;
 			}
@@ -2755,7 +2779,7 @@ function createFileStore(dir) {
 			const marker = `${orderFile(id)}.retry-${prior.signature}`;
 			const claim = () => {
 				try {
-					writeDurably(marker, "", "wx");
+					writeDurably(marker, "");
 					return true;
 				} catch {
 					return false;
@@ -2778,12 +2802,12 @@ function createFileStore(dir) {
 			return true;
 		},
 		async put(s) {
-			const temporary = `${file(s.signature)}.tmp`;
+			const temporary = temporaryFor(file(s.signature));
 			writeDurably(temporary, JSON.stringify({
 				...s,
 				lastValidBlockHeight: s.lastValidBlockHeight.toString(),
 				...s.signedHeight !== void 0 ? { signedHeight: s.signedHeight.toString() } : {}
-			}), "w");
+			}));
 			commit(temporary, file(s.signature));
 		},
 		async remove(signature) {
@@ -2804,8 +2828,9 @@ function createFileStore(dir) {
 		},
 		async recordSpend(entry) {
 			const path = join(dir, `spend-${entry.signature}.json`);
-			writeDurably(`${path}.tmp`, JSON.stringify(entry), "w");
-			commit(`${path}.tmp`, path);
+			const temporary = temporaryFor(path);
+			writeDurably(temporary, JSON.stringify(entry));
+			commit(temporary, path);
 		},
 		async forgetSpend(signature) {
 			rmSync(join(dir, `spend-${signature}.json`), { force: true });
@@ -3089,14 +3114,14 @@ async function ownFloor(intent, deps) {
 	const maxImpact = intent.maxPriceImpactBps ?? Math.min(500, owner.maxPriceImpactBps ?? 500);
 	if (!(Number.isInteger(maxImpact) && maxImpact >= 0 && maxImpact <= 2e3)) throw new IntentError(`maxPriceImpactBps must be a whole number of bps from 0 to ${MAX_PRICE_IMPACT_BPS}. Nothing was sent.`);
 	if (owner.maxPriceImpactBps !== void 0 && maxImpact > owner.maxPriceImpactBps) throw new PolicyError("impact-over-limit", `A price impact limit of ${maxImpact} bps is above the owner's limit of ${owner.maxPriceImpactBps}.`, { limit: String(owner.maxPriceImpactBps) });
-	if (intent.maxFeeBps !== void 0 && feeLimitBps(intent.maxFeeBps) !== intent.maxFeeBps) throw new IntentError(`maxFeeBps must be a whole number of bps from 0 to ${feeLimitBps()}, the most Orientim's fee may ever be. Nothing was sent.`);
+	if (intent.maxFeeBps !== void 0 && feeLimitBps(intent.maxFeeBps) !== intent.maxFeeBps) throw new IntentError(`maxFeeBps must be a whole number of bps from 0 to 30, the most Orientim's fee may ever be. Nothing was sent.`);
 	if (intent.minOut !== void 0 && !/^\d{1,20}$/.test(intent.minOut)) throw new IntentError("minOut must be a whole number of base units, as a string. Nothing was sent.");
 	for (const [name, v] of [
 		["maxNetworkFeeLamports", intent.maxNetworkFeeLamports],
 		["maxRouteCostLamports", intent.maxRouteCostLamports],
 		["maxSolFeeLamports", intent.maxSolFeeLamports]
 	]) if (v !== void 0 && !(Number.isSafeInteger(v) && v >= 0)) throw new IntentError(`${name} must be a whole number of lamports. Nothing was sent.`);
-	const own = await ownQuote({
+	const quoteFor = (inputTax) => ownQuote({
 		inputMint: intent.inputMint,
 		outputMint: intent.outputMint,
 		amountIn: intent.amountIn,
@@ -3112,9 +3137,14 @@ async function ownFloor(intent, deps) {
 			maxSlippageBps: owner.maxSlippageBps,
 			maxBelowBps: owner.maxBelowBps
 		},
-		inputTax: await inputTransferFee(deps.rpc, intent.inputMint, deps.requestTimeoutMs),
+		inputTax,
 		allowUnknownImpact: owner.allowUnknownPriceImpact === true
 	});
+	const [tax, untaxed] = await Promise.allSettled([inputTransferFee(deps.rpc, intent.inputMint, deps.requestTimeoutMs), quoteFor(null)]);
+	if (tax.status === "rejected") throw tax.reason;
+	const own = tax.value && tax.value.bps > 0 ? await quoteFor(tax.value) : untaxed.status === "fulfilled" ? untaxed.value : (() => {
+		throw untaxed.reason;
+	})();
 	if (own.priceImpactBps !== null && own.priceImpactBps > maxImpact) throw new PriceImpactError(own.priceImpactBps, maxImpact);
 	const tolerance = own.slippageBps !== void 0 ? { slippageBps: own.slippageBps } : {};
 	if (intent.minOut === void 0) return {
@@ -3337,7 +3367,7 @@ async function receivedFor(rpc, signature, prepared, opts = {}) {
 				return after.reduce((sum, b) => sum + BigInt(b.uiTokenAmount.amount) - (before.get(b.accountIndex) ?? 0n), 0n);
 			}
 		} catch {}
-		await wait(opts.pollMs ?? 1e3);
+		await wait(opts.pollMs ?? 500);
 	}
 	return null;
 }

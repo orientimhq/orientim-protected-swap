@@ -52,7 +52,7 @@ import {
 } from '@solana/kit';
 import type { Address, Rpc, SignatureBytes, SignatureDictionary, SolanaRpcApi, Transaction, TransactionPartialSigner } from '@solana/kit';
 import {
-  DEFAULT_MAX_PRICE_IMPACT_BPS, feeLimitBps, inputTransferFee, isSlippageBps, MAX_BELOW_BPS, MAX_PRICE_IMPACT_BPS, MAX_SLIPPAGE_BPS, MIN_SLIPPAGE_BPS,
+  DEFAULT_MAX_PRICE_IMPACT_BPS, feeLimitBps, inputTransferFee, isSlippageBps, MAX_BELOW_BPS, MAX_FEE_BPS, MAX_PRICE_IMPACT_BPS, MAX_SLIPPAGE_BPS, MIN_SLIPPAGE_BPS,
   BudgetSpentError, fetchRoutes, isRpcFailure, ownQuote, ownSolFeeLimit, pastProof, PREPARATION_MS, preparationBudget, routeRequestKey, routeRequestsFor, timeLeftOf,
   noticesOf, provesNeverLanded, tokenRisk, verifyPrepared,
 } from '../lib/orientim-verify.mjs';
@@ -335,7 +335,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.11.1';
+export const SKILL_VERSION = '1.11.2';
 
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res: Response) => {
@@ -844,7 +844,8 @@ export async function confirm(
     send?: SendTransaction;
   } = {},
 ): Promise<Outcome> {
-  const pollMs = opts.pollMs ?? 1_000;
+  // A little over a slot: a confirmation is seen within half a second of landing.
+  const pollMs = opts.pollMs ?? 500;
   const deadline = Date.now() + (opts.maxWaitMs ?? 180_000);
   const bounded = () => ({ abortSignal: AbortSignal.timeout(Math.max(1, Math.min(opts.requestTimeoutMs ?? 10_000, deadline - Date.now()))) });
   const settled = (s: { confirmationStatus?: string | null } | null | undefined) =>
@@ -872,9 +873,14 @@ export async function confirm(
       // anything is read. When Orientim sent it, the first read comes first: it has usually landed.
       if (!pastLifetime && opts.signedTransaction && opts.send && lastSend === 0) await resend();
       if (!pastLifetime) {
-        const [status] = (await rpc.getSignatureStatuses([signature as never], { searchTransactionHistory: false }).send(bounded())).value;
+        // Read together: a height past the lifetime only sends the next look to the full history, which
+        // finds the transaction there if it landed meanwhile.
+        const [{ value: [status] }, height] = await Promise.all([
+          rpc.getSignatureStatuses([signature as never], { searchTransactionHistory: false }).send(bounded()),
+          rpc.getBlockHeight({ commitment: 'confirmed' }).send(bounded()),
+        ]);
         if (settled(status)) return status!.err ? failed(status!.err) : 'confirmed';
-        if ((await rpc.getBlockHeight({ commitment: 'confirmed' }).send(bounded())) > lastValidBlockHeight) pastLifetime = true;
+        if (height > lastValidBlockHeight) pastLifetime = true;
         else if (opts.signedTransaction && Date.now() - lastSend > 3_000) await resend();
         read = !pastLifetime;
       } else {
@@ -1234,14 +1240,15 @@ const approvalFile = (dir: string, k: ApprovalKey) =>
 export function recordApproval(dir: string, approval: Approval): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const path = approvalFile(dir, approval);
-  const fd = openSync(`${path}.tmp`, 'w', 0o600);
+  const temporary = temporaryFor(path);
+  const fd = openSync(temporary, 'wx', 0o600);
   try {
     writeSync(fd, JSON.stringify(approval));
     fsyncSync(fd);
   } finally {
     closeSync(fd);
   }
-  renameSync(`${path}.tmp`, path);
+  renameSync(temporary, path);
 }
 
 /** The approval kept for this wallet, these mints and this amount; null when there is none. */
@@ -1388,6 +1395,36 @@ const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
 
 /**
+ * A temporary file of its own for each write, created only if no file of that name exists ('wx'), so
+ * that a link planted in the directory is never followed and two writers never share one.
+ */
+const temporaryFor = (path: string) => `${path}.${randomUUID()}.tmp`;
+
+/**
+ * The state directory, held to its owner: made the owner's alone when this process owns it, and
+ * refused when another user owns it and others may change it, since the daily limit counts what it records.
+ * Temporary files a crash left behind are removed.
+ */
+function ownStateDir(dir: string): void {
+  if (process.platform !== 'win32' && typeof process.geteuid === 'function') {
+    const st = statSync(dir);
+    if (st.uid === process.geteuid()) {
+      if (st.mode & 0o077) chmodSync(dir, DIR_MODE);
+    } else if (st.mode & 0o022) {
+      throw new ConfigError(`The state directory ${dir} belongs to another user and others may change it: the record of swaps would not be the owner's alone. Nothing was started.`);
+    }
+  }
+  const stale = Date.now() - 60 * 60_000;
+  for (const f of readdirSync(dir).filter(f => f.endsWith('.tmp'))) {
+    try {
+      if (lstatSync(join(dir, f)).mtimeMs < stale) rmSync(join(dir, f), { force: true });
+    } catch {
+      // Removed meanwhile.
+    }
+  }
+}
+
+/**
  * Pending swaps as files in `dir`, one per signature, each written to a temporary file, flushed to
  * disk and renamed into place, so a record is either whole or absent. The directory is made readable
  * by its owner only.
@@ -1398,19 +1435,19 @@ export function createFileStore(dir: string): PendingStore & OrderBook & SpendLo
   } catch (e) {
     throw new ConfigError(`The state directory ${dir} cannot be made (${(e as NodeJS.ErrnoException).code ?? (e as Error).message}); nothing was started. Fix it first.`);
   }
+  ownStateDir(dir);
   const file = (signature: string) => join(dir, `pending-${signature}.json`);
   // An id is the caller's text: its hash names the file, and the record keeps the id itself.
   const orderFile = (id: string) => join(dir, `order-${createHash('sha256').update(id).digest('hex').slice(0, 40)}.json`);
-  const writeDurably = (path: string, text: string, flag: 'w' | 'wx') => {
-    const fd = openSync(path, flag, FILE_MODE);
+  /** Creates `path`, which must not exist yet: a temporary file (`temporaryFor`), or a claim. */
+  const writeDurably = (path: string, text: string) => {
+    const fd = openSync(path, 'wx', FILE_MODE);
     try {
       writeSync(fd, text);
       fsyncSync(fd);
     } finally {
       closeSync(fd);
     }
-    // A file made by an earlier version, or under another umask, is made the owner's alone too.
-    if (flag === 'w') chmodSync(path, FILE_MODE);
   };
   /** Renames a flushed temporary file into place, and flushes the directory that now names it. */
   const commit = (temporary: string, path: string) => {
@@ -1426,8 +1463,8 @@ export function createFileStore(dir: string): PendingStore & OrderBook & SpendLo
     }
   };
   const writeOrder = (id: string, record: OrderRecord) => {
-    const temporary = `${orderFile(id)}.tmp`;
-    writeDurably(temporary, JSON.stringify({ id, ...record }), 'w');
+    const temporary = temporaryFor(orderFile(id));
+    writeDurably(temporary, JSON.stringify({ id, ...record }));
     commit(temporary, orderFile(id));
   };
   /** A retry marker no worker can still be using: see `reclaimOrder`. */
@@ -1460,7 +1497,7 @@ export function createFileStore(dir: string): PendingStore & OrderBook & SpendLo
     },
     async claimOrder(id, record) {
       try {
-        writeDurably(orderFile(id), JSON.stringify({ id, ...record }), 'wx');
+        writeDurably(orderFile(id), JSON.stringify({ id, ...record }));
       } catch {
         return false;
       }
@@ -1472,7 +1509,7 @@ export function createFileStore(dir: string): PendingStore & OrderBook & SpendLo
       const marker = `${orderFile(id)}.retry-${prior.signature}`;
       const claim = () => {
         try {
-          writeDurably(marker, '', 'wx');
+          writeDurably(marker, '');
           return true;
         } catch {
           return false;
@@ -1503,11 +1540,11 @@ export function createFileStore(dir: string): PendingStore & OrderBook & SpendLo
       return true;
     },
     async put(s) {
-      const temporary = `${file(s.signature)}.tmp`;
+      const temporary = temporaryFor(file(s.signature));
       writeDurably(temporary, JSON.stringify({
         ...s, lastValidBlockHeight: s.lastValidBlockHeight.toString(),
         ...(s.signedHeight !== undefined ? { signedHeight: s.signedHeight.toString() } : {}),
-      }), 'w');
+      }));
       commit(temporary, file(s.signature));
     },
     async remove(signature) {
@@ -1529,8 +1566,9 @@ export function createFileStore(dir: string): PendingStore & OrderBook & SpendLo
     },
     async recordSpend(entry) {
       const path = join(dir, `spend-${entry.signature}.json`);
-      writeDurably(`${path}.tmp`, JSON.stringify(entry), 'w');
-      commit(`${path}.tmp`, path);
+      const temporary = temporaryFor(path);
+      writeDurably(temporary, JSON.stringify(entry));
+      commit(temporary, path);
     },
     async forgetSpend(signature) {
       rmSync(join(dir, `spend-${signature}.json`), { force: true });
@@ -1829,7 +1867,7 @@ export async function ownFloor(
     throw new PolicyError('impact-over-limit', `A price impact limit of ${maxImpact} bps is above the owner's limit of ${owner.maxPriceImpactBps}.`, { limit: String(owner.maxPriceImpactBps) });
   }
   if (intent.maxFeeBps !== undefined && feeLimitBps(intent.maxFeeBps) !== intent.maxFeeBps) {
-    throw new IntentError(`maxFeeBps must be a whole number of bps from 0 to ${feeLimitBps()}, the most Orientim's fee may ever be. Nothing was sent.`);
+    throw new IntentError(`maxFeeBps must be a whole number of bps from 0 to ${MAX_FEE_BPS}, the most Orientim's fee may ever be. Nothing was sent.`);
   }
   if (intent.minOut !== undefined && !/^\d{1,20}$/.test(intent.minOut)) throw new IntentError('minOut must be a whole number of base units, as a string. Nothing was sent.');
   for (const [name, v] of [
@@ -1837,13 +1875,18 @@ export async function ownFloor(
   ] as const) {
     if (v !== undefined && !(Number.isSafeInteger(v) && v >= 0)) throw new IntentError(`${name} must be a whole number of lamports. Nothing was sent.`);
   }
-  const own = await ownQuote({
+  const quoteFor = (inputTax: Awaited<ReturnType<typeof inputTransferFee>>) => ownQuote({
     inputMint: intent.inputMint, outputMint: intent.outputMint, amountIn: intent.amountIn, taker: intent.owner,
     maxFeeBps: intent.maxFeeBps, maxBelowBps: intent.maxBelowBps, slippageBps: chosen, autoSlippage: auto, apiKey: deps.jupiterApiKey, fetchImpl: deps.fetchImpl, budget: deps.budget,
     ceilings: { maxSlippageBps: owner.maxSlippageBps, maxBelowBps: owner.maxBelowBps },
-    inputTax: await inputTransferFee(deps.rpc, intent.inputMint, deps.requestTimeoutMs),
+    inputTax,
     allowUnknownImpact: owner.allowUnknownPriceImpact === true,
   });
+  // The price is asked while the input's transfer fee is read: almost no token charges one, and one
+  // that does is priced again for what reaches the route.
+  const [tax, untaxed] = await Promise.allSettled([inputTransferFee(deps.rpc, intent.inputMint, deps.requestTimeoutMs), quoteFor(null)]);
+  if (tax.status === 'rejected') throw tax.reason;
+  const own = tax.value && tax.value.bps > 0 ? await quoteFor(tax.value) : untaxed.status === 'fulfilled' ? untaxed.value : (() => { throw untaxed.reason; })();
   if (own.priceImpactBps !== null && own.priceImpactBps > maxImpact) throw new PriceImpactError(own.priceImpactBps, maxImpact);
   const tolerance = own.slippageBps !== undefined ? { slippageBps: own.slippageBps } : {};
   if (intent.minOut === undefined) return { minOut: own.minOut, priceImpactBps: own.priceImpactBps, maxPriceImpactBps: maxImpact, ...tolerance };
@@ -2071,7 +2114,7 @@ export async function receivedFor(
     } catch {
       // Not readable yet, or the RPC failed: asked again below.
     }
-    await wait(opts.pollMs ?? 1_000);
+    await wait(opts.pollMs ?? 500);
   }
   return null;
 }
