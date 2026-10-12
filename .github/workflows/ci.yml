@@ -50,6 +50,28 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm test
 
+  mcp:
+    # The MCP server as npm and Claude Desktop ship it, started as a client starts it, on every Node
+    # the package claims and on each system.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: ['20.18.0', '22', '24']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ matrix.node }}
+      - run: node tools/mcp/smoke.mjs dist/orientim-mcp/bin/orientim-mcp.mjs
+
   reproducible:
     # The same source must give the same bytes on another runner image.
     strategy:
