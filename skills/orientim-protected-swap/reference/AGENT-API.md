@@ -237,8 +237,9 @@ It takes rounds, a second or so each:
    session expired or was opened for another swap: start again without it.
 
 The one-time key E is one per session (two minutes at most), not one per message: every round of a
-session builds around the same E. So a session holds every round to the terms of its first:
-`slippageBps`, `acceptCostBps`, `routingMode`, and `minOut` once a round has sent it. A round that
+session builds around the same E. So a session holds every round to the same terms: `routingMode`
+as the first round sent it, and `slippageBps`, `acceptCostBps` and `minOut` as the first round that
+sent each (a first round may leave them out while you ask Jupiter for your own price). A round that
 asks for other terms gets `bad-session`; prepare again without the session.
 
 A client of its own should hold Orientim to the same as the skill does: the `taker` of the first
