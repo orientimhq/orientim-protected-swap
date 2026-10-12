@@ -1239,6 +1239,7 @@ const approvalFile = (dir: string, k: ApprovalKey) =>
 /** Keeps what the user approved (`Approval`) in the state directory, the owner's alone. */
 export function recordApproval(dir: string, approval: Approval): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
+  ownStateDir(dir);
   const path = approvalFile(dir, approval);
   const temporary = temporaryFor(path);
   const fd = openSync(temporary, 'wx', 0o600);
@@ -1296,7 +1297,8 @@ export class ApprovalError extends Error {}
  */
 export function keptApproval(dir: string, key: ApprovalKey, now = Date.now()): Approval | null {
   const approved = approvalFor(dir, key);
-  if (approved && approved.expiresAt + DAY_MS < now) {
+  // An approval no dry run could have written (it would expire later than one made now) is not the user's.
+  if (approved && (approved.expiresAt + DAY_MS < now || approved.expiresAt > now + APPROVAL_MS + 60_000)) {
     forgetApproval(dir, key);
     return null;
   }
@@ -1410,8 +1412,9 @@ function ownStateDir(dir: string): void {
     const st = statSync(dir);
     if (st.uid === process.geteuid()) {
       if (st.mode & 0o077) chmodSync(dir, DIR_MODE);
-    } else if (st.mode & 0o022) {
-      throw new ConfigError(`The state directory ${dir} belongs to another user and others may change it: the record of swaps would not be the owner's alone. Nothing was started.`);
+    } else {
+      // Its owner could plant an approval or erase the record of swaps, whatever its mode says.
+      throw new ConfigError(`The state directory ${dir} belongs to another user: the record of swaps and the user's approvals would not be this user's alone. Use a directory of your own. Nothing was started.`);
     }
   }
   const stale = Date.now() - 60 * 60_000;
@@ -1842,7 +1845,7 @@ export class FloorError extends Error {
 export async function ownFloor(
   intent: Intent,
   deps: { rpc: Rpc<SolanaRpcApi>; fetchImpl?: Fetch; jupiterApiKey?: string; requestTimeoutMs?: number; policy?: OwnerCeilings; budget?: JupiterBudget },
-): Promise<{ minOut: string; priceImpactBps: number | null; maxPriceImpactBps: number; slippageBps?: number }> {
+): Promise<{ minOut: string; outAmount: string; priceImpactBps: number | null; maxPriceImpactBps: number; slippageBps?: number }> {
   if (intent.routingMode !== undefined && intent.routingMode !== 'standard' && intent.routingMode !== 'fast') {
     throw new IntentError('routingMode must be standard or fast. Nothing was sent.');
   }
@@ -1889,7 +1892,7 @@ export async function ownFloor(
   const own = tax.value && tax.value.bps > 0 ? await quoteFor(tax.value) : untaxed.status === 'fulfilled' ? untaxed.value : (() => { throw untaxed.reason; })();
   if (own.priceImpactBps !== null && own.priceImpactBps > maxImpact) throw new PriceImpactError(own.priceImpactBps, maxImpact);
   const tolerance = own.slippageBps !== undefined ? { slippageBps: own.slippageBps } : {};
-  if (intent.minOut === undefined) return { minOut: own.minOut, priceImpactBps: own.priceImpactBps, maxPriceImpactBps: maxImpact, ...tolerance };
+  if (intent.minOut === undefined) return { minOut: own.minOut, outAmount: own.outAmount, priceImpactBps: own.priceImpactBps, maxPriceImpactBps: maxImpact, ...tolerance };
   const belowBps = owner.maxBelowBps ?? MAX_BELOW_BPS;
   const lowest = (BigInt(own.outAmount) * BigInt(10_000 - belowBps)) / 10_000n;
   if (BigInt(intent.minOut) < lowest) {
@@ -1898,7 +1901,7 @@ export async function ownFloor(
     }
     throw new FloorError(intent.minOut, lowest.toString());
   }
-  return { minOut: intent.minOut, priceImpactBps: own.priceImpactBps, maxPriceImpactBps: maxImpact, ...tolerance };
+  return { minOut: intent.minOut, outAmount: own.outAmount, priceImpactBps: own.priceImpactBps, maxPriceImpactBps: maxImpact, ...tolerance };
 }
 
 /** The intent with the tolerance `ownFloor` resolved: a number, or none for Orientim's default. */
@@ -2546,7 +2549,7 @@ async function main() {
       approval = { minOut, until: new Date(expiresAt).toISOString() };
     }
     console.log(JSON.stringify({
-      yourFloor: minOut, ...(approval ? { approval } : {}), priceImpactBps: own.priceImpactBps, slippageBps: shownData.slippageBps, amounts: shownData.amounts, costs: shownData.costs,
+      yourFloor: minOut, yourQuote: own.outAmount, ...(approval ? { approval } : {}), priceImpactBps: own.priceImpactBps, slippageBps: shownData.slippageBps, amounts: shownData.amounts, costs: shownData.costs,
       blocksLeft: shownData.blocksLeft, problems, notices: noticesOf(risk), tokenRisk: risk,
     }, null, 2));
     process.exitCode = problems.length ? 1 : 0;

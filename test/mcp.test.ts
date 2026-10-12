@@ -30,7 +30,7 @@ type Call = { command: 'swap' | 'verify'; args: string[]; options: RunOptions };
 
 /** The dry run's answer, as examples/swap.ts prints it. */
 const dryRun = (over: Record<string, unknown> = {}) => JSON.stringify({
-  yourFloor: '1490000',
+  yourFloor: '1490000', yourQuote: '1497000',
   approval: { minOut: '1490000', until: new Date(Date.UTC(2026, 9, 11, 12, 10)).toISOString() },
   priceImpactBps: 3, slippageBps: 50,
   amounts: { amountIn: '10000000', fee: '25000', feeBps: 25, swapAmount: '9975000', quotedOut: '1500000', minOut: '1490000' },
@@ -243,7 +243,8 @@ describe('orientim_quote', () => {
     expect(answer.summary).toEqual({
       pay: { amount: '0.01', mint: SOL },
       receiveAtLeast: { amount: '1.49', mint: USDC },
-      expected: { amount: '1.5', mint: USDC },
+      // The agent's own Jupiter price, not Orientim's quotedOut (1.5).
+      expected: { amount: '1.497', mint: USDC },
       orientimFee: { amount: '0.000025', mint: SOL },
       solCost: '0.000005',
       priceImpactBps: 3,
@@ -375,6 +376,35 @@ describe('orientim_swap', () => {
     expect(h.calls).toHaveLength(2);
   });
 
+  it('asks the person through a client that can, and signs nothing without their yes', async () => {
+    for (const [answer, swapped] of [
+      [{ action: 'accept', content: { confirm: true } }, true],
+      [{ action: 'accept', content: { confirm: false } }, false],
+      [{ action: 'decline' }, false],
+      [{ action: 'cancel' }, false],
+    ] as const) {
+      const h = harness([() => ok(dryRun()), () => ok(JSON.stringify({ signature: SIG, outcome: 'confirmed' }))]);
+      await h.request('initialize', { protocolVersion: '2025-06-18', capabilities: { elicitation: {} }, clientInfo: { name: 't', version: '1' } });
+      const { answer: q } = await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01' });
+      const call = h.tool('orientim_swap', { quoteId: q.quoteId });
+      await new Promise(r => setTimeout(r, 0));
+      const asked = h.sent.find(m => m.method === 'elicitation/create') as { id: string; params: { message: string } };
+      expect(asked.params.message).toBe(`Swap 0.01 of ${SOL} for at least 1.49 of ${USDC}, Orientim's fee 0.000025 of ${SOL}, 0.000005 SOL in network costs?`);
+      await h.server.receive(JSON.stringify({ jsonrpc: '2.0', id: asked.id, result: answer }), h.send);
+      const { answer: done } = await call;
+      expect(done.ok).toBe(swapped);
+      expect(h.calls).toHaveLength(swapped ? 2 : 1);
+    }
+  });
+
+  it('does not ask a client that cannot', async () => {
+    const h = harness([() => ok(dryRun()), () => ok(JSON.stringify({ signature: SIG, outcome: 'confirmed' }))]);
+    await h.request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } });
+    const { answer: q } = await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01' });
+    expect((await h.tool('orientim_swap', { quoteId: q.quoteId })).answer.ok).toBe(true);
+    expect(h.sent.some(m => m.method === 'elicitation/create')).toBe(false);
+  });
+
   it('refuses a quote it never gave, one a newer quote replaced, and one whose yes expired', async () => {
     const h = harness([() => ok(dryRun()), () => ok(dryRun()), () => ok(dryRun())]);
     expect((await h.tool('orientim_swap', { quoteId: '12345678-0000' })).answer.error.line).toMatch(/No quote with this id/);
@@ -472,6 +502,7 @@ describe('the environment of the commands', () => {
 
   it('cuts every URL to its host', () => {
     expect(withoutSecrets('rpc https://a.example/v2/KEY?x=1 and wss://b.example:443/k')).toBe('rpc https://a.example/… and wss://b.example:443/…');
+    expect(withoutSecrets('fetch https://rpcuser:S3CRET@rpc.example/?api-key=K failed')).toBe('fetch https://rpc.example/… failed');
   });
 });
 

@@ -2556,6 +2556,7 @@ function recordApproval(dir, approval) {
 		recursive: true,
 		mode: 448
 	});
+	ownStateDir(dir);
 	const path = approvalFile(dir, approval);
 	const temporary = temporaryFor(path);
 	const fd = openSync(temporary, "wx", 384);
@@ -2602,7 +2603,7 @@ var ApprovalError = class extends Error {};
 */
 function keptApproval(dir, key, now = Date.now()) {
 	const approved = approvalFor(dir, key);
-	if (approved && approved.expiresAt + DAY_MS < now) {
+	if (approved && (approved.expiresAt + DAY_MS < now || approved.expiresAt > now + 6e5 + 6e4)) {
 		forgetApproval(dir, key);
 		return null;
 	}
@@ -2680,7 +2681,7 @@ function ownStateDir(dir) {
 		const st = statSync(dir);
 		if (st.uid === process.geteuid()) {
 			if (st.mode & 63) chmodSync(dir, DIR_MODE);
-		} else if (st.mode & 18) throw new ConfigError(`The state directory ${dir} belongs to another user and others may change it: the record of swaps would not be the owner's alone. Nothing was started.`);
+		} else throw new ConfigError(`The state directory ${dir} belongs to another user: the record of swaps and the user's approvals would not be this user's alone. Use a directory of your own. Nothing was started.`);
 	}
 	const stale = Date.now() - 36e5;
 	for (const f of readdirSync(dir).filter((f) => f.endsWith(".tmp"))) try {
@@ -3149,6 +3150,7 @@ async function ownFloor(intent, deps) {
 	const tolerance = own.slippageBps !== void 0 ? { slippageBps: own.slippageBps } : {};
 	if (intent.minOut === void 0) return {
 		minOut: own.minOut,
+		outAmount: own.outAmount,
 		priceImpactBps: own.priceImpactBps,
 		maxPriceImpactBps: maxImpact,
 		...tolerance
@@ -3161,6 +3163,7 @@ async function ownFloor(intent, deps) {
 	}
 	return {
 		minOut: intent.minOut,
+		outAmount: own.outAmount,
 		priceImpactBps: own.priceImpactBps,
 		maxPriceImpactBps: maxImpact,
 		...tolerance
@@ -3775,6 +3778,7 @@ async function main$1() {
 		}
 		console.log(JSON.stringify({
 			yourFloor: minOut,
+			yourQuote: own.outAmount,
 			...approval ? { approval } : {},
 			priceImpactBps: own.priceImpactBps,
 			slippageBps: shownData.slippageBps,

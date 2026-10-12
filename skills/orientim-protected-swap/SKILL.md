@@ -445,11 +445,14 @@ chain are the same code. Four tools:
 - `orientim_wallet`: the wallet's address, its SOL and the balance of each mint asked for, read on your RPC.
 - `orientim_quote`: the dry run. The amount is in whole tokens (`"0.1"`), converted with the mint's
   decimals read on your RPC. It answers `summary` (what leaves the wallet, the least that arrives,
-  Orientim's fee, the SOL it costs) and a `quoteId`. Nothing is signed.
+  the amount expected at your own Jupiter price, Orientim's fee, the SOL it costs) and a `quoteId`.
+  Nothing is signed.
 - `orientim_swap`: `{"quoteId"}` and nothing else. It swaps that quote under the order id
   `mcp-<quoteId>`, the same on every retry, held to the minimum the user approved. A quote is swapped
   only within the 10 minutes its approval holds, a retry too, and a newer quote of the same swap
   replaces it. After that, `orientim_recover` settles what an earlier attempt left.
+  When the client can ask its user a question itself (MCP elicitation), the server asks the person
+  to confirm the swap before the first try signs: the model's word that they said yes is not theirs.
 - `orientim_recover`: settles what an interrupted swap left (`orientim-verify recover`).
 
 No tool takes a key, a minimum of its own or a fee limit: those stay the owner's. The model may ask

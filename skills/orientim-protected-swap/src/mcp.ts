@@ -163,8 +163,8 @@ export function fromBaseUnits(units: string | bigint, decimals: number): string 
 const wholeOf = (units: unknown, decimals: number | undefined) =>
   decimals !== undefined && typeof units === 'string' && /^\d{1,30}$/.test(units) ? fromBaseUnits(units, decimals) : undefined;
 
-/** Every URL cut to its host: an RPC URL may carry its provider's key in its path or query. */
-export const withoutSecrets = (text: string) => text.replace(/\b(https?|wss?):\/\/([^\s/'"?#]+)[^\s'"]*/g, '$1://$2/…');
+/** Every URL cut to its host: an RPC URL may carry its provider's key in its path or query, or a password before its host. */
+export const withoutSecrets = (text: string) => text.replace(/\b(https?|wss?):\/\/(?:[^\s/'"?#@]*@)?([^\s/'"?#@]+)[^\s'"]*/g, '$1://$2/…');
 
 const messageOf = (e: unknown) => withoutSecrets(e instanceof Error ? e.message : String(e)).slice(0, 600);
 
@@ -228,10 +228,17 @@ const meaningOf = (meanings: Readonly<Record<number, string>>, code: number | nu
 type Quote = {
   wallet: string; inputMint: string; outputMint: string; amountIn: string; inputDecimals: number; outputDecimals: number;
   flags: string[]; at: number; until: number; tried: boolean;
+  /** What the user is asked to approve, in words, for a client that can ask them itself. */
+  question: string;
 };
 
 type Answer = Record<string, unknown> & { ok: boolean };
-type Context = { progress: (message: string) => void; signal: AbortSignal };
+type Context = {
+  progress: (message: string) => void;
+  signal: AbortSignal;
+  /** Asks the person through the client (MCP elicitation); undefined when the client cannot. */
+  ask?: (message: string) => Promise<'accept' | 'decline' | 'cancel'>;
+};
 
 const mintOf = (v: unknown, name: string) => {
   if (typeof v !== 'string' || !isAddress(v)) throw new InputError(`${name} must be a mint address.`);
@@ -253,6 +260,11 @@ export function createServer(deps: McpDeps) {
   /** Calls the client cancelled while they ran: they get no answer. */
   const cancelled = new Set<string | number>();
   let protocolVersion: string = PROTOCOL_VERSIONS[0];
+  /** The client said at initialize that it can ask its user a question (elicitation). */
+  let canAsk = false;
+  /** Questions sent to the client, by request id, waiting for its answer. */
+  const asking = new Map<string, (answer: Record<string, unknown>) => void>();
+  let askIds = 0;
 
   async function decimalsOf(mint: string): Promise<number> {
     if (Object.hasOwn(KNOWN_DECIMALS, mint)) return KNOWN_DECIMALS[mint];
@@ -327,7 +339,7 @@ export function createServer(deps: McpDeps) {
       const until = Date.parse(String(approval.until));
       quotes.set(quoteId, {
         wallet: owner, inputMint, outputMint, amountIn, inputDecimals, outputDecimals, flags, at: now(),
-        until: Number.isFinite(until) ? until : now() + 10 * 60_000, tried: false,
+        until: Number.isFinite(until) ? until : now() + 10 * 60_000, tried: false, question: '',
       });
     }
     const amounts = record(answer?.amounts);
@@ -337,13 +349,20 @@ export function createServer(deps: McpDeps) {
     const summary = answer ? {
       pay: { amount: wholeOf(amounts.amountIn, inputDecimals), mint: inputMint },
       receiveAtLeast: { amount: wholeOf(approval.minOut ?? answer.yourFloor, outputDecimals), mint: outputMint },
-      expected: { amount: wholeOf(amounts.quotedOut, outputDecimals), mint: outputMint },
+      // The agent's own price from Jupiter, never Orientim's word: it is what wins the user's yes.
+      expected: { amount: wholeOf(answer.yourQuote, outputDecimals), mint: outputMint },
       orientimFee: { amount: wholeOf(amounts.fee, feeDecimals), mint: feeMint },
       solCost: wholeOf(costs.keptSolLamports, 9),
       priceImpactBps: answer.priceImpactBps,
       slippageBps: answer.slippageBps,
       ...(typeof approval.until === 'string' ? { approvedUntil: approval.until } : {}),
     } : undefined;
+    if (quoteId && summary) {
+      const q = quotes.get(quoteId);
+      if (q) q.question = `Swap ${summary.pay.amount} of ${inputMint} for at least ${summary.receiveAtLeast.amount} of ${outputMint}`
+        + `${summary.orientimFee.amount !== undefined ? `, Orientim's fee ${summary.orientimFee.amount} of ${feeMint}` : ''}`
+        + `${summary.solCost !== undefined ? `, ${summary.solCost} SOL in network costs` : ''}?`;
+    }
     const error = run.code === 0 ? undefined : errorOf(run.stderr);
     return {
       ok, ...(quoteId ? { quoteId } : {}), wallet: owner, request, ...(summary ? { summary } : {}),
@@ -368,6 +387,18 @@ export function createServer(deps: McpDeps) {
     }
     const owner = await deps.wallet();
     if (owner !== q.wallet) throw new InputError('The wallet changed since this quote: quote again and ask the user again.');
+    // The model's word that the user said yes is not the user's: a client that can ask them, does.
+    if (!q.tried && context.ask && q.question) {
+      swapping.add(quoteId);
+      let said: 'accept' | 'decline' | 'cancel';
+      try {
+        said = await context.ask(q.question);
+      } finally {
+        swapping.delete(quoteId);
+      }
+      if (said !== 'accept') throw new InputError('The user did not confirm this swap: nothing was signed. Ask them what they want before quoting again.');
+      if (now() > q.until) throw new InputError('The user\'s yes to this quote held 10 minutes and has expired: run orientim_quote again, show the user, and swap after their new yes.');
+    }
     swapping.add(quoteId);
     q.tried = true;
     let run: Run;
@@ -439,7 +470,25 @@ export function createServer(deps: McpDeps) {
     // taking the wait for silence.
     const heartbeat = setInterval(() => progress('Still working'), 15_000);
     try {
-      const answer = await handlers[name](record(params.arguments), { progress, signal: abort.signal });
+      const ask = canAsk ? (message: string) => new Promise<'accept' | 'decline' | 'cancel'>(resolve => {
+        const askId = `orientim-ask-${++askIds}`;
+        const settle = (a: Record<string, unknown>) => {
+          const content = record(record(a.result).content);
+          const action = record(a.result).action;
+          // Only an explicit accept with the box ticked is a yes; anything else, an error included, is not.
+          resolve(action === 'accept' && content.confirm === true ? 'accept' : action === 'decline' ? 'decline' : 'cancel');
+        };
+        asking.set(askId, settle);
+        abort.signal.addEventListener('abort', () => { asking.delete(askId); resolve('cancel'); }, { once: true });
+        send({
+          jsonrpc: '2.0', id: askId, method: 'elicitation/create',
+          params: {
+            message,
+            requestedSchema: { type: 'object', properties: { confirm: { type: 'boolean', title: 'Yes, make this swap', default: false } }, required: ['confirm'] },
+          },
+        });
+      }) : undefined;
+      const answer = await handlers[name](record(params.arguments), { progress, signal: abort.signal, ...(ask ? { ask } : {}) });
       return { result: toolResult(answer) };
     } catch (e) {
       const known = e instanceof InputError;
@@ -455,8 +504,15 @@ export function createServer(deps: McpDeps) {
     const id = m.id;
     const hasId = typeof id === 'string' || typeof id === 'number';
     if (m.jsonrpc !== '2.0' || typeof m.method !== 'string') {
-      // A response to a request of ours (this server sends none), or not JSON-RPC at all.
-      if ('result' in m || 'error' in m) return undefined;
+      // A response to a question of ours (elicitation), or not JSON-RPC at all.
+      if ('result' in m || 'error' in m) {
+        const waiting = typeof id === 'string' ? asking.get(id) : undefined;
+        if (waiting) {
+          asking.delete(id as string);
+          waiting(m);
+        }
+        return undefined;
+      }
       return { jsonrpc: '2.0', id: hasId ? id : null, error: { code: -32600, message: 'Invalid request' } };
     }
     const params = record(m.params);
@@ -476,6 +532,7 @@ export function createServer(deps: McpDeps) {
       case 'initialize': {
         const asked = params.protocolVersion;
         protocolVersion = typeof asked === 'string' && (PROTOCOL_VERSIONS as readonly string[]).includes(asked) ? asked : PROTOCOL_VERSIONS[0];
+        canAsk = protocolVersion >= '2025-06-18' && !!record(params.capabilities).elicitation && typeof record(params.capabilities).elicitation === 'object';
         return reply({
           result: {
             protocolVersion,

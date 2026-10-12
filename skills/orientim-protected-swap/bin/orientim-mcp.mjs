@@ -2558,6 +2558,7 @@ function recordApproval(dir, approval) {
 		recursive: true,
 		mode: 448
 	});
+	ownStateDir(dir);
 	const path = approvalFile(dir, approval);
 	const temporary = temporaryFor(path);
 	const fd = openSync(temporary, "wx", 384);
@@ -2604,7 +2605,7 @@ var ApprovalError = class extends Error {};
 */
 function keptApproval(dir, key, now = Date.now()) {
 	const approved = approvalFor(dir, key);
-	if (approved && approved.expiresAt + DAY_MS < now) {
+	if (approved && (approved.expiresAt + DAY_MS < now || approved.expiresAt > now + 6e5 + 6e4)) {
 		forgetApproval(dir, key);
 		return null;
 	}
@@ -2682,7 +2683,7 @@ function ownStateDir(dir) {
 		const st = statSync(dir);
 		if (st.uid === process.geteuid()) {
 			if (st.mode & 63) chmodSync(dir, DIR_MODE);
-		} else if (st.mode & 18) throw new ConfigError(`The state directory ${dir} belongs to another user and others may change it: the record of swaps would not be the owner's alone. Nothing was started.`);
+		} else throw new ConfigError(`The state directory ${dir} belongs to another user: the record of swaps and the user's approvals would not be this user's alone. Use a directory of your own. Nothing was started.`);
 	}
 	const stale = Date.now() - 36e5;
 	for (const f of readdirSync(dir).filter((f) => f.endsWith(".tmp"))) try {
@@ -3151,6 +3152,7 @@ async function ownFloor(intent, deps) {
 	const tolerance = own.slippageBps !== void 0 ? { slippageBps: own.slippageBps } : {};
 	if (intent.minOut === void 0) return {
 		minOut: own.minOut,
+		outAmount: own.outAmount,
 		priceImpactBps: own.priceImpactBps,
 		maxPriceImpactBps: maxImpact,
 		...tolerance
@@ -3163,6 +3165,7 @@ async function ownFloor(intent, deps) {
 	}
 	return {
 		minOut: intent.minOut,
+		outAmount: own.outAmount,
 		priceImpactBps: own.priceImpactBps,
 		maxPriceImpactBps: maxImpact,
 		...tolerance
@@ -3777,6 +3780,7 @@ async function main$2() {
 		}
 		console.log(JSON.stringify({
 			yourFloor: minOut,
+			yourQuote: own.outAmount,
 			...approval ? { approval } : {},
 			priceImpactBps: own.priceImpactBps,
 			slippageBps: shownData.slippageBps,
@@ -5177,8 +5181,8 @@ function fromBaseUnits(units, decimals) {
 }
 /** Base units as whole tokens, or undefined for anything that is not a whole number. */
 const wholeOf = (units, decimals) => decimals !== void 0 && typeof units === "string" && /^\d{1,30}$/.test(units) ? fromBaseUnits(units, decimals) : void 0;
-/** Every URL cut to its host: an RPC URL may carry its provider's key in its path or query. */
-const withoutSecrets = (text) => text.replace(/\b(https?|wss?):\/\/([^\s/'"?#]+)[^\s'"]*/g, "$1://$2/…");
+/** Every URL cut to its host: an RPC URL may carry its provider's key in its path or query, or a password before its host. */
+const withoutSecrets = (text) => text.replace(/\b(https?|wss?):\/\/(?:[^\s/'"?#@]*@)?([^\s/'"?#@]+)[^\s'"]*/g, "$1://$2/…");
 const messageOf = (e) => withoutSecrets(e instanceof Error ? e.message : String(e)).slice(0, 600);
 /** The command's stderr as lines for the model: its own words, URLs cut to the host, the last few. */
 function logOf(stderr) {
@@ -5247,6 +5251,11 @@ function createServer(deps) {
 	/** Calls the client cancelled while they ran: they get no answer. */
 	const cancelled = /* @__PURE__ */ new Set();
 	let protocolVersion = PROTOCOL_VERSIONS[0];
+	/** The client said at initialize that it can ask its user a question (elicitation). */
+	let canAsk = false;
+	/** Questions sent to the client, by request id, waiting for its answer. */
+	const asking = /* @__PURE__ */ new Map();
+	let askIds = 0;
 	async function decimalsOf(mint) {
 		if (Object.hasOwn(KNOWN_DECIMALS, mint)) return KNOWN_DECIMALS[mint];
 		return deps.decimals(mint);
@@ -5344,7 +5353,8 @@ function createServer(deps) {
 				flags,
 				at: now(),
 				until: Number.isFinite(until) ? until : now() + 6e5,
-				tried: false
+				tried: false,
+				question: ""
 			});
 		}
 		const amounts = record(answer?.amounts);
@@ -5361,7 +5371,7 @@ function createServer(deps) {
 				mint: outputMint
 			},
 			expected: {
-				amount: wholeOf(amounts.quotedOut, outputDecimals),
+				amount: wholeOf(answer.yourQuote, outputDecimals),
 				mint: outputMint
 			},
 			orientimFee: {
@@ -5373,6 +5383,10 @@ function createServer(deps) {
 			slippageBps: answer.slippageBps,
 			...typeof approval.until === "string" ? { approvedUntil: approval.until } : {}
 		} : void 0;
+		if (quoteId && summary) {
+			const q = quotes.get(quoteId);
+			if (q) q.question = `Swap ${summary.pay.amount} of ${inputMint} for at least ${summary.receiveAtLeast.amount} of ${outputMint}${summary.orientimFee.amount !== void 0 ? `, Orientim's fee ${summary.orientimFee.amount} of ${feeMint}` : ""}${summary.solCost !== void 0 ? `, ${summary.solCost} SOL in network costs` : ""}?`;
+		}
 		const error = run.code === 0 ? void 0 : errorOf(run.stderr);
 		return {
 			ok,
@@ -5395,6 +5409,17 @@ function createServer(deps) {
 		if (swapping.has(quoteId)) throw new InputError("This swap is already running: wait for its answer, then act on it.");
 		if (now() > q.until) throw new InputError(q.tried ? "The user's yes to this quote held 10 minutes and has expired. Run orientim_recover to settle what the earlier attempt left; then, for a new swap, run orientim_quote again, show the user, and swap after their new yes." : "The user's yes to this quote held 10 minutes and has expired: run orientim_quote again, show the user, and swap after their new yes.");
 		if (await deps.wallet() !== q.wallet) throw new InputError("The wallet changed since this quote: quote again and ask the user again.");
+		if (!q.tried && context.ask && q.question) {
+			swapping.add(quoteId);
+			let said;
+			try {
+				said = await context.ask(q.question);
+			} finally {
+				swapping.delete(quoteId);
+			}
+			if (said !== "accept") throw new InputError("The user did not confirm this swap: nothing was signed. Ask them what they want before quoting again.");
+			if (now() > q.until) throw new InputError("The user's yes to this quote held 10 minutes and has expired: run orientim_quote again, show the user, and swap after their new yes.");
+		}
 		swapping.add(quoteId);
 		q.tried = true;
 		let run;
@@ -5497,9 +5522,40 @@ function createServer(deps) {
 		running.set(id, abort);
 		const heartbeat = setInterval(() => progress("Still working"), 15e3);
 		try {
+			const ask = canAsk ? (message) => new Promise((resolve) => {
+				const askId = `orientim-ask-${++askIds}`;
+				const settle = (a) => {
+					const content = record(record(a.result).content);
+					const action = record(a.result).action;
+					resolve(action === "accept" && content.confirm === true ? "accept" : action === "decline" ? "decline" : "cancel");
+				};
+				asking.set(askId, settle);
+				abort.signal.addEventListener("abort", () => {
+					asking.delete(askId);
+					resolve("cancel");
+				}, { once: true });
+				send({
+					jsonrpc: "2.0",
+					id: askId,
+					method: "elicitation/create",
+					params: {
+						message,
+						requestedSchema: {
+							type: "object",
+							properties: { confirm: {
+								type: "boolean",
+								title: "Yes, make this swap",
+								default: false
+							} },
+							required: ["confirm"]
+						}
+					}
+				});
+			}) : void 0;
 			return { result: toolResult(await handlers[name](record(params.arguments), {
 				progress,
-				signal: abort.signal
+				signal: abort.signal,
+				...ask ? { ask } : {}
 			})) };
 		} catch (e) {
 			return { result: toolResult({
@@ -5519,7 +5575,14 @@ function createServer(deps) {
 		const id = m.id;
 		const hasId = typeof id === "string" || typeof id === "number";
 		if (m.jsonrpc !== "2.0" || typeof m.method !== "string") {
-			if ("result" in m || "error" in m) return void 0;
+			if ("result" in m || "error" in m) {
+				const waiting = typeof id === "string" ? asking.get(id) : void 0;
+				if (waiting) {
+					asking.delete(id);
+					waiting(m);
+				}
+				return;
+			}
 			return {
 				jsonrpc: "2.0",
 				id: hasId ? id : null,
@@ -5550,6 +5613,7 @@ function createServer(deps) {
 			case "initialize": {
 				const asked = params.protocolVersion;
 				protocolVersion = typeof asked === "string" && PROTOCOL_VERSIONS.includes(asked) ? asked : PROTOCOL_VERSIONS[0];
+				canAsk = protocolVersion >= "2025-06-18" && !!record(params.capabilities).elicitation && typeof record(params.capabilities).elicitation === "object";
 				return reply({ result: {
 					protocolVersion,
 					capabilities: { tools: { listChanged: false } },
