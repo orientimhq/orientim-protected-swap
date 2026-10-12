@@ -236,6 +236,11 @@ It takes rounds, a second or so each:
 4. Repeat until the answer is the prepared swap; usually one or two rounds. `bad-session` means the
    session expired or was opened for another swap: start again without it.
 
+The one-time key E is one per session (two minutes at most), not one per message: every round of a
+session builds around the same E. So a session holds every round to the terms of its first:
+`slippageBps`, `acceptCostBps`, `routingMode`, and `minOut` once a round has sent it. A round that
+asks for other terms gets `bad-session`; prepare again without the session.
+
 A client of its own should hold Orientim to the same as the skill does: the `taker` of the first
 round in every round and as the prepared swap's `temporaryAuthority`; each request fetched once, and
 counted before it is fetched (24 in all); every ask of its key counted, retries included; one
@@ -402,7 +407,7 @@ one to ask") lists what to do with each code.
 | 400 | `invalid-ticket` | The ticket was not issued to this API key, or was altered. |
 | 400 | `transaction-changed` | The message is not the one Orientim built. Sign the transaction exactly as returned. |
 | 400 | `wallet-changed-transaction` | Your wallet's signature is missing or does not match (`violations`). |
-| 400 | `bad-session` | With `ownRoutes`: the session expired (two minutes) or was opened for another swap or key. Prepare again without it. |
+| 400 | `bad-session` | With `ownRoutes`: the session expired (two minutes), or was opened for another swap, key or terms (`slippageBps`, `acceptCostBps`, `routingMode`, `minOut`). Prepare again without it. |
 | 401 | `unauthorized` | Missing, unknown, expired or revoked API key. A self-serve key is renewed by signing a new key challenge. |
 | 403 | `wrong-wallet` | The key belongs to another wallet: a self-serve key prepares swaps for its own wallet only. |
 | 404 | `not-enabled` | The agent API is not available. |

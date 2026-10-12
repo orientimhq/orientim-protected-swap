@@ -3,6 +3,22 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## Unreleased (the next version, 1.12.3)
+
+Fixes from the October 2026 security review. The version is unchanged until the next release.
+
+- The MCP server holds the model to the owner's ceilings (`ORIENTIM_MAX_SLIPPAGE_BPS`,
+  `ORIENTIM_MAX_PRICE_IMPACT_BPS`), asks the person through the client (MCP elicitation) before the
+  first swap of a quote, and refuses a quote older than its 10 minutes even when it was tried.
+- The verifier counts a route as a Pump.fun curve route (3% tolerance) only when it writes the curve of
+  the swap's own token, an account of the curve program: naming the program alone no longer lifts the
+  0.5% ceiling.
+- `orientim-verify check` holds the floor to a dry run's approval, as prepare and finalize do. A
+  keypair file other users can read is warned about, and `~/.orientim` is kept at mode 700.
+- Releases attach `RELEASE-SHA256SUMS`, the whole zip's and `.mcpb`'s sha256, attested; the docs check
+  a download against GitHub rather than against the site that served it.
+- The release builds in a job that cannot publish, and publishes only from a `v*` tag.
+
 ## 1.12.2 (2026-10-12)
 
 - The MCP server knows Token-2022 by its right address: 1.12.0 and 1.12.1 named it wrongly, so

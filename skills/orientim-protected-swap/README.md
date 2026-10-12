@@ -60,8 +60,11 @@ your own more than 20% below Jupiter's price (`floor-too-low`). The example and 
 nothing without an order id (`--id`, `intent.id`), the same on every retry, so that it is never
 swapped twice.
 
-**Check your copy before it signs anything.** `SHA256SUMS` lists the hash of every file here, and
-Orientim's site serves the same list at `/skill/SHA256SUMS`: compare the two, then run
+**Check your copy before it signs anything**, against GitHub rather than Orientim's site: this skill
+guards against a dishonest server, so the server cannot vouch for it. Before unzipping, run
+`gh attestation verify orientim-protected-swap.zip -R orientimhq/orientim-protected-swap` (or compare
+the zip's sha256 with `RELEASE-SHA256SUMS` on that version's GitHub release, from 1.12.3); this also
+catches a file added to the zip. Then `SHA256SUMS` lists the hash of every file here: run
 `sha256sum -c SHA256SUMS` in this folder (on Windows, `Get-FileHash` on each file). `npm ci` installs
 exactly the versions in `package-lock.json`, each checked against its recorded hash.
 

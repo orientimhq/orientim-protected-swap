@@ -1,7 +1,7 @@
 export * from './constants.ts';
 export * from './types.ts';
 export {
-  ataOf, buildPolicy, eventAuthorityOf, feeFor, feeSideFor, minimumForReceived, minimumReceived, outputFeeFor, PolicyError,
+  ataOf, bondingCurveOf, buildPolicy, eventAuthorityOf, feeFor, feeSideFor, minimumForReceived, minimumReceived, outputFeeFor, PolicyError,
   routeAccountOf, tokenAccountSizeFor, tokenAmountOf, variantOf, withMinOut, withRouteRefund, withTakerRent,
 } from './policy.ts';
 export type { RouteRefund } from './policy.ts';

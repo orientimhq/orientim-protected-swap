@@ -18,7 +18,7 @@
  *   orientim-verify key        {"message", "challenge", "signature"}   0 `key`, bound to that wallet   4 Orientim said no
  *   (both key commands: 1 when Orientim did not answer, with `code` `unavailable`; their `error` is a string, `code` beside it)
  *   A dry run's approval kept in the state directory (`node examples/swap.ts --dry-run`) holds here too:
- *   prepare and finalize refuse a lower minimum, or an expired approval (exit 1, `error.code` `approval`).
+ *   prepare, check and finalize refuse a lower minimum, or an expired approval (exit 1, `error.code` `approval`).
  *   2 on any usage or configuration error (a slippageBps, maxPriceImpactBps, maxFeeBps or minOut it cannot use included); 5 when `intent.id` names an order that already swapped or
  *   whose transaction may still land (the same order is never swapped twice). finalize without
  *   `checked.intent.id` is a usage error: the id is what keeps the order from being swapped twice.
@@ -273,6 +273,10 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
       const budget = preparationBudget();
       const own = await ownFloor(intent, { rpc: deps.rpc, fetchImpl: deps.fetchImpl, jupiterApiKey: deps.jupiterApiKey, requestTimeoutMs: deps.requestTimeoutMs, policy: deps.policy, budget });
       intent.minOut = own.minOut;
+      // And to what the user approved after a dry run, as prepare and finalize hold it: check never
+      // says a swap is safe to sign at a minimum below the one the person said yes to.
+      const approved = heldToApproval(keptApproval(deps.stateDir, approvalKeyOf({ ...intent, owner: typeof prepared.wallet === 'string' ? prepared.wallet : intent.owner })), undefined);
+      if (approved !== undefined && BigInt(approved) > BigInt(intent.minOut)) intent.minOut = approved;
       // Without a tolerance of its own, the owner's ceiling (if any) is what the route is held to.
       if (own.slippageBps !== undefined) intent.slippageBps = own.slippageBps;
       const priceImpactBps = own.priceImpactBps;

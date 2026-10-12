@@ -566,6 +566,14 @@ function jupiterRouteArgs(data) {
 * program checks what its instruction delivered to the destination against this, so it holds
 * whatever else arrives in that account.
 */
+/** The Pump.fun bonding curve of `mint`: the curve program's account `["bonding-curve", mint]`. */
+async function bondingCurveOf(mint) {
+	const [pda] = await getProgramDerivedAddress({
+		programAddress: PUMP_CURVE_PROGRAM,
+		seeds: [new TextEncoder().encode("bonding-curve"), getAddressEncoder().encode(mint)]
+	});
+	return pda;
+}
 function jupiterFloor(args) {
 	return args.quotedOutAmount * BigInt(1e4 - args.slippageBps) / 10000n;
 }
@@ -748,6 +756,8 @@ async function verify(transaction, policy, snapshot, opts = {}) {
 	if (externals.length !== 1) fail("R2", `expected 1 external instruction, found ${externals.length}`);
 	for (const { x } of externals) if (x.program !== p.jupiterProgram) fail("R2", `external program ${x.program} is not Jupiter`);
 	const swapIndex = externals.length ? externals[0].i : -1;
+	const curves = await Promise.all([p.inputMint, p.outputMint].map(bondingCurveOf));
+	const onCurve = (accounts) => accounts.some((a) => a.address === PUMP_CURVE_PROGRAM) && accounts.some((a) => curves.includes(a.address) && isWritableRole(a.role) && snapshot.accounts.get(a.address)?.owner === PUMP_CURVE_PROGRAM);
 	for (const { x } of externals) {
 		if (x.kind !== "external" || x.program !== JUPITER_PROGRAM) continue;
 		const args = jupiterRouteArgs(x.data);
@@ -755,7 +765,7 @@ async function verify(transaction, policy, snapshot, opts = {}) {
 			fail("R2", "the Jupiter instruction is not a route Orientim can read (route_v2 or shared_accounts_route_v2)");
 			continue;
 		}
-		const curve = x.accounts.some((a) => a.address === PUMP_CURVE_PROGRAM);
+		const curve = onCurve(x.accounts);
 		const chosen = opts.maxSlippageBps;
 		const maxSlippage = chosen !== void 0 && Number.isInteger(chosen) && chosen >= 0 ? Math.min(chosen, MAX_CHOSEN_SLIPPAGE_BPS) : curve ? 300 : 50;
 		if (args.platformFeeBps !== 0 || args.positiveSlippageBps !== 0) fail("R2", `the Jupiter route takes a platform fee (${args.platformFeeBps} bps) or positive slippage (${args.positiveSlippageBps} bps)`);

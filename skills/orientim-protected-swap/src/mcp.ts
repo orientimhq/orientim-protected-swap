@@ -16,7 +16,7 @@
  */
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -614,6 +614,14 @@ export function commandEnv(env: Env = process.env, cwd = process.cwd()): Env {
 function workFolder(): string {
   const dir = join(homedir(), '.orientim');
   mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // A folder made before, or by hand, looser than that is tightened: it holds the API key and the swaps.
+  if (process.platform !== 'win32') {
+    try {
+      if (statSync(dir).mode & 0o077) chmodSync(dir, 0o700);
+    } catch {
+      // Not ours to change: the files inside keep their own modes.
+    }
+  }
   return dir;
 }
 
@@ -658,6 +666,15 @@ const timeLimit = () => ({ abortSignal: AbortSignal.timeout(15_000) });
 async function walletSigner(): Promise<KeyPairSigner> {
   const path = process.env.ORIENTIM_WALLET_KEYPAIR;
   if (!path) throw new Error('Set ORIENTIM_WALLET_KEYPAIR, the path of the wallet\'s keypair file, in this server\'s environment (the client\'s MCP configuration).');
+  // Said on stderr, which the client logs: stdout is the protocol.
+  if (process.platform !== 'win32') {
+    try {
+      const mode = statSync(resolve(path)).mode & 0o777;
+      if (mode & 0o077) process.stderr.write(`orientim-mcp: the wallet's keypair file can be read by other users of this machine (mode ${mode.toString(8)}): run chmod 600 on it.\n`);
+    } catch {
+      // Said below, when it is read.
+    }
+  }
   let bytes: unknown;
   try {
     bytes = JSON.parse(readFileSync(resolve(path), 'utf8'));

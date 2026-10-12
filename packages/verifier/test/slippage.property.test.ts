@@ -10,12 +10,12 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import fc from 'fast-check';
 import { AccountRole } from '@solana/kit';
-import type { Instruction } from '@solana/kit';
+import type { Address, Instruction } from '@solana/kit';
 import {
   JUPITER_PROGRAM, MAX_CHOSEN_SLIPPAGE_BPS, MAX_CURVE_SLIPPAGE_BPS, MAX_ROUTE_SLIPPAGE_BPS, PUMP_CURVE_PROGRAM, SYSTEM_PROGRAM,
 } from '@orientim/core';
 import type { AccountState } from '@orientim/core/types';
-import { verify } from '../src/index.ts';
+import { bondingCurveOf, verify } from '../src/index.ts';
 import { compileRaw, cuIxs, honest, routeV2Data, scenario } from './fixtures.ts';
 import type { Scenario } from './fixtures.ts';
 
@@ -26,10 +26,10 @@ const PARAMS = { numRuns: RUNS, ...(SEED !== undefined ? { seed: SEED } : {}) };
 const TIMEOUT = 60_000 + RUNS * 20;
 
 /** The honest transaction with only Jupiter's route data changed, as a builder or a server could. */
-function withRoute(s: Scenario, data: Uint8Array, curve: boolean) {
+function withRoute(s: Scenario & { curve?: Address }, data: Uint8Array, curve: boolean) {
   const ixs: Instruction[] = honest(s);
   const i = ixs.findIndex(ix => ix.programAddress === JUPITER_PROGRAM);
-  const extra = curve ? [{ address: PUMP_CURVE_PROGRAM, role: AccountRole.READONLY }] : [];
+  const extra = curve ? [{ address: PUMP_CURVE_PROGRAM, role: AccountRole.READONLY }, { address: s.curve!, role: AccountRole.WRITABLE }] : [];
   ixs[i] = { ...ixs[i], data, accounts: [...(ixs[i].accounts ?? []), ...extra] };
   return compileRaw(s.W, [...cuIxs(), ...ixs], 0, s.lookupTables);
 }
@@ -37,11 +37,14 @@ function withRoute(s: Scenario, data: Uint8Array, curve: boolean) {
 describe('the tolerance rule, fuzzed', () => {
   // Scenarios are built once and reused: the case is the route, not the keys.
   let plain: Scenario;
-  let curve: Scenario;
+  let curve: Scenario & { curve?: Address };
   beforeAll(async () => {
     plain = await scenario();
     curve = await scenario();
     (curve.snapshot.accounts as Map<string, AccountState | null>).set(PUMP_CURVE_PROGRAM, { owner: SYSTEM_PROGRAM, lamports: 1n, data: new Uint8Array(36) });
+    // A curve route writes the curve of the token it trades, an account of the curve program.
+    curve.curve = await bondingCurveOf(curve.policy.outputMint);
+    (curve.snapshot.accounts as Map<string, AccountState | null>).set(curve.curve, { owner: PUMP_CURVE_PROGRAM, lamports: 1n, data: new Uint8Array(81) });
   });
 
   it('refuses a route exactly when it is above the ceiling or its own floor is below the minimum', async () => {

@@ -9,6 +9,7 @@ import {
   getTransactionMessagePriorityFeeLamports,
   getTransactionSize,
   isOffCurveAddress,
+  isWritableRole,
   TRANSACTION_CONFIG_COMPUTE_UNIT_LIMIT_BIT_MASK,
   TRANSACTION_CONFIG_LOADED_ACCOUNTS_DATA_SIZE_LIMIT_BIT_MASK,
   TRANSACTION_CONFIG_PRIORITY_FEE_LAMPORTS_BIT_MASK,
@@ -317,6 +318,14 @@ export function jupiterRouteArgs(data: ArrayLike<number>): JupiterRouteArgs | nu
  * program checks what its instruction delivered to the destination against this, so it holds
  * whatever else arrives in that account.
  */
+/** The Pump.fun bonding curve of `mint`: the curve program's account `["bonding-curve", mint]`. */
+export async function bondingCurveOf(mint: Address): Promise<Address> {
+  const [pda] = await getProgramDerivedAddress({
+    programAddress: PUMP_CURVE_PROGRAM, seeds: [new TextEncoder().encode('bonding-curve'), getAddressEncoder().encode(mint)],
+  });
+  return pda;
+}
+
 export function jupiterFloor(args: Pick<JupiterRouteArgs, 'quotedOutAmount' | 'slippageBps'>): bigint {
   return (args.quotedOutAmount * BigInt(10_000 - args.slippageBps)) / 10_000n;
 }
@@ -535,6 +544,13 @@ export async function verify(transaction: Transaction, policy: Policy, snapshot:
 
   // Jupiter's own floor, read from its instruction rather than trusted. Applied to
   // Jupiter's program only: tests that stand a hostile program in its place have no such format.
+  // A route trades on a Pump.fun bonding curve when it writes the curve of the swap's own token, an
+  // account the Pump.fun program owns: the program's address alone, which any builder can append for
+  // free, does not make a route a curve route.
+  const curves = await Promise.all([p.inputMint, p.outputMint].map(bondingCurveOf));
+  const onCurve = (accounts: readonly Account[]) =>
+    accounts.some(a => a.address === PUMP_CURVE_PROGRAM)
+    && accounts.some(a => curves.includes(a.address) && isWritableRole(a.role) && snapshot.accounts.get(a.address)?.owner === PUMP_CURVE_PROGRAM);
   for (const { x } of externals) {
     if (x.kind !== 'external' || x.program !== JUPITER_PROGRAM) continue;
     const args = jupiterRouteArgs(x.data);
@@ -542,7 +558,7 @@ export async function verify(transaction: Transaction, policy: Policy, snapshot:
       fail('R2', 'the Jupiter instruction is not a route Orientim can read (route_v2 or shared_accounts_route_v2)');
       continue;
     }
-    const curve = x.accounts.some(a => a.address === PUMP_CURVE_PROGRAM);
+    const curve = onCurve(x.accounts);
     const chosen = opts.maxSlippageBps;
     const maxSlippage = chosen !== undefined && Number.isInteger(chosen) && chosen >= 0
       ? Math.min(chosen, MAX_CHOSEN_SLIPPAGE_BPS)

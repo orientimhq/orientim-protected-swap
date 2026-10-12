@@ -14,7 +14,8 @@ import {
   routeAccountOf, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, withTakerRent, WSOL_MINT,
 } from '@orientim/core';
 import type { AccountState, RuleId, TxVersion } from '@orientim/core';
-import { verify } from '../src/index.ts';
+import { bondingCurveOf as coreBondingCurveOf } from '@orientim/core';
+import { bondingCurveOf, verify } from '../src/index.ts';
 import { BONK, compileRaw, cuIxs, honest, JUP, LIFETIME, randomAddress, routeV2Data, scenario, USDC } from './fixtures.ts';
 import type { Scenario } from './fixtures.ts';
 
@@ -556,10 +557,21 @@ describe("Jupiter's own floor is read from its instruction", () => {
     ixs[i] = { ...ixs[i], data };
     return ixs;
   };
-  const check = async (make: (s: Scenario) => Uint8Array, opts: { curve?: boolean; maxSlippageBps?: number } = {}) => {
+  /**
+   * `curve`: the route writes the bonding curve of the swap's output, an account of the curve program,
+   * as a real curve route does. `bare`: it only names the curve program, as any builder can for free;
+   * `notWritten` and `notPumps`: it passes the curve read only, or one the curve program does not own.
+   */
+  const check = async (make: (s: Scenario) => Uint8Array, opts: { curve?: boolean | 'bare' | 'notWritten' | 'notPumps'; maxSlippageBps?: number } = {}) => {
     const s = await scenario();
-    const extra = opts.curve ? [{ address: PUMP_CURVE_PROGRAM, role: AccountRole.READONLY }] : [];
-    if (opts.curve) (s.snapshot.accounts as Map<string, AccountState | null>).set(PUMP_CURVE_PROGRAM, { owner: SYSTEM_PROGRAM, lamports: 1n, data: new Uint8Array(36) });
+    const accounts = s.snapshot.accounts as Map<string, AccountState | null>;
+    const extra: { address: Address; role: AccountRole }[] = opts.curve ? [{ address: PUMP_CURVE_PROGRAM, role: AccountRole.READONLY }] : [];
+    if (opts.curve) accounts.set(PUMP_CURVE_PROGRAM, { owner: SYSTEM_PROGRAM, lamports: 1n, data: new Uint8Array(36) });
+    if (opts.curve && opts.curve !== 'bare') {
+      const curve = await bondingCurveOf(s.policy.outputMint);
+      extra.push({ address: curve, role: opts.curve === 'notWritten' ? AccountRole.READONLY : AccountRole.WRITABLE });
+      accounts.set(curve, { owner: opts.curve === 'notPumps' ? SYSTEM_PROGRAM : PUMP_CURVE_PROGRAM, lamports: 1n, data: new Uint8Array(81) });
+    }
     return verify(mutated(s, withData(s, make(s), extra)), s.policy, s.snapshot, { maxSlippageBps: opts.maxSlippageBps });
   };
   const set = (d: Uint8Array, at: number, bytes: number, value: number) => {
@@ -641,6 +653,14 @@ describe("Jupiter's own floor is read from its instruction", () => {
     expect(details(await check(s => routeV2Data(s.policy.swapAmount, s.policy.minOut * 2n, 10_000))).join()).toContain('tolerates 10000 bps');
     expect((await check(s => routeV2Data(s.policy.swapAmount, s.policy.minOut * 2n, 300), { curve: true })).violations).toEqual([]);
     expect(details(await check(s => routeV2Data(s.policy.swapAmount, s.policy.minOut * 2n, 301), { curve: true })).join()).toContain('tolerates 301 bps');
+  });
+
+  it('a route is a curve route only when it writes the curve of its own token, not when it merely names the curve program', async () => {
+    // TX-02: the program's address, appended read only, is free to add to any route.
+    for (const curve of ['bare', 'notWritten', 'notPumps'] as const) {
+      expect(details(await check(s => routeV2Data(s.policy.swapAmount, s.policy.minOut * 2n, 300), { curve })).join(), curve).toContain('tolerates 300 bps, above 50');
+    }
+    expect(await bondingCurveOf(BONK)).toBe(await coreBondingCurveOf(BONK));
   });
 
   it('a tolerance the person chose on the page is the ceiling instead, on any route, and never above 15%', async () => {

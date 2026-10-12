@@ -558,6 +558,14 @@ function jupiterRouteArgs(data) {
 * program checks what its instruction delivered to the destination against this, so it holds
 * whatever else arrives in that account.
 */
+/** The Pump.fun bonding curve of `mint`: the curve program's account `["bonding-curve", mint]`. */
+async function bondingCurveOf(mint) {
+	const [pda] = await getProgramDerivedAddress({
+		programAddress: PUMP_CURVE_PROGRAM,
+		seeds: [new TextEncoder().encode("bonding-curve"), getAddressEncoder().encode(mint)]
+	});
+	return pda;
+}
 function jupiterFloor(args) {
 	return args.quotedOutAmount * BigInt(1e4 - args.slippageBps) / 10000n;
 }
@@ -740,6 +748,8 @@ async function verify(transaction, policy, snapshot, opts = {}) {
 	if (externals.length !== 1) fail("R2", `expected 1 external instruction, found ${externals.length}`);
 	for (const { x } of externals) if (x.program !== p.jupiterProgram) fail("R2", `external program ${x.program} is not Jupiter`);
 	const swapIndex = externals.length ? externals[0].i : -1;
+	const curves = await Promise.all([p.inputMint, p.outputMint].map(bondingCurveOf));
+	const onCurve = (accounts) => accounts.some((a) => a.address === PUMP_CURVE_PROGRAM) && accounts.some((a) => curves.includes(a.address) && isWritableRole(a.role) && snapshot.accounts.get(a.address)?.owner === PUMP_CURVE_PROGRAM);
 	for (const { x } of externals) {
 		if (x.kind !== "external" || x.program !== JUPITER_PROGRAM) continue;
 		const args = jupiterRouteArgs(x.data);
@@ -747,7 +757,7 @@ async function verify(transaction, policy, snapshot, opts = {}) {
 			fail("R2", "the Jupiter instruction is not a route Orientim can read (route_v2 or shared_accounts_route_v2)");
 			continue;
 		}
-		const curve = x.accounts.some((a) => a.address === PUMP_CURVE_PROGRAM);
+		const curve = onCurve(x.accounts);
 		const chosen = opts.maxSlippageBps;
 		const maxSlippage = chosen !== void 0 && Number.isInteger(chosen) && chosen >= 0 ? Math.min(chosen, MAX_CHOSEN_SLIPPAGE_BPS) : curve ? 300 : 50;
 		if (args.platformFeeBps !== 0 || args.positiveSlippageBps !== 0) fail("R2", `the Jupiter route takes a platform fee (${args.platformFeeBps} bps) or positive slippage (${args.positiveSlippageBps} bps)`);
@@ -3913,7 +3923,22 @@ function errorExitCode(e) {
 	return 1;
 }
 /** A solana-keygen file's 64 bytes. Its contents never appear in an error: it is a secret key. */
+/**
+* A warning when other users of this machine can read the wallet's keypair file (POSIX modes only):
+* it holds the wallet's secret key. Null when it is the owner's alone, or the system has no such modes.
+*/
+function keypairFileWarning(path) {
+	if (process.platform === "win32") return null;
+	try {
+		const mode = statSync(path).mode & 511;
+		return mode & 63 ? `The wallet's keypair file can be read by other users of this machine (mode ${mode.toString(8)}): run chmod 600 on it.` : null;
+	} catch {
+		return null;
+	}
+}
 function readKeypair(path) {
+	const warning = keypairFileWarning(path);
+	if (warning) process.stderr.write(`${warning}\n`);
 	let text;
 	try {
 		text = readFileSync(path, "utf8");
@@ -3963,7 +3988,7 @@ if (process.argv[1] && /swap\.ts$/.test(process.argv[1]) && fileURLToPath(import
 *   orientim-verify key        {"message", "challenge", "signature"}   0 `key`, bound to that wallet   4 Orientim said no
 *   (both key commands: 1 when Orientim did not answer, with `code` `unavailable`; their `error` is a string, `code` beside it)
 *   A dry run's approval kept in the state directory (`node examples/swap.ts --dry-run`) holds here too:
-*   prepare and finalize refuse a lower minimum, or an expired approval (exit 1, `error.code` `approval`).
+*   prepare, check and finalize refuse a lower minimum, or an expired approval (exit 1, `error.code` `approval`).
 *   2 on any usage or configuration error (a slippageBps, maxPriceImpactBps, maxFeeBps or minOut it cannot use included); 5 when `intent.id` names an order that already swapped or
 *   whose transaction may still land (the same order is never swapped twice). finalize without
 *   `checked.intent.id` is a usage error: the id is what keeps the order from being swapped twice.
@@ -4317,6 +4342,11 @@ async function runCommand$1(command, input, deps) {
 				budget
 			});
 			intent.minOut = own.minOut;
+			const approved = heldToApproval(keptApproval(deps.stateDir, approvalKeyOf({
+				...intent,
+				owner: typeof prepared.wallet === "string" ? prepared.wallet : intent.owner
+			})), void 0);
+			if (approved !== void 0 && BigInt(approved) > BigInt(intent.minOut)) intent.minOut = approved;
 			if (own.slippageBps !== void 0) intent.slippageBps = own.slippageBps;
 			const priceImpactBps = own.priceImpactBps;
 			await holdSolFee(intent, prepared, {
@@ -5711,6 +5741,9 @@ function workFolder() {
 		recursive: true,
 		mode: 448
 	});
+	if (process.platform !== "win32") try {
+		if (statSync(dir).mode & 63) chmodSync(dir, 448);
+	} catch {}
 	return dir;
 }
 function runCommand(command, args, options, extraEnv = {}) {
@@ -5772,6 +5805,10 @@ const timeLimit = () => ({ abortSignal: AbortSignal.timeout(15e3) });
 async function walletSigner() {
 	const path = process.env.ORIENTIM_WALLET_KEYPAIR;
 	if (!path) throw new Error("Set ORIENTIM_WALLET_KEYPAIR, the path of the wallet's keypair file, in this server's environment (the client's MCP configuration).");
+	if (process.platform !== "win32") try {
+		const mode = statSync(resolve(path)).mode & 511;
+		if (mode & 63) process.stderr.write(`orientim-mcp: the wallet's keypair file can be read by other users of this machine (mode ${mode.toString(8)}): run chmod 600 on it.\n`);
+	} catch {}
 	let bytes;
 	try {
 		bytes = JSON.parse(readFileSync(resolve(path), "utf8"));

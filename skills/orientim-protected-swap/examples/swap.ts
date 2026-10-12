@@ -2676,7 +2676,25 @@ export function errorExitCode(e: unknown): number {
 }
 
 /** A solana-keygen file's 64 bytes. Its contents never appear in an error: it is a secret key. */
+/**
+ * A warning when other users of this machine can read the wallet's keypair file (POSIX modes only):
+ * it holds the wallet's secret key. Null when it is the owner's alone, or the system has no such modes.
+ */
+export function keypairFileWarning(path: string): string | null {
+  if (process.platform === 'win32') return null;
+  try {
+    const mode = statSync(path).mode & 0o777;
+    return mode & 0o077
+      ? `The wallet's keypair file can be read by other users of this machine (mode ${mode.toString(8)}): run chmod 600 on it.`
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function readKeypair(path: string): Uint8Array {
+  const warning = keypairFileWarning(path);
+  if (warning) process.stderr.write(`${warning}\n`);
   let text: string;
   try {
     text = readFileSync(path, 'utf8');

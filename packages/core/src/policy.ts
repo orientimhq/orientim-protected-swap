@@ -120,6 +120,11 @@ export async function routeAccountOf(program: Address, buyer: Address): Promise<
 }
 
 /** An Anchor program's event authority, PDA["__event_authority"], which its instructions pass to themselves. */
+/** The Pump.fun bonding curve of `mint`: the curve program's account `["bonding-curve", mint]`. */
+export async function bondingCurveOf(mint: Address): Promise<Address> {
+  return (await getProgramDerivedAddress({ programAddress: PUMP_CURVE_PROGRAM, seeds: [seed('bonding-curve'), getAddressEncoder().encode(mint)] }))[0];
+}
+
 export async function eventAuthorityOf(program: Address): Promise<Address> {
   return (await getProgramDerivedAddress({ programAddress: program, seeds: [seed('__event_authority')] }))[0];
 }

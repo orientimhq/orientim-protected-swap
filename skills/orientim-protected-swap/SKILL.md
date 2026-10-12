@@ -197,7 +197,10 @@ The user provides these; never ask for them in chat, and never print or log them
 
 Needs Node 22.18 or later. `npm ci` in this folder installs the one dependency, `@solana/kit` 8.3.0,
 exactly as `package-lock.json` pins it; the verifier ships with the skill. Before first use, check the
-copy: `sha256sum -c SHA256SUMS`, against the list Orientim's site serves at `/skill/SHA256SUMS`. Bots written in another language: see "Bots in other languages" below.
+copy against GitHub, not against Orientim's site (the skill guards against a dishonest server, so the
+server cannot vouch for it): before unzipping, `gh attestation verify orientim-protected-swap.zip -R
+orientimhq/orientim-protected-swap`, or the zip's sha256 against `RELEASE-SHA256SUMS` on that version's
+GitHub release (from 1.12.3); then `sha256sum -c SHA256SUMS` in the folder. Bots written in another language: see "Bots in other languages" below.
 
 ## The flow
 

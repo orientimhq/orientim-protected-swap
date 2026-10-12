@@ -83,13 +83,17 @@ npm ci --ignore-scripts && npm run check   # the committed files are what this s
 cd skills/orientim-protected-swap && sha256sum -c SHA256SUMS
 ```
 
-then compare that `SHA256SUMS` with the one in your copy and with the list Orientim serves at
-`https://orientim.com/skill/SHA256SUMS`. All three must be the same. `npm run build` also writes
+then compare that `SHA256SUMS` with the one in your copy. `npm run build` also writes
 `dist/orientim-protected-swap.zip`, byte for byte the archive Orientim serves at
 `/skill/orientim-protected-swap.zip` for the same version, and `dist/orientim.mcpb`, byte for byte the
 Claude Desktop extension at `/skill/orientim.mcpb`.
 
-From 1.11.2, each release's zip and `SHA256SUMS` also carry GitHub's signed statement that this
+Check a download against GitHub, not against the site that served it: the skill exists to protect you
+from a dishonest server, so the server's own list (`https://orientim.com/skill/SHA256SUMS`) cannot vouch
+for its own zip. Check the whole archive before you unzip it: `sha256sum -c SHA256SUMS` inside the
+folder checks the files it lists, but not a file added beside them.
+
+From 1.11.2, each release's zip and `SHA256SUMS` carry GitHub's signed statement that this
 repository's release workflow built them from that tag:
 
 ```bash
@@ -97,7 +101,13 @@ gh attestation verify orientim-protected-swap.zip -R orientimhq/orientim-protect
 ```
 
 From 1.12.1, so does `orientim.mcpb`, and the npm package `orientim-mcp` carries npm's provenance for the
-same workflow (`npm audit signatures`).
+same workflow (`npm audit signatures`). From 1.12.3, each release also lists the sha256 of the zip and
+of the `.mcpb` in `RELEASE-SHA256SUMS`, itself attested:
+
+```bash
+gh release download v<version> -R orientimhq/orientim-protected-swap -p RELEASE-SHA256SUMS
+sha256sum -c --ignore-missing RELEASE-SHA256SUMS   # next to the zip or .mcpb you downloaded
+```
 
 ## Using it
 

@@ -1,6 +1,7 @@
 name: Release
 
-# A published release v<version> gets the skill built and attached: the zip and SHA256SUMS, the same
+# A published release v<version> gets the skill built and attached: the zip and SHA256SUMS (and
+# RELEASE-SHA256SUMS, the zip's and the .mcpb's own hashes), the same
 # bytes Orientim serves at /skill/ for that version, and orientim.mcpb, the MCP server as a Claude
 # Desktop extension. The tag must name the skill's own version. The same server goes to npm as
 # orientim-mcp through npm's trusted publishing: npm takes this workflow's own OIDC token, for this
@@ -44,6 +45,8 @@ jobs:
           test "$GITHUB_REF_NAME" = "v$version"
       - run: npm run build
       - run: cp skills/orientim-protected-swap/SHA256SUMS dist/SHA256SUMS
+      # The whole archives' own hashes: a check of the files inside cannot see a file added to them.
+      - run: cd dist && sha256sum orientim-protected-swap.zip orientim.mcpb > RELEASE-SHA256SUMS
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dist
@@ -78,12 +81,13 @@ jobs:
             dist/orientim-protected-swap.zip
             dist/SHA256SUMS
             dist/orientim.mcpb
+            dist/RELEASE-SHA256SUMS
       - name: Attach to the release
         if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
         # Never over files already attached: a release's files, once there, stay what they were.
-        run: gh release upload "$GITHUB_REF_NAME" dist/orientim-protected-swap.zip dist/SHA256SUMS dist/orientim.mcpb --repo "$GITHUB_REPOSITORY"
+        run: gh release upload "$GITHUB_REF_NAME" dist/orientim-protected-swap.zip dist/SHA256SUMS dist/orientim.mcpb dist/RELEASE-SHA256SUMS --repo "$GITHUB_REPOSITORY"
       # Trusted publishing needs npm 11.5.1 or later; Node 24 brings it.
       - name: Publish orientim-mcp to npm
         run: |
