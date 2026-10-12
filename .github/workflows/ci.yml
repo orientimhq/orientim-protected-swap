@@ -65,4 +65,10 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run check
       - run: npm run build
-      - run: shasum -a 256 dist/orientim-protected-swap.zip skills/orientim-protected-swap/SHA256SUMS
+      - run: shasum -a 256 dist/orientim-protected-swap.zip skills/orientim-protected-swap/SHA256SUMS dist/orientim.mcpb dist/orientim-mcp/bin/orientim-mcp.mjs
+      - name: The MCP server for npm and Claude Desktop needs nothing beside it
+        run: |
+          cp dist/orientim-mcp/bin/orientim-mcp.mjs "$RUNNER_TEMP/"
+          cd "$RUNNER_TEMP"
+          echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}' \
+            | node orientim-mcp.mjs | grep -q '"protocolVersion":"2025-11-25"'

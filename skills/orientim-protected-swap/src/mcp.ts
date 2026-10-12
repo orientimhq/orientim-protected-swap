@@ -3,10 +3,10 @@
  * Desktop, Claude Code, Cursor, and any client that starts a local MCP server. It speaks MCP over
  * stdio, one JSON-RPC message per line, and needs nothing beyond the skill's own @solana/kit.
  *
- * Every swap is the example's own command line (examples/swap.ts): its dry run for `orientim_quote`,
- * its swap for `orientim_swap`. The floor, the check on your own RPC, the owner's policy, the lock, the
- * record kept before finalize and the outcome read on the chain are the same code every other agent
- * runs. This file adds only what a tool needs: amounts in whole tokens, read against the mint's own
+ * Every swap is the example's own command line (examples/swap.ts, bundled into the same file): its dry
+ * run for `orientim_quote`, its swap for `orientim_swap`, each in a process of its own. The floor, the
+ * check on your own RPC, the owner's policy, the lock, the record kept before finalize and the outcome
+ * read on the chain are the same code every other agent runs. This file adds only what a tool needs: amounts in whole tokens, read against the mint's own
  * decimals on your RPC; a swap tied to the quote the user saw, under an order id the model never
  * chooses; and answers as data.
  *
@@ -18,13 +18,12 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
-import { fileURLToPath } from 'node:url';
 import { address, createKeyPairSignerFromBytes, createSolanaRpc, isAddress, signBytes, type KeyPairSigner } from '@solana/kit';
 
 /** The skill's version (package.json); a test holds them equal. */
-export const SERVER_VERSION = '1.12.0';
+export const SERVER_VERSION = '1.12.1';
 
 /** The MCP versions this server speaks, newest first. A client asking for another gets the newest. */
 export const PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'] as const;
@@ -180,15 +179,18 @@ const masked = (v: unknown): unknown => typeof v === 'string' ? withoutSecrets(v
   : Array.isArray(v) ? v.map(masked)
   : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, masked(x)])) : v;
 
-/** A command's JSON answer, its strings without URLs past the host. */
-function jsonOf(stdout: string): Record<string, unknown> | undefined {
+/** A command's JSON answer as it printed it, for this server's own use. */
+function rawJsonOf(stdout: string): Record<string, unknown> | undefined {
   try {
-    const v = masked(JSON.parse(stdout));
+    const v = JSON.parse(stdout) as unknown;
     return v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : undefined;
   } catch {
     return undefined;
   }
 }
+
+/** A command's JSON answer for the model: its strings without URLs past the host. */
+const jsonOf = (stdout: string) => masked(rawJsonOf(stdout)) as Record<string, unknown> | undefined;
 
 const record = (v: unknown) => (v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {});
 
@@ -505,9 +507,11 @@ export function createServer(deps: McpDeps) {
 
 const DEFAULT_API_URL = 'https://orientim.com';
 
-/** The skill's folder: bin/orientim-mcp.mjs and src/mcp.ts both sit one level below it. */
-const SKILL_DIR = join(dirname(fileURLToPath(import.meta.url)), '..');
-const SCRIPTS = { swap: join(SKILL_DIR, 'examples', 'swap.ts'), verify: join(SKILL_DIR, 'bin', 'orientim-verify.mjs') };
+/** What the server's own file is started with to run the example's command line, or orientim-verify's. */
+export const RUN_SWAP = '--run-swap';
+export const RUN_VERIFY = '--run-verify';
+/** The server's own file (bin/orientim-mcp.mjs), which runs both commands; set by `main`. */
+let self = '';
 
 type Env = Record<string, string | undefined>;
 
@@ -537,7 +541,7 @@ function workFolder(): string {
 
 function runCommand(command: 'swap' | 'verify', args: string[], options: RunOptions, extraEnv: Env = {}): Promise<Run> {
   return new Promise(done => {
-    const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', SCRIPTS[command], ...args], {
+    const child = spawn(process.execPath, [self, command === 'swap' ? RUN_SWAP : RUN_VERIFY, ...args], {
       cwd: workFolder(), env: { ...process.env, ...commandEnv(), ...extraEnv }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
     });
     let stdout = '';
@@ -611,10 +615,11 @@ function keptKey(wallet: string): string | undefined {
 }
 
 async function issueKey(signer: KeyPairSigner): Promise<string> {
+  // As printed: the key message is signed byte for byte, URI line and all.
   const said = (run: Run) => {
-    const out = jsonOf(run.stdout);
+    const out = rawJsonOf(run.stdout);
     return out?.ok === true ? out : new Error(typeof out?.error === 'string'
-      ? `${typeof out.code === 'string' ? out.code : 'api-key'}: ${out.error}`
+      ? `${typeof out.code === 'string' ? out.code : 'api-key'}: ${withoutSecrets(out.error)}`
       : `api-key: ${logOf(run.stderr).at(-1) ?? `orientim-verify exited ${run.code}`}`);
   };
   const challenge = said(await runCommand('verify', ['key-challenge'], { input: JSON.stringify({ wallet: signer.address }) }));
@@ -684,8 +689,27 @@ async function walletBalances(owner: string, mints: string[]): Promise<{ lamport
   return { lamports: BigInt(lamports), tokens };
 }
 
-/** The server on this process's stdin and stdout. Its own words go to stderr only: stdout is the protocol's. */
-export async function main(): Promise<void> {
+/**
+ * A setting of this skill's that the client left empty is not set: an empty field, or the client's
+ * own placeholder (`${user_config.jupiter_api_key}`) passed for a field the owner left out.
+ */
+export function withoutBlanks(env: Env): Env {
+  const out: Env = {};
+  for (const [name, value] of Object.entries(env)) {
+    const blank = value === undefined || !value.trim() || /^\$\{[^}]*\}$/.test(value.trim());
+    if (!(blank && /^(ORIENTIM|SOLANA|JUPITER)_/.test(name))) out[name] = value;
+  }
+  return out;
+}
+
+/**
+ * The server on this process's stdin and stdout, `file` being the server's own file (it runs the
+ * commands). Its own words go to stderr only: stdout is the protocol's.
+ */
+export async function main(file: string): Promise<void> {
+  self = file;
+  const set = withoutBlanks(process.env);
+  for (const name of Object.keys(process.env)) if (!(name in set)) delete process.env[name];
   const server = createServer({ run: runWithKey, wallet: walletAddress, decimals: mintDecimals, balances: walletBalances });
   process.stdout.on('error', () => {});
   const send = (m: unknown) => {

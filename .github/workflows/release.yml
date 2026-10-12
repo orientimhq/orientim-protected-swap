@@ -1,7 +1,9 @@
 name: Release
 
 # A published release v<version> gets the skill built and attached: the zip and SHA256SUMS, the same
-# bytes Orientim serves at /skill/ for that version. The tag must name the skill's own version.
+# bytes Orientim serves at /skill/ for that version, and orientim.mcpb, the MCP server as a Claude
+# Desktop extension. The tag must name the skill's own version. With an NPM_TOKEN secret, the same
+# server goes to npm as orientim-mcp, with npm's provenance.
 on:
   release:
     types: [published]
@@ -36,8 +38,22 @@ jobs:
           subject-path: |
             dist/orientim-protected-swap.zip
             dist/SHA256SUMS
+            dist/orientim.mcpb
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}
         # Never over files already attached: a release's files, once there, stay what they were.
-        run: gh release upload "$GITHUB_REF_NAME" dist/orientim-protected-swap.zip dist/SHA256SUMS
+        run: gh release upload "$GITHUB_REF_NAME" dist/orientim-protected-swap.zip dist/SHA256SUMS dist/orientim.mcpb
+      # The npm token reaches only the steps that need it, never the install or the tests.
+      - name: Is there an npm token
+        id: npm
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: if [ -n "$NPM_TOKEN" ]; then echo publish=yes >> "$GITHUB_OUTPUT"; fi
+      - name: Publish orientim-mcp to npm
+        if: steps.npm.outputs.publish == 'yes'
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > "$RUNNER_TEMP/.npmrc"
+          NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/.npmrc" npm publish dist/orientim-mcp --provenance --access public

@@ -335,7 +335,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.12.0';
+export const SKILL_VERSION = '1.12.1';
 
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res: Response) => {
@@ -2659,8 +2659,8 @@ function readKeypair(path: string): Uint8Array {
   return new Uint8Array(bytes);
 }
 
-// Only as `node swap.ts`: bin/orientim-verify.mjs bundles this file and must not run its command line.
-if (process.argv[1] && /swap\.ts$/.test(process.argv[1]) && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+/** This file's command line, from process.argv: `node swap.ts ...`, and bin/orientim-mcp.mjs's swaps. */
+export function commandLine(): void {
   // Told to stop (a tool's timeout, Ctrl-C): the lock goes at once. What was kept before finalize is
   // on disk, and the next run with the same --id settles it first.
   for (const signal of ['SIGTERM', 'SIGINT'] as const) {
@@ -2674,3 +2674,7 @@ if (process.argv[1] && /swap\.ts$/.test(process.argv[1]) && fileURLToPath(import
     process.exitCode = errorExitCode(e);
   });
 }
+
+// Only as `node swap.ts`: bin/orientim-verify.mjs and bin/orientim-mcp.mjs bundle this file and run
+// its command line only when told to.
+if (process.argv[1] && /swap\.ts$/.test(process.argv[1]) && fileURLToPath(import.meta.url) === resolve(process.argv[1])) commandLine();

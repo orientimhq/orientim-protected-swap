@@ -1862,7 +1862,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.12.0";
+const SKILL_VERSION = "1.12.1";
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res) => {
 	const after = Number(res.headers.get("retry-after"));
@@ -3888,7 +3888,8 @@ function readKeypair(path) {
 	if (!Array.isArray(bytes) || bytes.length !== 64 || !bytes.every((b) => Number.isInteger(b) && b >= 0 && b <= 255)) throw new ConfigError("The wallet's keypair file is not a solana-keygen file (a JSON array of 64 numbers). Nothing was started.");
 	return new Uint8Array(bytes);
 }
-if (process.argv[1] && /swap\.ts$/.test(process.argv[1]) && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+/** This file's command line, from process.argv: `node swap.ts ...`, and bin/orientim-mcp.mjs's swaps. */
+function commandLine() {
 	for (const signal of ["SIGTERM", "SIGINT"]) process.once(signal, () => {
 		releaseHeldLocks();
 		process.exit(signal === "SIGTERM" ? 143 : 130);
@@ -3898,6 +3899,7 @@ if (process.argv[1] && /swap\.ts$/.test(process.argv[1]) && fileURLToPath(import
 		process.exitCode = errorExitCode(e);
 	});
 }
+if (process.argv[1] && /swap\.ts$/.test(process.argv[1]) && fileURLToPath(import.meta.url) === resolve(process.argv[1])) commandLine();
 //#endregion
 //#region skills/orientim-protected-swap/src/cli.ts
 /**

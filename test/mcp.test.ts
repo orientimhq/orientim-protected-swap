@@ -4,14 +4,15 @@
  * an RPC's key. The swap itself is the example's command line, tested in skill.test.ts; here it is a
  * fake that answers as the command does.
  */
-import { spawn } from 'node:child_process';
-import { generateKeyPairSync } from 'node:crypto';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { generateKeyPairSync, verify, type KeyObject } from 'node:crypto';
+import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { createServer as httpServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
-  commandEnv, createServer, fromBaseUnits, InputError, PROTOCOL_VERSIONS, SERVER_VERSION, toBaseUnits, TOOLS, withoutSecrets,
+  commandEnv, createServer, fromBaseUnits, InputError, PROTOCOL_VERSIONS, SERVER_VERSION, toBaseUnits, TOOLS, withoutBlanks, withoutSecrets,
   type McpDeps, type Run, type RunOptions,
 } from '../skills/orientim-protected-swap/src/mcp.ts';
 import { SKILL_VERSION } from '../skills/orientim-protected-swap/examples/swap.ts';
@@ -385,20 +386,115 @@ describe('the environment of the commands', () => {
     expect(commandEnv({ ORIENTIM_API_URL: 'https://staging.example' }).ORIENTIM_API_URL).toBe('https://staging.example');
   });
 
+  it("takes a setting the client left empty, or its own placeholder, as not set", () => {
+    expect(withoutBlanks({ JUPITER_API_KEY: '${user_config.jupiter_api_key}', ORIENTIM_POLICY: ' ', SOLANA_RPC_URL: 'https://rpc', PATH: '' }))
+      .toEqual({ SOLANA_RPC_URL: 'https://rpc', PATH: '' });
+  });
+
   it('cuts every URL to its host', () => {
     expect(withoutSecrets('rpc https://a.example/v2/KEY?x=1 and wss://b.example:443/k')).toBe('rpc https://a.example/… and wss://b.example:443/…');
   });
 });
 
+const BIN = join(SKILL, 'bin/orientim-mcp.mjs');
+const BASE58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+const base58 = (bytes: Uint8Array) => {
+  let n = BigInt(`0x${Buffer.from(bytes).toString('hex')}`);
+  let out = '';
+  while (n > 0n) { out = BASE58[Number(n % 58n)] + out; n /= 58n; }
+  return out;
+};
+
+/** A home of its own with a solana-keygen file in it: the ed25519 seed, then the public key. */
+function wallet() {
+  const home = mkdtempSync(join(tmpdir(), 'orientim-mcp-'));
+  const keypair = join(home, 'wallet.json');
+  const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+  const seed = privateKey.export({ format: 'der', type: 'pkcs8' }).subarray(16);
+  const pub = publicKey.export({ format: 'der', type: 'spki' }).subarray(12);
+  writeFileSync(keypair, JSON.stringify([...seed, ...pub]));
+  return { home, keypair, publicKey, address: base58(pub) };
+}
+
+/** The server on stdio, fed these lines; its answers once it exits. */
+function serve(lines: unknown[], env: NodeJS.ProcessEnv): Promise<{ id: number; result: any }[]> {
+  return new Promise((done, fail) => {
+    const child = spawn(process.execPath, [BIN], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    child.stdout.setEncoding('utf8').on('data', (d: string) => { stdout += d; });
+    child.on('error', fail);
+    child.on('close', () => done(stdout.trim().split('\n').map(l => JSON.parse(l) as { id: number; result: any })));
+    child.stdin.end(lines.map(l => JSON.stringify(l)).join('\n') + '\n');
+  });
+}
+
+const quoteCall = (id: number) => ({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'orientim_quote', arguments: { inputMint: SOL, outputMint: USDC, amount: '0.01' } } });
+
 describe('bin/orientim-mcp.mjs', () => {
+  it('runs the example and orientim-verify itself, with nothing beside it', () => {
+    const swap = spawnSync(process.execPath, [BIN, '--run-swap'], { encoding: 'utf8' });
+    expect(swap.status).toBe(2);
+    expect(swap.stderr).toMatch(/^usage: node swap\.ts/);
+    const verifyRun = spawnSync(process.execPath, [BIN, '--run-verify'], { encoding: 'utf8' });
+    expect(verifyRun.status).toBe(2);
+    expect(verifyRun.stdout).toMatch(/usage: orientim-verify/);
+  });
+
+  it("gets the wallet's own API key once, keeps it for its owner alone, and never shows it", async () => {
+    const w = wallet();
+    const seen: string[] = [];
+    let signedBy: KeyObject | undefined;
+    const orientim = httpServer((req, res) => {
+      const url = new URL(req.url ?? '/', 'http://x');
+      seen.push(`${req.method} ${url.pathname}`);
+      const send = (status: number, body: unknown) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
+      if (url.pathname === '/api/v1/keys/challenge') {
+        const host = req.headers.host;
+        return send(200, {
+          message: `${host} wants you to sign in with your Solana account:\n${url.searchParams.get('wallet')}\n\nGet an Orientim API key for this wallet. Signing costs nothing and gives no access to your funds.\n\nURI: http://${host}\nNonce: n1`,
+          challenge: 'c1',
+        });
+      }
+      if (url.pathname === '/api/v1/keys') {
+        let body = '';
+        req.on('data', d => { body += d; });
+        req.on('end', () => {
+          const { message, signature } = JSON.parse(body) as { message: string; signature: string };
+          if (verify(null, Buffer.from(message), w.publicKey, Buffer.from(signature, 'base64'))) signedBy = w.publicKey;
+          send(200, { key: 'ori_issued_secret', wallet: message.split('\n')[1], expiresAt: new Date(Date.now() + 90 * 86_400_000).toISOString() });
+        });
+        return;
+      }
+      send(404, { error: { code: 'not-found', message: 'no' } });
+    });
+    await new Promise<void>(r => orientim.listen(0, '127.0.0.1', r));
+    const port = (orientim.address() as { port: number }).port;
+    try {
+      const env: NodeJS.ProcessEnv = { ...process.env, HOME: w.home, USERPROFILE: w.home, ORIENTIM_WALLET_KEYPAIR: w.keypair, ORIENTIM_API_URL: `http://127.0.0.1:${port}` };
+      delete env.ORIENTIM_API_KEY;
+      delete env.SOLANA_RPC_URL;
+      const first = await serve([{ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25' } }, quoteCall(2)], env);
+      const quote = first.find(a => a.id === 2)!.result;
+      // The key was issued, then the dry run asked for what is still missing: the owner's RPC.
+      expect(signedBy).toBe(w.publicKey);
+      expect(quote.structuredContent.wallet).toBe(w.address);
+      expect(quote.structuredContent.error.line).toMatch(/SOLANA_RPC_URL/);
+      expect(quote.content[0].text).not.toContain('ori_issued_secret');
+      const file = join(w.home, '.orientim', 'api-key.json');
+      expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject({ wallet: w.address, key: 'ori_issued_secret' });
+      if (process.platform !== 'win32') expect(statSync(file).mode & 0o777).toBe(0o600);
+      // Kept: the next start asks Orientim for nothing.
+      await serve([quoteCall(3)], env);
+      expect(seen).toEqual(['GET /api/v1/keys/challenge', 'POST /api/v1/keys']);
+      // The state is kept in ~/.orientim, whatever folder the client starts the server in.
+      expect(existsSync(join(w.home, '.orientim', '.orientim-state'))).toBe(true);
+    } finally {
+      orientim.close();
+    }
+  }, 60_000);
+
   it('speaks MCP on stdio, and runs the real dry run for a quote', async () => {
-    const home = mkdtempSync(join(tmpdir(), 'orientim-mcp-'));
-    const keypair = join(home, 'wallet.json');
-    // A solana-keygen file: the ed25519 seed, then the public key.
-    const { privateKey, publicKey } = generateKeyPairSync('ed25519');
-    const seed = privateKey.export({ format: 'der', type: 'pkcs8' }).subarray(16);
-    const pub = publicKey.export({ format: 'der', type: 'spki' }).subarray(12);
-    writeFileSync(keypair, JSON.stringify([...seed, ...pub]));
+    const { home, keypair } = wallet();
     const lines = [
       { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'test', version: '1' } } },
       { jsonrpc: '2.0', method: 'notifications/initialized' },
@@ -407,15 +503,7 @@ describe('bin/orientim-mcp.mjs', () => {
     ];
     const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, ORIENTIM_WALLET_KEYPAIR: keypair, ORIENTIM_API_KEY: 'ori_test' };
     delete env.SOLANA_RPC_URL;
-    const out = await new Promise<string>((done, fail) => {
-      const child = spawn(process.execPath, [join(SKILL, 'bin/orientim-mcp.mjs')], { env, stdio: ['pipe', 'pipe', 'pipe'] });
-      let stdout = '';
-      child.stdout.setEncoding('utf8').on('data', (d: string) => { stdout += d; });
-      child.on('error', fail);
-      child.on('close', () => done(stdout));
-      child.stdin.end(lines.map(l => JSON.stringify(l)).join('\n') + '\n');
-    });
-    const answers = out.trim().split('\n').map(l => JSON.parse(l) as { id: number; result: any });
+    const answers = await serve(lines, env);
     expect(answers.map(a => a.id).sort()).toEqual([1, 2, 3]);
     const quote = answers.find(a => a.id === 3)!.result;
     expect(quote.isError).toBe(true);

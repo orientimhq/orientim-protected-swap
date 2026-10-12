@@ -3,6 +3,19 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.12.1 (2026-10-12)
+
+- The MCP server needs nothing beside it: `bin/orientim-mcp.mjs` runs the example's command line and
+  `orientim-verify` itself (`examples/swap.ts` exports `commandLine`), so no TypeScript runs and Node
+  20.18 is enough.
+- Two more ways to install it, the same server as one file with @solana/kit inside: `orientim.mcpb`, a
+  Claude Desktop extension that asks for the RPC, the keypair file and the optional keys and limits
+  (attached to the release, and served at orientim.com/skill/orientim.mcpb); and the npm package
+  `orientim-mcp`, for `npx -y orientim-mcp@1.12.1`, published by the release with npm's provenance.
+- The wallet's own API key: the key message is signed exactly as Orientim sent it (1.12.0 cut its URI
+  line as it did every URL in an answer, and the key was refused).
+- A setting a client left empty, or passed as its own placeholder, is taken as not set.
+
 ## 1.12.0 (2026-10-11)
 
 - `bin/orientim-mcp.mjs`: the skill as an MCP server over stdio, for Claude Desktop, Claude Code,

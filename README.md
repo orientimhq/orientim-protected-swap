@@ -13,7 +13,7 @@ self-contained: copy that folder, run `npm ci` in it, and it needs nothing else 
 | An agent (Claude and other coding agents) | [`SKILL.md`](skills/orientim-protected-swap/SKILL.md) |
 | A bot in JavaScript or TypeScript | `protectedSwap` in [`examples/swap.ts`](skills/orientim-protected-swap/examples/swap.ts) |
 | A bot in Python, Rust, Go... | the `orientim-verify` command, `bin/orientim-verify.mjs` ("Bots in other languages" in `SKILL.md`) |
-| Claude Desktop, Cursor or another MCP client | the MCP server, `bin/orientim-mcp.mjs` ("MCP server" in `SKILL.md`) |
+| Claude Desktop, Cursor or another MCP client | the MCP server: `orientim.mcpb` from a release, `npx -y orientim-mcp@<version>`, or `bin/orientim-mcp.mjs` ("MCP server" in `SKILL.md`) |
 | Calling the API yourself | [`reference/AGENT-API.md`](skills/orientim-protected-swap/reference/AGENT-API.md) |
 
 ## What the check enforces
@@ -50,7 +50,8 @@ skills/orientim-protected-swap/   the skill, exactly as it is distributed
 packages/verifier/                the verifier: rules R1–R7 on the transaction bytes
 packages/core/                    constants, types and the protected-swap layout the verifier checks
 packages/solana/                  the RPC reads the skill makes, and when "no record" proves a swap never landed
-tools/build-skill.ts              builds the generated files and the zip
+tools/build-skill.ts              builds the generated files, the zip, orientim.mcpb and the npm package
+tools/mcp/                        the README and icon of orientim.mcpb and the npm package
 test/                             tests of the skill itself
 ```
 
@@ -85,7 +86,8 @@ cd skills/orientim-protected-swap && sha256sum -c SHA256SUMS
 then compare that `SHA256SUMS` with the one in your copy and with the list Orientim serves at
 `https://orientim.com/skill/SHA256SUMS`. All three must be the same. `npm run build` also writes
 `dist/orientim-protected-swap.zip`, byte for byte the archive Orientim serves at
-`/skill/orientim-protected-swap.zip` for the same version.
+`/skill/orientim-protected-swap.zip` for the same version, and `dist/orientim.mcpb`, byte for byte the
+Claude Desktop extension at `/skill/orientim.mcpb`.
 
 From 1.11.2, each release's zip and `SHA256SUMS` also carry GitHub's signed statement that this
 repository's release workflow built them from that tag:
@@ -93,6 +95,9 @@ repository's release workflow built them from that tag:
 ```bash
 gh attestation verify orientim-protected-swap.zip -R orientimhq/orientim-protected-swap
 ```
+
+From 1.12.1, so does `orientim.mcpb`, and the npm package `orientim-mcp` carries npm's provenance for the
+same workflow (`npm audit signatures`).
 
 ## Using it
 

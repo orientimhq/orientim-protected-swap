@@ -15,7 +15,8 @@ npm ci               # the one dependency, @solana/kit 8.3.0, as the lockfile pi
 - **Bots in Python, Rust, Go...**: `bin/orientim-verify.mjs` (see "Bots in other languages" in
   `SKILL.md`). The bot signs one message with its own key; the command does the rest.
 - **Claude Desktop, Cursor and other MCP clients**: `bin/orientim-mcp.mjs`, the skill as an MCP server
-  with four tools (wallet, quote, swap, recover). See "MCP server" in `SKILL.md`.
+  with four tools (wallet, quote, swap, recover); also `orientim.mcpb` for Claude Desktop and
+  `npx -y orientim-mcp@<version>`. See "MCP server" in `SKILL.md`.
 - **The API itself**: `reference/AGENT-API.md`.
 
 You need an API key from Orientim (`ORIENTIM_API_KEY`), an RPC of your own (`SOLANA_RPC_URL`), a Jupiter
