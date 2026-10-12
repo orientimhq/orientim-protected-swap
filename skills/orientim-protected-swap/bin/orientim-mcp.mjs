@@ -1874,7 +1874,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.12.2";
+const SKILL_VERSION = "1.12.3";
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res) => {
 	const after = Number(res.headers.get("retry-after"));
@@ -5024,7 +5024,7 @@ async function main$1() {
 * the wallet's address and what the swaps did, never the key.
 */
 /** The skill's version (package.json); a test holds them equal. */
-const SERVER_VERSION = "1.12.2";
+const SERVER_VERSION = "1.12.3";
 /** The MCP versions this server speaks, newest first. A client asking for another gets the newest. */
 const PROTOCOL_VERSIONS = [
 	"2025-11-25",

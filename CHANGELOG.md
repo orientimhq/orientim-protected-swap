@@ -3,9 +3,9 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
-## Unreleased (the next version, 1.12.3)
+## 1.12.3 (2026-10-13)
 
-Fixes from the October 2026 security review. The version is unchanged until the next release.
+Fixes from the October 2026 security review.
 
 - The MCP server holds the model to the owner's ceilings (`ORIENTIM_MAX_SLIPPAGE_BPS`,
   `ORIENTIM_MAX_PRICE_IMPACT_BPS`), asks the person through the client (MCP elicitation) before the
