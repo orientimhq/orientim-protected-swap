@@ -1,0 +1,44 @@
+name: npm
+
+# Publishes orientim-mcp for a release already out, with npm's provenance: the same build the release
+# workflow runs, from that release's tag. For a release whose own publish step did not run or failed.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release tag, v<version>
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm test
+      - run: npm run check
+      - name: The tag is the skill's version
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          version=$(node -p "require('./skills/orientim-protected-swap/package.json').version")
+          test "$TAG" = "v$version"
+      - run: npm run build
+      # The npm token reaches only this step, never the install or the tests.
+      - name: Publish orientim-mcp to npm
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          test -n "$NPM_TOKEN"
+          printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > "$RUNNER_TEMP/.npmrc"
+          NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/.npmrc" npm publish ./dist/orientim-mcp --provenance --access public

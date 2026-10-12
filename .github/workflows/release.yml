@@ -56,4 +56,4 @@ jobs:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > "$RUNNER_TEMP/.npmrc"
-          NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/.npmrc" npm publish dist/orientim-mcp --provenance --access public
+          NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/.npmrc" npm publish ./dist/orientim-mcp --provenance --access public
