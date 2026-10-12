@@ -2047,8 +2047,41 @@ export function preparedData(prepared: Prepared): Prepared {
   };
   if (Object.hasOwn(known, 'amounts')) known.amounts = only(known.amounts, AMOUNT_FIELDS);
   if (Object.hasOwn(known, 'costs')) known.costs = only(known.costs, COST_FIELDS);
+  // The fields the skill shows but never checks keep their exact shape or go: a string with no
+  // spaces is still words to a model, so none of them may carry text of the server's choosing.
+  for (const [field, shape] of Object.entries(SHOWN_SHAPES)) {
+    if (Object.hasOwn(known, field) && !shape(known[field])) delete known[field];
+  }
+  const costs = known.costs as Record<string, unknown> | undefined;
+  if (costs && typeof costs === 'object') {
+    if (Object.hasOwn(costs, 'breakdown') && !breakdownShape(costs.breakdown)) delete costs.breakdown;
+    if (Object.hasOwn(costs, 'tokenTax') && !tokenTaxShape(costs.tokenTax)) delete costs.tokenTax;
+  }
   return { ...(dataOnly(known) as Prepared), transaction: prepared.transaction };
 }
+
+const plain = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+const exactly = (v: Record<string, unknown>, keys: readonly string[]) => Object.keys(v).every(k => keys.includes(k));
+const digitsOf = (v: unknown) => typeof v === 'string' && DIGITS.test(v);
+const partShape = (v: unknown) => plain(v) && exactly(v, ['mint', 'amount']) && typeof v.mint === 'string' && BASE58.test(v.mint) && digitsOf(v.amount);
+const ISSUER_POWERS = ['freezeAuthority', 'mintAuthority', 'permanentDelegate'] as const;
+const powersShape = (v: unknown) => plain(v) && exactly(v, ISSUER_POWERS) && Object.values(v).every(x => typeof x === 'boolean');
+/** costs.breakdown: amounts and mints, nothing else. */
+const breakdownShape = (v: unknown) => plain(v)
+  && exactly(v, ['principal', 'orientimFee', 'networkFeeLamports', 'rentReturnedLamports', 'rentKeptLamports'])
+  && (v.principal === undefined || partShape(v.principal)) && (v.orientimFee === undefined || partShape(v.orientimFee))
+  && ['networkFeeLamports', 'rentReturnedLamports', 'rentKeptLamports'].every(k => v[k] === undefined || digitsOf(v[k]));
+/** costs.tokenTax: null, or the input's transfer fee in bps and what it adds. */
+const tokenTaxShape = (v: unknown) => v === null
+  || (plain(v) && exactly(v, ['inputBps', 'extraOnInput']) && Number.isInteger(v.inputBps) && (v.inputBps as number) >= 0
+    && (v.inputBps as number) <= 10_000 && digitsOf(v.extraOnInput));
+const SHOWN_SHAPES: Readonly<Record<string, (v: unknown) => boolean>> = {
+  notices: v => plain(v) && Object.keys(v).length <= 8
+    && Object.entries(v).every(([k, x]) => /^[a-z][A-Za-z]{0,31}$/.test(k) && typeof x === 'boolean'),
+  tokens: v => plain(v) && exactly(v, ['input', 'output']) && Object.values(v).every(powersShape),
+  // Jupiter's names for the markets the route crosses: short names, never sentences.
+  route: v => Array.isArray(v) && v.length <= 8 && v.every(x => typeof x === 'string' && /^[A-Za-z0-9][A-Za-z0-9 .+()-]{0,31}$/.test(x)),
+};
 
 /**
  * Orientim's fee when it is paid in SOL from the wallet, held to a price of your own: always the

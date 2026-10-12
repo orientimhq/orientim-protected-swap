@@ -5,29 +5,31 @@ name: Release
 # Desktop extension. The tag must name the skill's own version. The same server goes to npm as
 # orientim-mcp through npm's trusted publishing: npm takes this workflow's own OIDC token, for this
 # repository and this file only, so there is no npm token to keep or renew, and the package carries
-# npm's provenance. Run by hand with a tag, it publishes to npm only (a release whose publish failed).
+# npm's provenance. Run by hand on a release tag (Use workflow from: the tag), it publishes to npm
+# only (a release whose publish failed). It runs on a tag only, so the provenance npm shows names the
+# very commit that was built.
 on:
   release:
     types: [published]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: 'A release tag already out, v<version>: publish its orientim-mcp to npm'
-        required: true
 
 permissions:
-  contents: write
-  # A signed statement, from GitHub, that these files were built here from this tag.
-  id-token: write
-  attestations: write
+  contents: read
 
 jobs:
-  release:
+  # Tests and the build run with read access only: no step that runs the repository's or a
+  # dependency's code can publish, sign or write to the release.
+  build:
     runs-on: ubuntu-latest
     steps:
+      - name: Run on a release tag only
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          echo "::error::Run this on a release tag v<version> (Use workflow from: the tag), not on $GITHUB_REF."
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
@@ -37,13 +39,37 @@ jobs:
       - run: npm test
       - run: npm run check
       - name: The tag is the skill's version
-        env:
-          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           version=$(node -p "require('./skills/orientim-protected-swap/package.json').version")
-          test "$TAG" = "v$version"
+          test "$GITHUB_REF_NAME" = "v$version"
       - run: npm run build
       - run: cp skills/orientim-protected-swap/SHA256SUMS dist/SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  # Only this job can sign, attach and publish, and it runs none of the repository's code: it takes
+  # the files the build made, as they are.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # A signed statement, from GitHub, that these files were built here from this tag.
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
       # Anyone can check a download with: gh attestation verify orientim-protected-swap.zip -R orientimhq/orientim-protected-swap
       - if: github.event_name == 'release'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -57,7 +83,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         # Never over files already attached: a release's files, once there, stay what they were.
-        run: gh release upload "$GITHUB_REF_NAME" dist/orientim-protected-swap.zip dist/SHA256SUMS dist/orientim.mcpb
+        run: gh release upload "$GITHUB_REF_NAME" dist/orientim-protected-swap.zip dist/SHA256SUMS dist/orientim.mcpb --repo "$GITHUB_REPOSITORY"
       # Trusted publishing needs npm 11.5.1 or later; Node 24 brings it.
       - name: Publish orientim-mcp to npm
         run: |
@@ -82,5 +108,5 @@ jobs:
               exit 1
             fi
           else
-            npm publish ./dist/orientim-mcp --provenance --access public
+            npm publish ./dist/orientim-mcp --provenance --access public --ignore-scripts
           fi

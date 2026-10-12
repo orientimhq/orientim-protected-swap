@@ -448,11 +448,15 @@ chain are the same code. Four tools:
   Orientim's fee, the SOL it costs) and a `quoteId`. Nothing is signed.
 - `orientim_swap`: `{"quoteId"}` and nothing else. It swaps that quote under the order id
   `mcp-<quoteId>`, the same on every retry, held to the minimum the user approved. A quote is swapped
-  only within the 10 minutes its approval holds, and a newer quote of the same swap replaces it.
+  only within the 10 minutes its approval holds, a retry too, and a newer quote of the same swap
+  replaces it. After that, `orientim_recover` settles what an earlier attempt left.
 - `orientim_recover`: settles what an interrupted swap left (`orientim-verify recover`).
 
-No tool takes a key, a minimum of its own or a fee limit: those stay the owner's. Answers are data
-with every URL cut to its host, so an RPC's key in its URL never reaches the model.
+No tool takes a key, a minimum of its own or a fee limit: those stay the owner's. The model may ask
+for a tolerance up to 300 bps (or `"auto"`) and a price-impact limit up to 500 bps; only the owner
+raises them, with `ORIENTIM_MAX_SLIPPAGE_BPS` and `ORIENTIM_MAX_PRICE_IMPACT_BPS` in the server's
+environment, since a wider tolerance lowers the least that arrives. Answers are data with every URL
+cut to its host, so an RPC's key in its URL never reaches the model.
 
 It comes three ways, the same server:
 

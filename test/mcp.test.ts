@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
-  commandEnv, createServer, fromBaseUnits, InputError, mintDecimalsOf, PROTOCOL_VERSIONS, SERVER_VERSION, toBaseUnits, tokenAmountOf, TOOLS, withoutBlanks, withoutSecrets,
+  commandEnv, createServer, fromBaseUnits, InputError, MODEL_CEILINGS, mintDecimalsOf, ownerCeilings, PROTOCOL_VERSIONS, SERVER_VERSION, toBaseUnits, tokenAmountOf, TOOLS, withoutBlanks, withoutSecrets,
   type McpDeps, type Run, type RunOptions,
 } from '../skills/orientim-protected-swap/src/mcp.ts';
 import { SKILL_VERSION } from '../skills/orientim-protected-swap/examples/swap.ts';
@@ -290,6 +290,27 @@ describe('orientim_quote', () => {
     expect(h.calls).toHaveLength(0);
   });
 
+  it('keeps the tolerance and the price impact the model may ask for within the owner\'s ceilings', async () => {
+    const h = harness([]);
+    for (const extra of [{ slippageBps: MODEL_CEILINGS.slippageBps + 1 }, { slippageBps: 1500 }, { maxPriceImpactBps: MODEL_CEILINGS.priceImpactBps + 1 }, { maxPriceImpactBps: 2000 }]) {
+      const { answer } = await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '1', ...extra });
+      expect(answer.error).toMatchObject({ code: 'input', line: expect.stringMatching(/only the owner raises it/) });
+    }
+    expect(h.calls).toHaveLength(0);
+    const raised = harness([() => ok(dryRun())], { ceilings: { slippageBps: 1000, priceImpactBps: 1500 } });
+    const { isError } = await raised.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01', slippageBps: 1000, maxPriceImpactBps: 1500 });
+    expect(isError).toBe(false);
+    expect(raised.calls[0].args).toEqual(expect.arrayContaining(['--slippage-bps', '1000', '--max-price-impact-bps', '1500']));
+  });
+
+  it('reads the owner\'s ceilings from the environment, and refuses one it cannot read', () => {
+    expect(ownerCeilings({})).toEqual({});
+    expect(ownerCeilings({ ORIENTIM_MAX_SLIPPAGE_BPS: '800', ORIENTIM_MAX_PRICE_IMPACT_BPS: '0' })).toEqual({ slippageBps: 800, priceImpactBps: 0 });
+    for (const bad of [{ ORIENTIM_MAX_SLIPPAGE_BPS: '5' }, { ORIENTIM_MAX_SLIPPAGE_BPS: '2000' }, { ORIENTIM_MAX_SLIPPAGE_BPS: '3%' }, { ORIENTIM_MAX_PRICE_IMPACT_BPS: '2001' }]) {
+      expect(() => ownerCeilings(bad)).toThrow(/whole number of bps/);
+    }
+  });
+
   it('reports progress to a client that asked for it', async () => {
     const h = harness([({ options }) => {
       options.onLine?.('Pricing on https://rpc.example/key/abc');
@@ -320,7 +341,7 @@ describe('orientim_swap', () => {
     });
   });
 
-  it('takes the same quote again under the same order, even after the yes expired', async () => {
+  it('takes the same quote again under the same order while the yes holds, and only recover after it', async () => {
     const h = harness([
       () => ok(dryRun()),
       () => ({ code: 3, stdout: '', stderr: 'The outcome of an earlier swap is still unknown.\n' }),
@@ -329,10 +350,29 @@ describe('orientim_swap', () => {
     const { answer: q } = await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01' });
     const first = await h.tool('orientim_swap', { quoteId: q.quoteId });
     expect(first.answer.meaning).toMatch(/orientim_recover/);
-    h.advance(60 * 60_000);
+    h.advance(5 * 60_000);
     const again = await h.tool('orientim_swap', { quoteId: q.quoteId });
     expect(h.calls[2].args).toContain(`mcp-${q.quoteId}`);
     expect(again.answer.exitCode).toBe(5);
+    // A day later the yes no longer stands: a retry would build a new swap at a later market.
+    h.advance(25 * 60 * 60_000);
+    const late = await h.tool('orientim_swap', { quoteId: q.quoteId });
+    expect(late.answer.error.line).toMatch(/has expired.*orientim_recover/);
+    expect(h.calls).toHaveLength(3);
+  });
+
+  it('never swaps a tried quote once its yes expired, however long it was kept', async () => {
+    const h = harness([
+      () => ok(dryRun()),
+      () => ({ code: 1, stdout: JSON.stringify({ outcome: 'expired', meaning: 'Nothing was swapped.' }), stderr: '' }),
+    ]);
+    const { answer: q } = await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01' });
+    expect((await h.tool('orientim_swap', { quoteId: q.quoteId })).answer.ok).toBe(false);
+    for (const later of [11 * 60_000, 24 * 60 * 60_000 + 10 * 60_000]) {
+      h.advance(later);
+      expect((await h.tool('orientim_swap', { quoteId: q.quoteId })).answer.error.code).toBe('input');
+    }
+    expect(h.calls).toHaveLength(2);
   });
 
   it('refuses a quote it never gave, one a newer quote replaced, and one whose yes expired', async () => {

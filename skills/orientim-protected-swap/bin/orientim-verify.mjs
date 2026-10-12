@@ -3308,11 +3308,46 @@ function preparedData(prepared) {
 	};
 	if (Object.hasOwn(known, "amounts")) known.amounts = only(known.amounts, AMOUNT_FIELDS);
 	if (Object.hasOwn(known, "costs")) known.costs = only(known.costs, COST_FIELDS);
+	for (const [field, shape] of Object.entries(SHOWN_SHAPES)) if (Object.hasOwn(known, field) && !shape(known[field])) delete known[field];
+	const costs = known.costs;
+	if (costs && typeof costs === "object") {
+		if (Object.hasOwn(costs, "breakdown") && !breakdownShape(costs.breakdown)) delete costs.breakdown;
+		if (Object.hasOwn(costs, "tokenTax") && !tokenTaxShape(costs.tokenTax)) delete costs.tokenTax;
+	}
 	return {
 		...dataOnly(known),
 		transaction: prepared.transaction
 	};
 }
+const plain = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+const exactly = (v, keys) => Object.keys(v).every((k) => keys.includes(k));
+const digitsOf = (v) => typeof v === "string" && DIGITS.test(v);
+const partShape = (v) => plain(v) && exactly(v, ["mint", "amount"]) && typeof v.mint === "string" && BASE58.test(v.mint) && digitsOf(v.amount);
+const ISSUER_POWERS = [
+	"freezeAuthority",
+	"mintAuthority",
+	"permanentDelegate"
+];
+const powersShape = (v) => plain(v) && exactly(v, ISSUER_POWERS) && Object.values(v).every((x) => typeof x === "boolean");
+/** costs.breakdown: amounts and mints, nothing else. */
+const breakdownShape = (v) => plain(v) && exactly(v, [
+	"principal",
+	"orientimFee",
+	"networkFeeLamports",
+	"rentReturnedLamports",
+	"rentKeptLamports"
+]) && (v.principal === void 0 || partShape(v.principal)) && (v.orientimFee === void 0 || partShape(v.orientimFee)) && [
+	"networkFeeLamports",
+	"rentReturnedLamports",
+	"rentKeptLamports"
+].every((k) => v[k] === void 0 || digitsOf(v[k]));
+/** costs.tokenTax: null, or the input's transfer fee in bps and what it adds. */
+const tokenTaxShape = (v) => v === null || plain(v) && exactly(v, ["inputBps", "extraOnInput"]) && Number.isInteger(v.inputBps) && v.inputBps >= 0 && v.inputBps <= 1e4 && digitsOf(v.extraOnInput);
+const SHOWN_SHAPES = {
+	notices: (v) => plain(v) && Object.keys(v).length <= 8 && Object.entries(v).every(([k, x]) => /^[a-z][A-Za-z]{0,31}$/.test(k) && typeof x === "boolean"),
+	tokens: (v) => plain(v) && exactly(v, ["input", "output"]) && Object.values(v).every(powersShape),
+	route: (v) => Array.isArray(v) && v.length <= 8 && v.every((x) => typeof x === "string" && /^[A-Za-z0-9][A-Za-z0-9 .+()-]{0,31}$/.test(x))
+};
 /**
 * Orientim's fee when it is paid in SOL from the wallet, held to a price of your own: always the
 * limit `ownSolFeeLimit` asks Jupiter for (0.3% of what the amount is worth in SOL, and 2%), or a
