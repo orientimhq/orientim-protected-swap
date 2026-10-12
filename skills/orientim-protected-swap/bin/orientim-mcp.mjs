@@ -1864,7 +1864,7 @@ var OrientimApiError = class extends Error {
 * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
 * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
 */
-const SKILL_VERSION = "1.12.1";
+const SKILL_VERSION = "1.12.2";
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res) => {
 	const after = Number(res.headers.get("retry-after"));
@@ -4955,7 +4955,7 @@ async function main$1() {
 * the wallet's address and what the swaps did, never the key.
 */
 /** The skill's version (package.json); a test holds them equal. */
-const SERVER_VERSION = "1.12.1";
+const SERVER_VERSION = "1.12.2";
 /** The MCP versions this server speaks, newest first. A client asking for another gets the newest. */
 const PROTOCOL_VERSIONS = [
 	"2025-11-25",
@@ -4972,7 +4972,7 @@ const KNOWN_DECIMALS = {
 	[USDC]: 6,
 	[USDT]: 6
 };
-const TOKEN_PROGRAMS = ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "TokenzQdBNbLqP5VEhdkAS6EPFLC1PE9qTvjK9wpZsS"];
+const TOKEN_PROGRAMS = ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"];
 /** How long a quote's id can still be swapped under, in this server; the user's yes holds 10 minutes of it. */
 const QUOTE_KEPT_MS = 864e5;
 const INSTRUCTIONS = [
@@ -5736,26 +5736,38 @@ async function runWithKey(command, args, options) {
 	if (/^(unauthorized|wrong-wallet): /m.test(run.stderr)) rmSync(keyFile(), { force: true });
 	return run;
 }
+const TOKEN_2022 = TOKEN_PROGRAMS[1];
+const bytesOf = (data) => Buffer.from(Array.isArray(data) && typeof data[0] === "string" ? data[0] : "", "base64");
+/**
+* A mint's decimals from its account's bytes, undefined when the account is not an initialized mint.
+* Read from the bytes, not from the RPC's jsonParsed: an RPC that cannot parse every Token-2022
+* extension answers base64 for that mint (PYUSD, say), and the mint is no less a mint.
+*/
+function mintDecimalsOf(owner, data) {
+	if (!TOKEN_PROGRAMS.includes(owner)) return void 0;
+	return (data.length === 82 || owner === TOKEN_2022 && data.length > 165 && data[165] === 1) && data[45] === 1 ? data[44] : void 0;
+}
+/** A token account's amount from its bytes (the mint, the owner, then the amount), undefined when too short. */
+function tokenAmountOf(data) {
+	return data.length >= 165 ? Buffer.from(data.buffer, data.byteOffset, data.length).readBigUInt64LE(64) : void 0;
+}
 async function mintDecimals(mint) {
-	const { value } = await rpcOf().getAccountInfo(address(mint), { encoding: "jsonParsed" }).send(timeLimit());
-	const info = record(record(record(value?.data).parsed).info);
-	const type = record(record(value?.data).parsed).type;
-	if (!value || !TOKEN_PROGRAMS.includes(String(value.owner)) || type !== "mint" || !Number.isInteger(info.decimals)) throw new InputError(`${mint} is not a token mint on your RPC.`);
-	return info.decimals;
+	const { value } = await rpcOf().getAccountInfo(address(mint), { encoding: "base64" }).send(timeLimit());
+	if (!value) throw new InputError(`${mint} has no account on your RPC: not a token mint.`);
+	const decimals = mintDecimalsOf(String(value.owner), bytesOf(value.data));
+	if (decimals === void 0) throw new InputError(`${mint} is not a token mint on your RPC (its account belongs to ${String(value.owner)}).`);
+	return decimals;
 }
 async function walletBalances(owner, mints) {
 	const rpc = rpcOf();
 	const [{ value: lamports }, accounts] = await Promise.all([rpc.getBalance(address(owner), { commitment: "confirmed" }).send(timeLimit()), Promise.all(mints.map((mint) => rpc.getTokenAccountsByOwner(address(owner), { mint: address(mint) }, {
-		encoding: "jsonParsed",
+		encoding: "base64",
 		commitment: "confirmed"
 	}).send(timeLimit())))]);
 	const tokens = {};
 	mints.forEach((mint, i) => {
 		let sum = 0n;
-		for (const a of accounts[i].value) {
-			const amount = a.account.data.parsed.info.tokenAmount.amount;
-			if (/^\d{1,30}$/.test(amount)) sum += BigInt(amount);
-		}
+		for (const a of accounts[i].value) sum += tokenAmountOf(bytesOf(a.account.data)) ?? 0n;
 		tokens[mint] = sum;
 	});
 	return {

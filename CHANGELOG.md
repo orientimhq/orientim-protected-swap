@@ -3,6 +3,14 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.12.2 (2026-10-12)
+
+- The MCP server knows Token-2022 by its right address: 1.12.0 and 1.12.1 named it wrongly, so
+  `orientim_wallet` and `orientim_quote` refused every Token-2022 token (PYUSD, and many newer tokens)
+  as "not a token mint". The swap itself, the verifier and the command line were never affected.
+- It also reads a mint's decimals and a wallet's token balances from the accounts' bytes, not from the
+  RPC's jsonParsed, and names the program that owns an account it refuses.
+
 ## 1.12.1 (2026-10-12)
 
 - The MCP server needs nothing beside it: `bin/orientim-mcp.mjs` runs the example's command line and

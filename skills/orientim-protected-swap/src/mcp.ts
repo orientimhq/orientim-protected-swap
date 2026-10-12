@@ -23,7 +23,7 @@ import { createInterface } from 'node:readline';
 import { address, createKeyPairSignerFromBytes, createSolanaRpc, isAddress, signBytes, type KeyPairSigner } from '@solana/kit';
 
 /** The skill's version (package.json); a test holds them equal. */
-export const SERVER_VERSION = '1.12.1';
+export const SERVER_VERSION = '1.12.2';
 
 /** The MCP versions this server speaks, newest first. A client asking for another gets the newest. */
 export const PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'] as const;
@@ -33,7 +33,7 @@ const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const USDT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
 /** Decimals fixed for good: these three are never read. Every other mint's are read on your RPC. */
 const KNOWN_DECIMALS: Readonly<Record<string, number>> = { [SOL]: 9, [USDC]: 6, [USDT]: 6 };
-const TOKEN_PROGRAMS = ['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PE9qTvjK9wpZsS'];
+const TOKEN_PROGRAMS = ['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'];
 /** How long a quote's id can still be swapped under, in this server; the user's yes holds 10 minutes of it. */
 const QUOTE_KEPT_MS = 24 * 60 * 60_000;
 
@@ -661,29 +661,44 @@ async function runWithKey(command: 'swap' | 'verify', args: string[], options: R
   return run;
 }
 
+const TOKEN_2022 = TOKEN_PROGRAMS[1];
+const bytesOf = (data: unknown) => Buffer.from(Array.isArray(data) && typeof data[0] === 'string' ? data[0] : '', 'base64');
+
+/**
+ * A mint's decimals from its account's bytes, undefined when the account is not an initialized mint.
+ * Read from the bytes, not from the RPC's jsonParsed: an RPC that cannot parse every Token-2022
+ * extension answers base64 for that mint (PYUSD, say), and the mint is no less a mint.
+ */
+export function mintDecimalsOf(owner: string, data: Uint8Array): number | undefined {
+  if (!TOKEN_PROGRAMS.includes(owner)) return undefined;
+  // 82 bytes; a Token-2022 mint with extensions is padded to 165 and marked 1 (a mint) at byte 165.
+  const mint = data.length === 82 || (owner === TOKEN_2022 && data.length > 165 && data[165] === 1);
+  return mint && data[45] === 1 ? data[44] : undefined;
+}
+
+/** A token account's amount from its bytes (the mint, the owner, then the amount), undefined when too short. */
+export function tokenAmountOf(data: Uint8Array): bigint | undefined {
+  return data.length >= 165 ? Buffer.from(data.buffer, data.byteOffset, data.length).readBigUInt64LE(64) : undefined;
+}
+
 async function mintDecimals(mint: string): Promise<number> {
-  const { value } = await rpcOf().getAccountInfo(address(mint), { encoding: 'jsonParsed' }).send(timeLimit());
-  const info = record(record(record(value?.data).parsed).info);
-  const type = record(record(value?.data).parsed).type;
-  if (!value || !TOKEN_PROGRAMS.includes(String(value.owner)) || type !== 'mint' || !Number.isInteger(info.decimals)) {
-    throw new InputError(`${mint} is not a token mint on your RPC.`);
-  }
-  return info.decimals as number;
+  const { value } = await rpcOf().getAccountInfo(address(mint), { encoding: 'base64' }).send(timeLimit());
+  if (!value) throw new InputError(`${mint} has no account on your RPC: not a token mint.`);
+  const decimals = mintDecimalsOf(String(value.owner), bytesOf(value.data));
+  if (decimals === undefined) throw new InputError(`${mint} is not a token mint on your RPC (its account belongs to ${String(value.owner)}).`);
+  return decimals;
 }
 
 async function walletBalances(owner: string, mints: string[]): Promise<{ lamports: bigint; tokens: Record<string, bigint> }> {
   const rpc = rpcOf();
   const [{ value: lamports }, accounts] = await Promise.all([
     rpc.getBalance(address(owner), { commitment: 'confirmed' }).send(timeLimit()),
-    Promise.all(mints.map(mint => rpc.getTokenAccountsByOwner(address(owner), { mint: address(mint) }, { encoding: 'jsonParsed', commitment: 'confirmed' }).send(timeLimit()))),
+    Promise.all(mints.map(mint => rpc.getTokenAccountsByOwner(address(owner), { mint: address(mint) }, { encoding: 'base64', commitment: 'confirmed' }).send(timeLimit()))),
   ]);
   const tokens: Record<string, bigint> = {};
   mints.forEach((mint, i) => {
     let sum = 0n;
-    for (const a of accounts[i].value) {
-      const amount = a.account.data.parsed.info.tokenAmount.amount;
-      if (/^\d{1,30}$/.test(amount)) sum += BigInt(amount);
-    }
+    for (const a of accounts[i].value) sum += tokenAmountOf(bytesOf(a.account.data)) ?? 0n;
     tokens[mint] = sum;
   });
   return { lamports: BigInt(lamports), tokens };

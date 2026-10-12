@@ -468,7 +468,7 @@ It comes three ways, the same server:
     "mcpServers": {
       "orientim": {
         "command": "npx",
-        "args": ["-y", "orientim-mcp@1.12.1"],
+        "args": ["-y", "orientim-mcp@1.12.2"],
         "env": {
           "SOLANA_RPC_URL": "https://your-own-rpc.example/...",
           "ORIENTIM_WALLET_KEYPAIR": "/absolute/path/to/agent-wallet.json",
@@ -480,7 +480,7 @@ It comes three ways, the same server:
   ```
 
   Claude Code: `claude mcp add --transport stdio orientim --env SOLANA_RPC_URL=... --env
-  ORIENTIM_WALLET_KEYPAIR=... -- npx -y orientim-mcp@1.12.1`. Pin the version: the package is
+  ORIENTIM_WALLET_KEYPAIR=... -- npx -y orientim-mcp@1.12.2`. Pin the version: the package is
   published with npm's provenance from this skill's release.
 - **This folder:** `"command": "node"`, `"args": ["/absolute/path/to/orientim-protected-swap/bin/orientim-mcp.mjs"]`,
   after `npm ci` here (Node 20.18 or later).

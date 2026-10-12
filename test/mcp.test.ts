@@ -12,10 +12,11 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
-  commandEnv, createServer, fromBaseUnits, InputError, PROTOCOL_VERSIONS, SERVER_VERSION, toBaseUnits, TOOLS, withoutBlanks, withoutSecrets,
+  commandEnv, createServer, fromBaseUnits, InputError, mintDecimalsOf, PROTOCOL_VERSIONS, SERVER_VERSION, toBaseUnits, tokenAmountOf, TOOLS, withoutBlanks, withoutSecrets,
   type McpDeps, type Run, type RunOptions,
 } from '../skills/orientim-protected-swap/src/mcp.ts';
 import { SKILL_VERSION } from '../skills/orientim-protected-swap/examples/swap.ts';
+import { TOKEN_2022_PROGRAM, TOKEN_PROGRAM } from '../packages/core/src/constants.ts';
 
 const ROOT = join(import.meta.dirname, '..');
 const SKILL = join(ROOT, 'skills/orientim-protected-swap');
@@ -190,6 +191,44 @@ describe('orientim_wallet', () => {
     const h = harness([]);
     const { answer } = await h.tool('orientim_wallet', { mints: [W] });
     expect(answer.error).toEqual({ code: 'input', line: `${W} is not a token mint on your RPC.` });
+  });
+});
+
+describe('mints and token accounts, read from their bytes', () => {
+  // The verifier's own: 1.12.0 and 1.12.1 named Token-2022 by a wrong address, and no Token-2022 mint
+  // was a mint to them.
+  const TOKEN = TOKEN_PROGRAM;
+  const TOKEN_2022 = TOKEN_2022_PROGRAM;
+  const mint = (length: number, decimals: number, kind?: number) => {
+    const b = new Uint8Array(length);
+    b[44] = decimals;
+    b[45] = 1;
+    if (kind !== undefined) b[165] = kind;
+    return b;
+  };
+
+  it('a mint of either token program, extensions and all', () => {
+    expect(mintDecimalsOf(TOKEN, mint(82, 6))).toBe(6);
+    expect(mintDecimalsOf(TOKEN_2022, mint(82, 9))).toBe(9);
+    // PYUSD's kind: a Token-2022 mint with extensions, which some RPCs cannot give as jsonParsed.
+    expect(mintDecimalsOf(TOKEN_2022, mint(560, 6, 1))).toBe(6);
+  });
+
+  it('nothing else is a mint', () => {
+    expect(mintDecimalsOf(TOKEN_2022, mint(300, 6, 2))).toBeUndefined();
+    expect(mintDecimalsOf(TOKEN, mint(165, 6))).toBeUndefined();
+    expect(mintDecimalsOf(TOKEN, mint(300, 6, 1))).toBeUndefined();
+    expect(mintDecimalsOf('11111111111111111111111111111111', mint(82, 6))).toBeUndefined();
+    const uninitialized = mint(82, 6);
+    uninitialized[45] = 0;
+    expect(mintDecimalsOf(TOKEN, uninitialized)).toBeUndefined();
+  });
+
+  it('a token account\'s amount, after its mint and its owner', () => {
+    const account = new Uint8Array(170);
+    Buffer.from(account.buffer).writeBigUInt64LE(18_446_744_073_709_551_615n, 64);
+    expect(tokenAmountOf(account)).toBe(18_446_744_073_709_551_615n);
+    expect(tokenAmountOf(account.subarray(0, 100))).toBeUndefined();
   });
 });
 
