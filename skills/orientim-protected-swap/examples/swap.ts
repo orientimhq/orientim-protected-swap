@@ -491,7 +491,7 @@ export function isApiKeyMessage(message: unknown, apiUrl: string, address: strin
   const lines = message.split('\n');
   return lines[0] === `${new URL(apiUrl).host} wants you to sign in with your Solana account:`
     && lines[1] === address && lines[2] === ''
-    && lines[3] === 'Get an Orientim API key for this wallet. Signing costs nothing and gives no access to your funds.'
+    && lines[3] === 'Get an Orientim API key for this wallet, and accept the Terms of Use at https://orientim.com/terms. Signing costs nothing and gives no access to your funds.'
     && lines.slice(4).every(l => l === '' || /^(URI|Version|Chain ID|Nonce|Issued At|Expiration Time): \S+$/.test(l));
 }
 

@@ -2018,7 +2018,7 @@ async function call(fetchImpl, url, key, body, timeoutMs = 3e4) {
 function isApiKeyMessage(message, apiUrl, address) {
 	if (typeof message !== "string" || message.length > 1e3 || !/^[\x20-\x7e\n]+$/.test(message)) return false;
 	const lines = message.split("\n");
-	return lines[0] === `${new URL(apiUrl).host} wants you to sign in with your Solana account:` && lines[1] === address && lines[2] === "" && lines[3] === "Get an Orientim API key for this wallet. Signing costs nothing and gives no access to your funds." && lines.slice(4).every((l) => l === "" || /^(URI|Version|Chain ID|Nonce|Issued At|Expiration Time): \S+$/.test(l));
+	return lines[0] === `${new URL(apiUrl).host} wants you to sign in with your Solana account:` && lines[1] === address && lines[2] === "" && lines[3] === "Get an Orientim API key for this wallet, and accept the Terms of Use at https://orientim.com/terms. Signing costs nothing and gives no access to your funds." && lines.slice(4).every((l) => l === "" || /^(URI|Version|Chain ID|Nonce|Issued At|Expiration Time): \S+$/.test(l));
 }
 /** The message to sign for an API key, checked first (`isApiKeyMessage`). */
 async function apiKeyChallenge(args) {

@@ -18,6 +18,9 @@ Fixes from the October 2026 security review.
 - Releases attach `RELEASE-SHA256SUMS`, the whole zip's and `.mcpb`'s sha256, attested; the docs check
   a download against GitHub rather than against the site that served it.
 - The release builds in a job that cannot publish, and publishes only from a `v*` tag.
+- The API-key message the wallet signs also accepts Orientim's Terms of Use
+  (https://orientim.com/terms); the skill signs only that message. Earlier versions refuse it, so
+  getting a key needs 1.12.3.
 
 ## 1.12.2 (2026-10-12)
 

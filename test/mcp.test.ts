@@ -561,7 +561,7 @@ describe('bin/orientim-mcp.mjs', () => {
       if (url.pathname === '/api/v1/keys/challenge') {
         const host = req.headers.host;
         return send(200, {
-          message: `${host} wants you to sign in with your Solana account:\n${url.searchParams.get('wallet')}\n\nGet an Orientim API key for this wallet. Signing costs nothing and gives no access to your funds.\n\nURI: http://${host}\nNonce: n1`,
+          message: `${host} wants you to sign in with your Solana account:\n${url.searchParams.get('wallet')}\n\nGet an Orientim API key for this wallet, and accept the Terms of Use at https://orientim.com/terms. Signing costs nothing and gives no access to your funds.\n\nURI: http://${host}\nNonce: n1`,
           challenge: 'c1',
         });
       }

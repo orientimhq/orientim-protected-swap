@@ -61,7 +61,7 @@ describe('hard limits no intent can raise', () => {
 describe('the API-key message is the only thing a wallet signs for a key', () => {
   const message = [
     'orientim.com wants you to sign in with your Solana account:', W, '',
-    'Get an Orientim API key for this wallet. Signing costs nothing and gives no access to your funds.', '',
+    'Get an Orientim API key for this wallet, and accept the Terms of Use at https://orientim.com/terms. Signing costs nothing and gives no access to your funds.', '',
     'URI: https://orientim.com/developers#access', 'Version: 1', 'Chain ID: mainnet', 'Nonce: abc123',
     'Issued At: 2026-09-21T12:26:40Z', 'Expiration Time: 2026-09-21T12:31:40Z',
   ].join('\n');
