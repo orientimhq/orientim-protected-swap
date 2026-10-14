@@ -6,7 +6,7 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { generateKeyPairSync, verify, type KeyObject } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { createServer as httpServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -471,6 +471,116 @@ describe('orientim_swap', () => {
   });
 });
 
+describe('one request, one swap (14 October 2026 review)', () => {
+  it("gives a swap's answer the client stopped waiting for with the next call, before anything new", async () => {
+    let finish: (r: Run) => void = () => {};
+    const h = harness([() => ok(dryRun()), () => new Promise<Run>(r => { finish = r; })]);
+    const { answer: q } = await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01' });
+    const id = 901;
+    const done = h.server.receive(JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'orientim_swap', arguments: { quoteId: q.quoteId } } }), h.send);
+    await new Promise(r => setTimeout(r, 0));
+    // The client's timeout: it cancels, the swap goes on and lands.
+    await h.server.receive(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: id } }), h.send);
+    finish(ok(JSON.stringify({ signature: SIG, outcome: 'confirmed', received: '1497000' })));
+    await done;
+    // "Try again": the model quotes again, and is told the first swap landed instead.
+    const again = await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01' });
+    expect(again.answer.error.code).toBe('earlier-swap');
+    expect(again.answer.earlierSwaps).toEqual([expect.objectContaining({ quoteId: q.quoteId, outcome: 'confirmed', signature: SIG })]);
+    expect(again.answer.quoteId).toBeUndefined();
+    expect(h.calls).toHaveLength(2);
+  });
+
+  it('tells a second call for the same quote that it runs, even while the first awaits the wallet', async () => {
+    let release: () => void = () => {};
+    const slowWallet = new Promise<void>(r => { release = r; });
+    let first = true;
+    const h = harness([() => ok(dryRun()), () => ok(JSON.stringify({ signature: SIG, outcome: 'confirmed' }))], {
+      wallet: async () => {
+        if (!first) await slowWallet;
+        return W;
+      },
+    });
+    const { answer: q } = await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01' });
+    first = false;
+    const a = h.tool('orientim_swap', { quoteId: q.quoteId });
+    const b = h.tool('orientim_swap', { quoteId: q.quoteId });
+    release();
+    const answers = await Promise.all([a, b]);
+    expect(answers.filter(x => x.answer.ok)).toHaveLength(1);
+    expect(answers.find(x => !x.answer.ok)!.answer.error.line).toMatch(/already running/);
+    expect(h.calls).toHaveLength(2);
+  });
+
+  it("withdraws an unanswered question when the quote's 10 minutes end, and signs nothing", async () => {
+    const h = harness([() => ok(dryRun())]);
+    await h.request('initialize', { protocolVersion: '2025-06-18', capabilities: { elicitation: {} }, clientInfo: { name: 't', version: '1' } });
+    const { answer: q } = await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01' });
+    h.advance(10 * 60_000 - 30);
+    const { answer } = await h.tool('orientim_swap', { quoteId: q.quoteId });
+    expect(answer.error.line).toMatch(/did not answer the confirmation/);
+    const asked = h.sent.find(m => m.method === 'elicitation/create') as { id: string };
+    expect(h.sent).toContainEqual({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: asked.id, reason: 'The quote expired.' } });
+    expect(h.calls).toHaveLength(1);
+  });
+
+  it('lets no question hold a call open once the client is gone', async () => {
+    const h = harness([() => ok(dryRun())]);
+    await h.request('initialize', { protocolVersion: '2025-06-18', capabilities: { elicitation: {} }, clientInfo: { name: 't', version: '1' } });
+    const { answer: q } = await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01' });
+    const call = h.tool('orientim_swap', { quoteId: q.quoteId });
+    await new Promise(r => setTimeout(r, 0));
+    h.server.clientGone();
+    expect((await call).answer.error.line).toMatch(/did not confirm/);
+    expect(h.server.busy()).toBe(false);
+  });
+
+  it('asks only a client that can show a form, and takes an error as "cannot ask"', async () => {
+    const urlOnly = harness([() => ok(dryRun()), () => ok(JSON.stringify({ signature: SIG, outcome: 'confirmed' }))]);
+    await urlOnly.request('initialize', { protocolVersion: '2025-11-25', capabilities: { elicitation: { url: {} } }, clientInfo: { name: 't', version: '1' } });
+    const { answer: q1 } = await urlOnly.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01' });
+    expect((await urlOnly.tool('orientim_swap', { quoteId: q1.quoteId })).answer.ok).toBe(true);
+    expect(urlOnly.sent.some(m => m.method === 'elicitation/create')).toBe(false);
+
+    const failing = harness([() => ok(dryRun()), () => ok(JSON.stringify({ signature: SIG, outcome: 'confirmed' }))]);
+    await failing.request('initialize', { protocolVersion: '2025-11-25', capabilities: { elicitation: { form: {} } }, clientInfo: { name: 't', version: '1' } });
+    const { answer: q2 } = await failing.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01' });
+    const call = failing.tool('orientim_swap', { quoteId: q2.quoteId });
+    await new Promise(r => setTimeout(r, 0));
+    const asked = failing.sent.find(m => m.method === 'elicitation/create') as { id: string };
+    await failing.server.receive(JSON.stringify({ jsonrpc: '2.0', id: asked.id, error: { code: -32601, message: 'Method not found' } }), failing.send);
+    expect((await call).answer.ok).toBe(true);
+  });
+
+  it("holds \"auto\" and the defaults to an owner's lower ceilings", async () => {
+    const h = harness([() => ok(dryRun())], { ceilings: { slippageBps: 100, priceImpactBps: 200 } });
+    const auto = await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01', slippageBps: 'auto' });
+    expect(auto.answer.error.line).toMatch(/"auto" may reach 300 bps.*100 bps/);
+    await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01' });
+    expect(h.calls[0].args).toEqual(expect.arrayContaining(['--slippage-bps', '50', '--max-price-impact-bps', '200']));
+  });
+
+  it("shows the agent's own tolerance, and no summary for a quote the check refused", async () => {
+    const h = harness([
+      () => ok(dryRun({ slippageBps: 75 })),
+      () => ({ code: 1, stdout: dryRun({ approval: undefined, problems: ['minOut is below the floor'], amounts: undefined, costs: undefined }), stderr: '' }),
+    ]);
+    expect((await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01' })).answer.summary.slippageBps).toBe(75);
+    const refused = await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.02' });
+    expect(refused.answer.summary).toBeUndefined();
+    expect(refused.answer.answer.problems).toEqual(['minOut is below the floor']);
+  });
+});
+
+describe('secrets in what the model reads', () => {
+  it('cuts every spelling of a URL with a key or a password, and a key in a query without its scheme', () => {
+    expect(withoutSecrets('HTTPS://user:pw@rpc.example/x?api-key=K1')).toBe('HTTPS://rpc.example/…');
+    expect(withoutSecrets('https://user:p@ss@rpc.example/x')).toBe('https://rpc.example/…');
+    expect(withoutSecrets('Failed to parse URL from mainnet.helius-rpc.com/?api-key=SECRETKEY')).toBe('Failed to parse URL from mainnet.helius-rpc.com/?api-key=…');
+    expect(withoutSecrets('wss://rpc.example/ws?token=T&x=1')).toBe('wss://rpc.example/…');
+  });
+});
+
 describe('orientim_recover', () => {
   it('runs orientim-verify recover and passes on its words', async () => {
     const h = harness([
@@ -561,7 +671,7 @@ describe('bin/orientim-mcp.mjs', () => {
       if (url.pathname === '/api/v1/keys/challenge') {
         const host = req.headers.host;
         return send(200, {
-          message: `${host} wants you to sign in with your Solana account:\n${url.searchParams.get('wallet')}\n\nGet an Orientim API key for this wallet, and accept the Terms of Use at https://orientim.com/terms. Signing costs nothing and gives no access to your funds.\n\nURI: http://${host}\nNonce: n1`,
+          message: `${host} wants you to sign in with your Solana account:\n${url.searchParams.get('wallet')}\n\nGet an Orientim API key for this wallet, and accept the Terms of Use at https://orientim.com/terms. Signing costs nothing and gives no access to your funds.\n\nURI: http://${host}/developers#access\nVersion: 1\nChain ID: mainnet\nNonce: n1nonce\nIssued At: ${new Date().toISOString()}\nExpiration Time: ${new Date(Date.now() + 10 * 60_000).toISOString()}`,
           challenge: 'c1',
         });
       }
@@ -590,7 +700,10 @@ describe('bin/orientim-mcp.mjs', () => {
       expect(quote.structuredContent.wallet).toBe(w.address);
       expect(quote.structuredContent.error.line).toMatch(/SOLANA_RPC_URL/);
       expect(quote.content[0].text).not.toContain('ori_issued_secret');
-      const file = join(w.home, '.orientim', 'api-key.json');
+      // One file per wallet and Orientim address: another wallet on this machine keeps its own.
+      const kept = readdirSync(join(w.home, '.orientim')).filter(f => /^api-key-[0-9a-f]{16}\.json$/.test(f));
+      expect(kept).toHaveLength(1);
+      const file = join(w.home, '.orientim', kept[0]);
       expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject({ wallet: w.address, key: 'ori_issued_secret' });
       if (process.platform !== 'win32') expect(statSync(file).mode & 0o777).toBe(0o600);
       // Kept: the next start asks Orientim for nothing.

@@ -42,9 +42,9 @@
  * when something must be settled first, and 5 when this order (--id) already swapped or may still land.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeSync } from 'node:fs';
+import { accessSync, chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeSync } from 'node:fs';
 import { hostname } from 'node:os';
-import { basename, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   createKeyPairSignerFromBytes, createSolanaRpc, getCompiledTransactionMessageDecoder, getPublicKeyFromAddress,
@@ -133,7 +133,7 @@ export type Prepared = {
   wallet: string;
   temporaryAuthority: string;
   lastValidBlockHeight: string;
-  /** Blocks left in the transaction's life when prepare answered (150 at most, about 40 s). */
+  /** Blocks left in the transaction's life when prepare answered (150 at most, about a minute). */
   blocksLeft?: string;
   /**
    * `fee` is in `feeMint`: SOL first, then USDC or USDT, on whichever side; otherwise the input token.
@@ -212,7 +212,7 @@ export const ERROR_MEANINGS: Readonly<Record<string, string>> = {
   paused: 'Orientim has paused swaps; funds are not affected. Try later.',
   'fee-unavailable': 'Orientim cannot collect its fee on this swap right now, so it built nothing. Wait the Retry-After seconds.',
   'amount-too-small': 'The amount is below the smallest swap Orientim takes. Swap a larger amount, or sell your whole balance of the token, which is allowed at any size.',
-  'skill-outdated': 'This copy of the skill is too old. Replace the skill folder with the current one.',
+  'skill-outdated': 'This copy of the skill is too old for Orientim. Update it: in an MCP client, set orientim-mcp@<minimum or later> in its configuration (or install the current orientim.mcpb); otherwise replace the skill folder or orientim-verify with the current one.',
   'transaction-changed': 'The signed transaction differs from the one prepared. Sign exactly what prepare returned.',
   'wallet-changed-transaction': 'The wallet changed the transaction or did not sign it. Sign exactly what prepare returned.',
   'unsupported-token': 'This token cannot be swapped safely now.',
@@ -335,7 +335,7 @@ type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '1.12.3';
+export const SKILL_VERSION = '1.12.4';
 
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 const retryAfterOf = (res: Response) => {
@@ -486,13 +486,31 @@ async function call<T>(fetchImpl: Fetch, url: string, key: string, body: unknown
  * signature for that transaction: so only this exact text, for this wallet and this host, is ever
  * signed (AGENT-API.md, "API access").
  */
-export function isApiKeyMessage(message: unknown, apiUrl: string, address: string): message is string {
+export function isApiKeyMessage(message: unknown, apiUrl: string, address: string, now = Date.now()): message is string {
   if (typeof message !== 'string' || message.length > 1_000 || !/^[\x20-\x7e\n]+$/.test(message)) return false;
+  const host = new URL(apiUrl).host;
   const lines = message.split('\n');
-  return lines[0] === `${new URL(apiUrl).host} wants you to sign in with your Solana account:`
+  // Every field, in the order Orientim's server writes them, as the site checks it
+  // (apps/web/lib/client/keyMessage.ts): the same rule on both sides.
+  const field = (i: number, name: string, value: RegExp) => {
+    const m = new RegExp(`^${name}: (.+)$`).exec(lines[i] ?? '');
+    return m !== null && value.test(m[1]) ? m[1] : null;
+  };
+  const isoTime = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d{3})?Z$/;
+  const issued = Date.parse(field(9, 'Issued At', isoTime) ?? '');
+  const expires = Date.parse(field(10, 'Expiration Time', isoTime) ?? '');
+  return lines.length === 11
+    && lines[0] === `${host} wants you to sign in with your Solana account:`
     && lines[1] === address && lines[2] === ''
     && lines[3] === 'Get an Orientim API key for this wallet, and accept the Terms of Use at https://orientim.com/terms. Signing costs nothing and gives no access to your funds.'
-    && lines.slice(4).every(l => l === '' || /^(URI|Version|Chain ID|Nonce|Issued At|Expiration Time): \S+$/.test(l));
+    && lines[4] === ''
+    && (lines[5] === `URI: https://${host}/developers#access` || (/^(localhost|127\.0\.0\.1)(:\d+)?$/.test(host) && lines[5] === `URI: http://${host}/developers#access`))
+    && lines[6] === 'Version: 1'
+    && lines[7] === 'Chain ID: mainnet'
+    && field(8, 'Nonce', /^[A-Za-z0-9_-]{6,64}$/) !== null
+    // Issued now, give or take a slow clock, and valid for a quarter of an hour at most.
+    && Math.abs(issued - now) <= 15 * 60_000
+    && expires > issued && expires - issued <= 15 * 60_000;
 }
 
 /** The message to sign for an API key, checked first (`isApiKeyMessage`). */
@@ -663,7 +681,7 @@ export async function checkPrepared(
 }
 
 /**
- * The transaction lives 150 blocks, about 40 s. Finalize only with this many
+ * The transaction lives 150 blocks, about a minute (60 s at 400 ms a block, more when slots are skipped). Finalize only with this many
  * left, so that it can still land; otherwise prepare again.
  */
 export const MIN_BLOCKS_TO_FINALIZE = 30n;
@@ -1180,10 +1198,26 @@ export const SYSTEM_POLICY_PATH = process.platform === 'win32' ? 'C:\\ProgramDat
  * The policy file a command reads: the system one when it exists (and nothing else is accepted then:
  * `ORIENTIM_POLICY` may name it or be unset), otherwise the one `ORIENTIM_POLICY` names, otherwise none.
  */
-export function policyPathFor(named: string | undefined, system: string = SYSTEM_POLICY_PATH): string | undefined {
+export function policyPathFor(named: string | undefined, system: string = SYSTEM_POLICY_PATH, platform: NodeJS.Platform = process.platform): string | undefined {
+  // Windows paths are one path in any letter case.
+  const same = (a: string, b: string) => (platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
   if (existsSync(system)) {
-    if (named && resolve(named) !== resolve(system)) {
+    if (named && !same(resolve(named), resolve(system))) {
       throw new ConfigError(`The owner's policy is ${system}; ORIENTIM_POLICY names another file (${named}), which is not used. Nothing was prepared.`);
+    }
+    // The system policy holds only while the agent cannot rewrite it: a file, or a folder, the user
+    // this runs as may write is not the owner's word (POSIX; on Windows an administrator makes the
+    // folder before anyone else can).
+    if (system === SYSTEM_POLICY_PATH && platform !== 'win32' && process.getuid?.() !== 0) {
+      for (const path of [system, dirname(system)]) {
+        let writable = true;
+        try {
+          accessSync(path, fsConstants.W_OK);
+        } catch {
+          writable = false;
+        }
+        if (writable) throw new ConfigError(`The owner's policy ${system} can be changed by the user this runs as (${path} is writable): an administrator makes it, and its folder, writable only by root. Nothing was prepared.`);
+      }
     }
     return system;
   }
@@ -1266,8 +1300,16 @@ export function approvalFor(dir: string, key: ApprovalKey): Approval | null {
   return a as Approval;
 }
 
-/** Removes the approval for this wallet, these mints and this amount: used up, or expired. */
-export function forgetApproval(dir: string, key: ApprovalKey): void {
+/**
+ * Removes the approval for this wallet, these mints and this amount: used up, or expired. With
+ * `recordedBy` (ms), only one recorded by then: a swap that lands uses up the yes it was held to,
+ * never a newer one the user gave for the same swap while it was on its way.
+ */
+export function forgetApproval(dir: string, key: ApprovalKey, recordedBy?: number): void {
+  if (recordedBy !== undefined) {
+    const kept = approvalFor(dir, key);
+    if (kept && kept.expiresAt - APPROVAL_MS > recordedBy) return;
+  }
   rmSync(approvalFile(dir, key), { force: true });
 }
 
@@ -1709,6 +1751,25 @@ function holderIsGone(lock: { pid?: unknown; host?: unknown } | null): boolean {
 }
 
 /**
+ * Is a run from `owner` at work in `dir` now: its lock is there, fresh, and its process is not known
+ * to be gone. Only reads; a quote asks it, so as not to be taken for a retry of a swap being sent.
+ */
+export function lockHeld(dir: string, owner: string, staleMs = 10 * 60_000): boolean {
+  if (typeof owner !== 'string' || !BASE58.test(owner)) return false;
+  const path = join(dir, `lock-${owner}`);
+  try {
+    const info = lstatSync(path);
+    if (!info.isFile()) return true;
+    if (Date.now() - info.mtimeMs >= staleMs) return false;
+    const lock = JSON.parse(readFileSync(path, 'utf8')) as { pid?: unknown; host?: unknown } | null;
+    return !holderIsGone(lock && typeof lock === 'object' ? lock : null);
+  } catch (e) {
+    // No lock, or one that went between the two reads; one that cannot be read (yet) is held.
+    return (e as NodeJS.ErrnoException).code !== 'ENOENT';
+  }
+}
+
+/**
  * One worker per wallet at a time, across processes sharing `dir`: the lock file is created only if
  * it does not exist, and names its holder (a token of its own, its process and host). A lock whose
  * process is gone from this host, or one older than `staleMs`, is left by a process that died: it is
@@ -1764,12 +1825,27 @@ export function acquireLock(dir: string, owner: string, staleMs = 10 * 60_000): 
     if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw unwritable(e);
     let judged: string | null;
     try {
-      const info = lstatSync(path);
       // Something other than a lock file under a lock's name is never taken over.
-      if (!info.isFile()) throw busy();
-      const lock = lockAt(path);
+      if (!lstatSync(path).isFile()) throw busy();
+      // Its age and its token are read from one open file: a fresh lock another worker put in its
+      // place between two reads by name would otherwise be judged by the old one's age, and taken.
+      const fd = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+      let info: ReturnType<typeof fstatSync>;
+      let lock: { token?: unknown; pid?: unknown; host?: unknown } | null = null;
+      try {
+        info = fstatSync(fd);
+        if (!info.isFile()) throw busy();
+        try {
+          const json = JSON.parse(readFileSync(fd, 'utf8')) as unknown;
+          lock = json && typeof json === 'object' ? json as { token?: unknown } : null;
+        } catch {
+          lock = null;
+        }
+      } finally {
+        closeSync(fd);
+      }
       if (Date.now() - info.mtimeMs < staleMs && !holderIsGone(lock)) throw busy();
-      judged = tokenAt(path);
+      judged = typeof lock?.token === 'string' ? lock.token : null;
     } catch (e) {
       if (e instanceof LockBusyError) throw e;
       throw busy(); // gone or unreadable in between: another worker is at it
@@ -2084,6 +2160,8 @@ const SHOWN_SHAPES: Readonly<Record<string, (v: unknown) => boolean>> = {
   tokens: v => plain(v) && exactly(v, ['input', 'output']) && Object.values(v).every(powersShape),
   // Jupiter's names for the markets the route crosses: short names, never sentences.
   route: v => Array.isArray(v) && v.length <= 8 && v.every(x => typeof x === 'string' && /^[A-Za-z0-9][A-Za-z0-9 .+()-]{0,31}$/.test(x)),
+  // The tolerance the route was built at: a whole number of bps, nothing else.
+  slippageBps: v => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 10_000,
 };
 
 /**
@@ -2490,6 +2568,10 @@ async function main() {
     console.error('usage: node swap.ts --in <mint> --out <mint> --amount <base units> --id <order id> [--slippage-bps N|auto] [--max-price-impact-bps N] [--min-out N] [--max-below-bps N] [--max-fee-bps N] [--max-route-cost-lamports N] [--accept-cost-bps N] [--owner <address> --dry-run]');
     process.exit(2);
   }
+  if (!/^\d{1,20}$/.test(amountIn) || BigInt(amountIn) === 0n) {
+    console.error(`--amount must be a whole number of base units, more than zero; got ${JSON.stringify(amountIn).slice(0, 40)}. Nothing was started.`);
+    process.exit(2);
+  }
   const apiUrl = need('ORIENTIM_API_URL').replace(/\/+$/, '');
   const apiKey = need('ORIENTIM_API_KEY');
   const intent = {
@@ -2519,6 +2601,15 @@ async function main() {
     // The same state directory as the real swap: the user's approval is kept there for it.
     const { dir: dryStateDir, warning: dryWarning } = stateDirFor(policy, flag('state') ?? (process.env.ORIENTIM_STATE_DIR || undefined));
     if (dryWarning) console.error(dryWarning);
+    // No quote while an earlier swap from this wallet may still land, or another run is sending one:
+    // a new yes then would be read as a retry of it, and become a second swap.
+    const earlier = await pendingFor(createFileStore(dryStateDir), owner);
+    if (earlier.length) throw new PendingSwapError(earlier);
+    if (lockHeld(dryStateDir, owner)) {
+      console.error(`Another swap from ${owner} is running now: wait for its answer (or run recover), then quote again. Nothing was quoted.`);
+      process.exitCode = 3;
+      return;
+    }
     // A swap the owner's policy refuses is refused here too, before anything is prepared: its mints
     // and its amount. The daily limit is counted by the swap itself, against what the day spent.
     if (policy) {
@@ -2534,6 +2625,11 @@ async function main() {
       ...(own.slippageBps !== undefined ? { slippageBps: own.slippageBps } : {}),
       ...(intent.routingMode === 'fast' ? { routingMode: 'fast' } : {}),
     }, PREPARE_WAIT_MS, { jupiterApiKey, ownRoutes: process.env.ORIENTIM_OWN_ROUTES !== '0', budget });
+    // The route's own price impact, as the real swap holds it: a quote it would refuse is not shown for a yes.
+    const routeImpact = prepared.amounts?.priceImpactPct;
+    if (typeof routeImpact === 'number' && Number.isFinite(routeImpact) && Math.round(routeImpact * 10_000) > own.maxPriceImpactBps) {
+      throw new PriceImpactError(Math.round(routeImpact * 10_000), own.maxPriceImpactBps);
+    }
     const checked: Intent = withTolerance({ ...intent, owner, minOut }, own.slippageBps);
     await holdSolFee(checked, prepared, { jupiterApiKey, budget });
     const problems = await checkPrepared(prepared, checked, rpc, { slippageCeilingBps: policy?.maxSlippageBps });
@@ -2548,9 +2644,12 @@ async function main() {
       recordApproval(dryStateDir, { owner, inputMint, outputMint, amountIn, minOut, expiresAt });
       approval = { minOut, until: new Date(expiresAt).toISOString() };
     }
+    // A transaction the check refused is not shown: only what was wrong with it, never its amounts.
     console.log(JSON.stringify({
-      yourFloor: minOut, yourQuote: own.outAmount, ...(approval ? { approval } : {}), priceImpactBps: own.priceImpactBps, slippageBps: shownData.slippageBps, amounts: shownData.amounts, costs: shownData.costs,
-      blocksLeft: shownData.blocksLeft, problems, notices: noticesOf(risk), tokenRisk: risk,
+      yourFloor: minOut, yourQuote: own.outAmount, ...(approval ? { approval } : {}), priceImpactBps: own.priceImpactBps,
+      slippageBps: own.slippageBps ?? shownData.slippageBps,
+      ...(problems.length ? {} : { amounts: shownData.amounts, costs: shownData.costs, blocksLeft: shownData.blocksLeft }),
+      problems, notices: noticesOf(risk), tokenRisk: risk,
     }, null, 2));
     process.exitCode = problems.length ? 1 : 0;
     return;
@@ -2591,7 +2690,8 @@ async function main() {
     }
     // What the user approved after the dry run, if they did: at least that minimum, until it expires.
     const approvalKey = { owner: wallet.address, inputMint, outputMint, amountIn };
-    const approved = keptApproval(stateDir, approvalKey);
+    const approvedBy = Date.now();
+    const approved = keptApproval(stateDir, approvalKey, approvedBy);
     intent.minOut = heldToApproval(approved, intent.minOut);
     const result = await protectedSwap({
       apiUrl, apiKey, rpc, wallet, intent, jupiterApiKey, orders: store, archive, ownRoutes: process.env.ORIENTIM_OWN_ROUTES !== '0',
@@ -2605,7 +2705,7 @@ async function main() {
     });
     // A swap that landed uses the approval up: another swap needs another yes. One that failed or
     // expired keeps it until it expires, so that a retry still holds to the minimum the user approved.
-    if (approved && result.outcome === 'confirmed') forgetApproval(stateDir, approvalKey);
+    if (approved && result.outcome === 'confirmed') forgetApproval(stateDir, approvalKey, approvedBy);
     console.log(JSON.stringify({
       signature: result.signature, outcome: result.outcome, refusal: result.refusal, meaning: outcomeMeaning(result.outcome, result.refusal, result.cause),
       amounts: result.prepared.amounts,

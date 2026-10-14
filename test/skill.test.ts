@@ -14,7 +14,7 @@ import {
   acquireLock, ApprovalError, approvalFor, checkPolicy, ConfigError, createFileStore, forgetApproval, heldToApproval, keptApproval, recordApproval, dataOnly, errorExitCode, errorLine, exitCodeOf, fillAgainstQuote, IntentError, isApiKeyMessage,
   loadPolicy, LockBusyError, OrientimApiError, OrientimOrderError, PendingSwapError, PolicyError, preparedData, receivedFor, recoverPending,
   releaseHeldLocks, safeCode, settleOrder, SKILL_VERSION, stateDirFor, untrustedLine,
-  policyPathFor,
+  policyPathFor, lockHeld,
 } from '../skills/orientim-protected-swap/examples/swap.ts';
 import { runCli } from '../skills/orientim-protected-swap/src/cli.ts';
 import {
@@ -59,6 +59,8 @@ describe('hard limits no intent can raise', () => {
 });
 
 describe('the API-key message is the only thing a wallet signs for a key', () => {
+  /** A moment after the message was issued: it is checked against the agent's own clock. */
+  const ISSUED = Date.parse('2026-09-21T12:27:00Z');
   const message = [
     'orientim.com wants you to sign in with your Solana account:', W, '',
     'Get an Orientim API key for this wallet, and accept the Terms of Use at https://orientim.com/terms. Signing costs nothing and gives no access to your funds.', '',
@@ -67,7 +69,7 @@ describe('the API-key message is the only thing a wallet signs for a key', () =>
   ].join('\n');
 
   it("accepts Orientim's message for this wallet and this host", () => {
-    expect(isApiKeyMessage(message, 'https://orientim.com', W)).toBe(true);
+    expect(isApiKeyMessage(message, 'https://orientim.com', W, ISSUED)).toBe(true);
   });
 
   it.each([
@@ -79,7 +81,7 @@ describe('the API-key message is the only thing a wallet signs for a key', () =>
     ['a non-printable character', `${message}\u0000`, 'https://orientim.com', W],
     ['not a string', 42, 'https://orientim.com', W],
   ])('refuses %s', (_name, text, apiUrl, wallet) => {
-    expect(isApiKeyMessage(text, apiUrl, wallet)).toBe(false);
+    expect(isApiKeyMessage(text, apiUrl, wallet, ISSUED)).toBe(false);
   });
 });
 
@@ -570,5 +572,34 @@ describe('the shipped files', () => {
       const [hash, file] = line.split(/\s+/);
       expect(createHash('sha256').update(readFileSync(join(SKILL, file))).digest('hex'), file).toBe(hash);
     }
+  });
+});
+
+describe('a yes and a lock that stay their own (14 October 2026 review)', () => {
+  it('a swap that lands uses up only the yes it was held to, never a newer one', () => {
+    const dir = tmp();
+    const key = { owner: W, inputMint: USDC, outputMint: BONK, amountIn: '1000000' };
+    const startedAt = Date.now();
+    recordApproval(dir, { ...key, minOut: '999', expiresAt: startedAt + 1_000 + 10 * 60_000 });
+    forgetApproval(dir, key, startedAt);
+    expect(approvalFor(dir, key)?.minOut).toBe('999');
+    forgetApproval(dir, key, startedAt + 2_000);
+    expect(approvalFor(dir, key)).toBeNull();
+  });
+
+  it('a lock is held while its process is at work, and free once released', () => {
+    const dir = tmp();
+    const release = acquireLock(dir, W);
+    expect(lockHeld(dir, W)).toBe(true);
+    release();
+    expect(lockHeld(dir, W)).toBe(false);
+  });
+
+  it('a system policy is one path in any letter case on Windows', () => {
+    const dir = tmp();
+    const system = join(dir, 'Policy.json');
+    writeFileSync(system, '{}');
+    expect(policyPathFor(system.toUpperCase(), system, 'win32')).toBe(system);
+    expect(() => policyPathFor(system.toUpperCase(), system, 'linux')).toThrow('not used');
   });
 });

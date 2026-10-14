@@ -72,7 +72,8 @@ the wallet for anyone else.
    (`ORIENTIM_WALLET_KEYPAIR` below).
 2. **The owner's policy, out of the agent's reach.** Written by an administrator at
    `/etc/orientim/policy.json` (`C:\ProgramData\Orientim\policy.json` on Windows), read-only to the
-   agent's user, with `maxAmountIn`, `maxAmountInPerDay`, `allowedOutputMints` and `stateDir`. When that
+   agent's user (on Linux and macOS the swap refuses a system policy, or its folder, that the agent's
+   user can write; on Windows an administrator creates `C:\ProgramData\Orientim` before anyone else), with `maxAmountIn`, `maxAmountInPerDay`, `allowedOutputMints` and `stateDir`. When that
    file exists it is the policy, whatever the environment says: an agent that unsets or changes
    `ORIENTIM_POLICY` is held to it all the same. A policy only named in `ORIENTIM_POLICY` holds against an
    agent that follows this skill, not against one that runs the command without it.
@@ -109,7 +110,7 @@ rewrites its own environment. Without 5, the daily limit holds the same way.
 The user provides these; never ask for them in chat, and never print or log them:
 
 - `ORIENTIM_API_URL`: Orientim's address, `https://orientim.com`
-- `ORIENTIM_API_KEY`: `ori_...`, sent as `Authorization: Bearer <key>`. The wallet gets one itself, at once: `requestApiKey({ apiUrl, address, signMessage })` from `examples/swap.ts`, or `orientim-verify key-challenge` then `key`; both sign only Orientim's key message for that wallet. The key works for that wallet only, for 90 days.
+- `ORIENTIM_API_KEY`: `ori_...`, sent as `Authorization: Bearer <key>`. The wallet gets one itself, at once: `requestApiKey({ apiUrl, address, signMessage })` from `examples/swap.ts`, or `orientim-verify key-challenge` then `key`; both sign only Orientim's key message for that wallet, which accepts Orientim's Terms of Use (orientim.com/terms). The key works for that wallet only, for 90 days; Orientim issues at most 5 a day to one wallet.
 - `SOLANA_RPC_URL`: the agent's **own** RPC. Never Orientim's: the verification is worth what the
   chain state it reads is worth.
 - `ORIENTIM_WALLET_KEYPAIR`: path to the wallet's keypair file. Load the key from the file in code; it
@@ -456,12 +457,19 @@ chain are the same code. Four tools:
   replaces it. After that, `orientim_recover` settles what an earlier attempt left.
   When the client can ask its user a question itself (MCP elicitation), the server asks the person
   to confirm the swap before the first try signs: the model's word that they said yes is not theirs.
+  A question left unanswered is withdrawn when the quote's 10 minutes end.
+- No quote is made while an earlier swap from the wallet may still land or is being sent (exit
+  code 3): a new yes then would read as a retry and become a second swap. A swap that finished after
+  the client stopped waiting for it is reported with the next call, as `earlierSwaps`, before
+  anything new.
 - `orientim_recover`: settles what an interrupted swap left (`orientim-verify recover`).
 
 No tool takes a key, a minimum of its own or a fee limit: those stay the owner's. The model may ask
 for a tolerance up to 300 bps (or `"auto"`) and a price-impact limit up to 500 bps; only the owner
 raises them, with `ORIENTIM_MAX_SLIPPAGE_BPS` and `ORIENTIM_MAX_PRICE_IMPACT_BPS` in the server's
-environment, since a wider tolerance lowers the least that arrives. Answers are data with every URL
+environment, since a wider tolerance lowers the least that arrives. Set lower, they bind the
+defaults too: `"auto"` is then refused, and a quote that names no tolerance is built at the default
+or the ceiling, whichever is lower. Answers are data with every URL
 cut to its host, so an RPC's key in its URL never reaches the model.
 
 It comes three ways, the same server:
@@ -478,7 +486,7 @@ It comes three ways, the same server:
     "mcpServers": {
       "orientim": {
         "command": "npx",
-        "args": ["-y", "orientim-mcp@1.12.3"],
+        "args": ["-y", "orientim-mcp@1.12.4"],
         "env": {
           "SOLANA_RPC_URL": "https://your-own-rpc.example/...",
           "ORIENTIM_WALLET_KEYPAIR": "/absolute/path/to/agent-wallet.json",
@@ -490,15 +498,18 @@ It comes three ways, the same server:
   ```
 
   Claude Code: `claude mcp add --transport stdio orientim --env SOLANA_RPC_URL=... --env
-  ORIENTIM_WALLET_KEYPAIR=... -- npx -y orientim-mcp@1.12.3`. Pin the version: the package is
+  ORIENTIM_WALLET_KEYPAIR=... -- npx -y orientim-mcp@1.12.4`. Pin the version: the package is
   published with npm's provenance from this skill's release.
 - **This folder:** `"command": "node"`, `"args": ["/absolute/path/to/orientim-protected-swap/bin/orientim-mcp.mjs"]`,
   after `npm ci` here (Node 20.18 or later).
 
 - `ORIENTIM_API_URL` defaults to `https://orientim.com`.
 - `ORIENTIM_API_KEY` is optional. Without it, the server gets the wallet's own key once (the wallet
-  signs only Orientim's key message, checked first) and keeps it in `~/.orientim/api-key.json`, readable
-  by its owner alone; a key Orientim refuses is replaced on the next call. The wallet needs 0.01 SOL for it.
+  signs only Orientim's key message, checked first) and keeps it in `~/.orientim/api-key-<id>.json`,
+  one file per wallet and Orientim address, readable by its owner alone; a key Orientim refuses is
+  replaced on the next call. The wallet needs 0.01 SOL for it. Orientim's key message accepts its
+  Terms of Use (orientim.com/terms): running the server with the wallet's own key accepts them for
+  the owner. Orientim issues at most 5 keys a day to one wallet.
 - Without `ORIENTIM_STATE_DIR` or a policy's `stateDir`, each swap's record is kept in
   `~/.orientim/.orientim-state`, the same whatever folder the client starts the server in.
 - The owner's policy holds here as it does for the command: `/etc/orientim/policy.json` when it exists,
