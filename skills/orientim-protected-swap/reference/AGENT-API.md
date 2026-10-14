@@ -70,7 +70,9 @@ POST /api/v1/keys
 ```
 
 The challenge must be signed within 10 minutes. From one IP address, Orientim answers 30 challenges and
-issues 10 keys an hour; a `429` carries `Retry-After`. While protected swaps are paused, both answer
+issues 10 keys an hour, and one wallet gets 5 keys a day: keep the key you have rather than sign for a
+new one on every start. A `429` carries `Retry-After`. A skill older than 1.12.3 is answered
+`426 skill-outdated`. While protected swaps are paused, both answer
 `503 paused` and no key is issued. **Sign only Orientim's key message for your own
 wallet**: a signature over bytes someone else chose could be a signature for a transaction. The skill's
 `requestApiKey` (and `orientim-verify key-challenge`, then `key`) checks the message before anything is
@@ -415,6 +417,7 @@ one to ask") lists what to do with each code.
 | 409 | `price-moved` | The best route that fits in one protected transaction cannot meet your `minOut`: the price moved, or the route that meets it is too big (`message` says which; a smaller amount may meet it). `newMinOut` is what the route that fits supports: with the user's approval, prepare again with it; or not. |
 | 409 | `costs-more` | The route that fits in one protected transaction is `gapBps` below the open market. With the user's approval, prepare again with `acceptCostBps` (which also takes a route up to 50 bps past it). |
 | 409 | `routes-needed` | With `ownRoutes`: fetch `requests` from Jupiter with your own key and prepare again with `session` and every route you have (see "Your own Jupiter key"). |
+| 409 | `session-used` | With `ownRoutes`: Orientim already signed another transaction with this session's one-time key, and signs one per key. Prepare again without the session; this request signed and sent nothing. |
 | 409 | `output-balance-changed` | Your balance of the output token moved since prepare, so this request signed nothing. Check `signature` as above, then prepare again. |
 | 410 | `expired` | The transaction's lifetime passed before this finalize signed it. Check `signature` as above, then prepare again. |
 | 422 | `unsupported-token`, `no-route`, `bad-quote`, `insufficient-sol`, `insufficient-balance`, `simulation-failed`, `verification-failed`, `token-data-mismatch`, `output-account-restricted`, `input-account-restricted` | This swap cannot be built safely right now; `message` says why. |
@@ -433,7 +436,8 @@ The key endpoints answer, besides `400 bad-request`:
 | --- | --- | --- |
 | 400 | `bad-signature` | The signature does not match the message, or the challenge expired, was not Orientim's, or names another site. Ask for a new challenge. |
 | 403 | `wallet-empty` | The wallet holds less than the amount `message` names (0.01 SOL by default). Fund it, then ask again. |
-| 429 | `rate-limited` | Too many challenges or keys from this address. Wait `Retry-After` seconds. |
+| 426 | `skill-outdated` | This copy of the skill is older than the key message needs (`minimum`). Update it; `message` says how for npx, the .mcpb and the skill folder. |
+| 429 | `rate-limited` | Too many challenges or keys from this address, or keys for this wallet today. Wait `Retry-After` seconds. |
 | 503 | `unavailable` | The wallet's balance could not be read. Wait `Retry-After` seconds and retry. |
 
 ## Direct API integration contract
