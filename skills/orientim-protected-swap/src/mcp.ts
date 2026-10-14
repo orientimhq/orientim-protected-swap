@@ -15,7 +15,7 @@
  * the wallet's address and what the swaps did, never the key.
  */
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
@@ -23,7 +23,7 @@ import { createInterface } from 'node:readline';
 import { address, createKeyPairSignerFromBytes, createSolanaRpc, isAddress, signBytes, type KeyPairSigner } from '@solana/kit';
 
 /** The skill's version (package.json); a test holds them equal. */
-export const SERVER_VERSION = '1.12.3';
+export const SERVER_VERSION = '1.12.4';
 
 /** The MCP versions this server speaks, newest first. A client asking for another gets the newest. */
 export const PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'] as const;
@@ -42,6 +42,8 @@ const QUOTE_KEPT_MS = 24 * 60 * 60_000;
  * raises them (ORIENTIM_MAX_SLIPPAGE_BPS, ORIENTIM_MAX_PRICE_IMPACT_BPS), never a tool call.
  */
 export const MODEL_CEILINGS = { slippageBps: 300, priceImpactBps: 500 } as const;
+/** The tolerance a route is built at when none is chosen, off a Pump.fun curve (the skill's own default). */
+const DEFAULT_SLIPPAGE_BPS = 50;
 
 const INSTRUCTIONS = [
   'Protected swaps on Solana through Orientim: the swap program can only touch the approved amount, and the transaction is verified on the owner\'s own RPC before the wallet signs.',
@@ -163,14 +165,34 @@ export function fromBaseUnits(units: string | bigint, decimals: number): string 
 const wholeOf = (units: unknown, decimals: number | undefined) =>
   decimals !== undefined && typeof units === 'string' && /^\d{1,30}$/.test(units) ? fromBaseUnits(units, decimals) : undefined;
 
-/** Every URL cut to its host: an RPC URL may carry its provider's key in its path or query, or a password before its host. */
-export const withoutSecrets = (text: string) => text.replace(/\b(https?|wss?):\/\/(?:[^\s/'"?#@]*@)?([^\s/'"?#@]+)[^\s'"]*/g, '$1://$2/…');
+/** The owner's secrets as configured (RPC URLs, API keys): never repeated, whatever text they turn up in. */
+const knownSecrets = new Set<string>();
+export function hideSecrets(env: Env): void {
+  for (const name of ['SOLANA_RPC_URL', 'ORIENTIM_ARCHIVE_RPC_URL', 'ORIENTIM_SEND_RPC_URL', 'ORIENTIM_API_KEY', 'JUPITER_API_KEY']) {
+    const value = env[name]?.trim();
+    if (value && value.length >= 8) knownSecrets.add(value);
+  }
+}
+
+/**
+ * Every URL cut to its host: an RPC URL may carry its provider's key in its path or query, or a
+ * password before its host (one with an @ in it too), in any letter case. A key named in a query
+ * (api-key=, token=) is cut wherever it appears, a URL written without its scheme included.
+ */
+export const withoutSecrets = (text: string) => {
+  let out = text;
+  for (const secret of knownSecrets) out = out.split(secret).join('…');
+  return out
+    .replace(/\b(https?|wss?):\/\/(?:[^\s/'"?#]*@)?([^\s/'"?#@]+)[^\s'"]*/gi, '$1://$2/…')
+    .replace(/\b((?:api[-_]?key|apikey|access[-_]?token|token|secret|password|auth)=)[^\s&'"]+/gi, '$1…');
+};
 
 const messageOf = (e: unknown) => withoutSecrets(e instanceof Error ? e.message : String(e)).slice(0, 600);
 
 /** The command's stderr as lines for the model: its own words, URLs cut to the host, the last few. */
 function logOf(stderr: string): string[] {
-  return stderr.split('\n').map(l => l.trim()).filter(l => l && !/ExperimentalWarning|--trace-warnings/.test(l))
+  // The relative-state-directory warning does not apply here: the commands always run in ~/.orientim.
+  return stderr.split('\n').map(l => l.trim()).filter(l => l && !/ExperimentalWarning|--trace-warnings|^The state directory is /.test(l))
     .slice(-12).map(l => withoutSecrets(l).slice(0, 600));
 }
 
@@ -236,8 +258,11 @@ type Answer = Record<string, unknown> & { ok: boolean };
 type Context = {
   progress: (message: string) => void;
   signal: AbortSignal;
-  /** Asks the person through the client (MCP elicitation); undefined when the client cannot. */
-  ask?: (message: string) => Promise<'accept' | 'decline' | 'cancel'>;
+  /**
+   * Asks the person through the client (MCP elicitation) until `deadline` (ms); undefined when the
+   * client cannot. `unavailable`: the client answered the question with an error, so it cannot ask.
+   */
+  ask?: (message: string, deadline: number) => Promise<'accept' | 'decline' | 'cancel' | 'timeout' | 'unavailable'>;
 };
 
 const mintOf = (v: unknown, name: string) => {
@@ -259,6 +284,21 @@ export function createServer(deps: McpDeps) {
   const running = new Map<string | number, AbortController>();
   /** Calls the client cancelled while they ran: they get no answer. */
   const cancelled = new Set<string | number>();
+  /**
+   * Swaps that finished after the client stopped waiting (its timeout, say): their answer never
+   * reached the model, which may take the swap for one that did not happen. Given with the next
+   * quote or swap instead, before anything new.
+   */
+  const undelivered: Answer[] = [];
+  const earlierAnswers = (): Answer | undefined => {
+    if (!undelivered.length) return undefined;
+    const earlier = undelivered.splice(0);
+    return {
+      ok: false, earlierSwaps: earlier,
+      error: { code: 'earlier-swap', line: 'earlier-swap: a swap finished after the client stopped waiting for it, and its answer is in earlierSwaps. Nothing new was started.' },
+      meaning: 'Tell the user what the earlier swap did (earlierSwaps: confirmed means it landed) before anything else. Only if they still want another swap after that, quote again and ask them again.',
+    };
+  };
   let protocolVersion: string = PROTOCOL_VERSIONS[0];
   /** The client said at initialize that it can ask its user a question (elicitation). */
   let canAsk = false;
@@ -289,6 +329,8 @@ export function createServer(deps: McpDeps) {
   }
 
   async function quote(args: Record<string, unknown>, context: Context): Promise<Answer> {
+    const earlier = earlierAnswers();
+    if (earlier) return earlier;
     const inputMint = mintOf(args.inputMint, 'inputMint');
     const outputMint = mintOf(args.outputMint, 'outputMint');
     if (inputMint === outputMint) throw new InputError('inputMint and outputMint are the same token.');
@@ -309,6 +351,18 @@ export function createServer(deps: McpDeps) {
         throw new InputError(`maxPriceImpactBps ${p} is above the ${maxPriceImpactBps} bps the owner allows: only the owner raises it (ORIENTIM_MAX_PRICE_IMPACT_BPS).`);
       }
       flags.push('--max-price-impact-bps', String(p));
+    }
+    // An owner's ceiling binds what the model leaves unsaid too: "auto" may reach 300 bps and the
+    // defaults reach 300 bps (a Pump.fun curve) and 500 bps of impact, so below those the ceiling is
+    // asked for in so many words.
+    if (args.slippageBps === 'auto' && maxSlippageBps < MODEL_CEILINGS.slippageBps) {
+      throw new InputError(`slippageBps "auto" may reach ${MODEL_CEILINGS.slippageBps} bps, above the ${maxSlippageBps} bps the owner allows: give a number of bps, ${maxSlippageBps} or less.`);
+    }
+    if (args.slippageBps === undefined && maxSlippageBps < MODEL_CEILINGS.slippageBps) {
+      flags.push('--slippage-bps', String(Math.min(DEFAULT_SLIPPAGE_BPS, maxSlippageBps)));
+    }
+    if (args.maxPriceImpactBps === undefined && maxPriceImpactBps < MODEL_CEILINGS.priceImpactBps) {
+      flags.push('--max-price-impact-bps', String(maxPriceImpactBps));
     }
     if (args.acceptCostBps !== undefined) {
       const c = args.acceptCostBps;
@@ -346,7 +400,7 @@ export function createServer(deps: McpDeps) {
     const costs = record(answer?.costs);
     const feeMint = typeof amounts.feeMint === 'string' ? amounts.feeMint : inputMint;
     const feeDecimals = feeMint === inputMint ? inputDecimals : feeMint === outputMint ? outputDecimals : KNOWN_DECIMALS[feeMint];
-    const summary = answer ? {
+    const summary = ok && answer ? {
       pay: { amount: wholeOf(amounts.amountIn, inputDecimals), mint: inputMint },
       receiveAtLeast: { amount: wholeOf(approval.minOut ?? answer.yourFloor, outputDecimals), mint: outputMint },
       // The agent's own price from Jupiter, never Orientim's word: it is what wins the user's yes.
@@ -377,6 +431,18 @@ export function createServer(deps: McpDeps) {
     const q = quotes.get(quoteId);
     if (!q) throw new InputError('No quote with this id here: a newer quote of the same swap replaced it, or the server restarted. Run orientim_quote again, show the user, and swap after their yes.');
     if (swapping.has(quoteId)) throw new InputError('This swap is already running: wait for its answer, then act on it.');
+    const earlier = earlierAnswers();
+    if (earlier) return earlier;
+    // Marked before anything is awaited: a second call for the same quote meanwhile is told it runs.
+    swapping.add(quoteId);
+    try {
+      return await swapQuoted(quoteId, q, context);
+    } finally {
+      swapping.delete(quoteId);
+    }
+  }
+
+  async function swapQuoted(quoteId: string, q: Quote, context: Context): Promise<Answer> {
     // A quote is swapped only while the user's yes holds, tried before or not: past it, a retry would
     // build a new transaction at a later market under a yes that no longer stands. What an earlier
     // attempt left is settled by orientim_recover.
@@ -387,37 +453,28 @@ export function createServer(deps: McpDeps) {
     }
     const owner = await deps.wallet();
     if (owner !== q.wallet) throw new InputError('The wallet changed since this quote: quote again and ask the user again.');
-    // The model's word that the user said yes is not the user's: a client that can ask them, does.
+    // The model's word that the user said yes is not the user's: a client that can ask them, does,
+    // until the quote's 10 minutes run out.
     if (!q.tried && context.ask && q.question) {
-      swapping.add(quoteId);
-      let said: 'accept' | 'decline' | 'cancel';
-      try {
-        said = await context.ask(q.question);
-      } finally {
-        swapping.delete(quoteId);
-      }
-      if (said !== 'accept') throw new InputError('The user did not confirm this swap: nothing was signed. Ask them what they want before quoting again.');
+      const said = await context.ask(q.question, q.until);
+      if (said === 'timeout') throw new InputError('The user did not answer the confirmation before this quote\'s 10 minutes ran out: nothing was signed. Quote again if they still want the swap.');
+      if (said !== 'accept' && said !== 'unavailable') throw new InputError('The user did not confirm this swap: nothing was signed. Ask them what they want before quoting again.');
       if (now() > q.until) throw new InputError('The user\'s yes to this quote held 10 minutes and has expired: run orientim_quote again, show the user, and swap after their new yes.');
     }
-    swapping.add(quoteId);
     q.tried = true;
-    let run: Run;
-    try {
-      context.progress('Verifying the swap on your RPC, then signing and waiting for the chain');
-      // The order's id is the quote's: every retry of this quote is the same order, and lands once.
-      // Not stopped when the client gives up: what it signed is kept, and settled on the chain.
-      run = await deps.run('swap', ['--in', q.inputMint, '--out', q.outputMint, '--amount', q.amountIn, '--id', `mcp-${quoteId}`, ...q.flags], {
-        onLine: line => context.progress(withoutSecrets(line).slice(0, 200)),
-      });
-    } finally {
-      swapping.delete(quoteId);
-    }
+    context.progress('Verifying the swap on your RPC, then signing and waiting for the chain');
+    // The order's id is the quote's: every retry of this quote is the same order, and lands once.
+    // Not stopped when the client gives up: what it signed is kept, and settled on the chain.
+    const run = await deps.run('swap', ['--in', q.inputMint, '--out', q.outputMint, '--amount', q.amountIn, '--id', `mcp-${quoteId}`, ...q.flags], {
+      onLine: line => context.progress(withoutSecrets(line).slice(0, 200)),
+    });
     const answer = jsonOf(run.stdout);
     const signature = typeof answer?.signature === 'string' && /^[1-9A-HJ-NP-Za-km-z]{64,88}$/.test(answer.signature) ? answer.signature : undefined;
     const received = wholeOf(answer?.received, q.outputDecimals);
     const error = run.code === 0 ? undefined : errorOf(run.stderr);
     return {
       ok: run.code === 0,
+      quoteId,
       ...(answer?.outcome ? { outcome: answer.outcome } : {}),
       ...(signature ? { signature, explorer: `https://solscan.io/tx/${signature}` } : {}),
       ...(received !== undefined ? { received: { amount: received, mint: q.outputMint } } : {}),
@@ -470,16 +527,32 @@ export function createServer(deps: McpDeps) {
     // taking the wait for silence.
     const heartbeat = setInterval(() => progress('Still working'), 15_000);
     try {
-      const ask = canAsk ? (message: string) => new Promise<'accept' | 'decline' | 'cancel'>(resolve => {
+      const ask = canAsk ? (message: string, deadline: number) => new Promise<'accept' | 'decline' | 'cancel' | 'timeout' | 'unavailable'>(resolve => {
         const askId = `orientim-ask-${++askIds}`;
+        // Unanswered by the deadline, the question is withdrawn: a client that never answers does not
+        // hold the swap, or this server, forever.
+        const timer = setTimeout(() => {
+          asking.delete(askId);
+          send({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: askId, reason: 'The quote expired.' } });
+          resolve('timeout');
+        }, Math.max(0, deadline - now()));
+        timer.unref?.();
         const settle = (a: Record<string, unknown>) => {
+          clearTimeout(timer);
+          // An error is the client saying it cannot ask (no form mode, say): from then on it is not
+          // asked, as a client without elicitation is not, and the yes is the model's word.
+          if ('error' in a) {
+            canAsk = false;
+            resolve('unavailable');
+            return;
+          }
           const content = record(record(a.result).content);
           const action = record(a.result).action;
-          // Only an explicit accept with the box ticked is a yes; anything else, an error included, is not.
+          // Only an explicit accept with the box ticked is a yes; anything else is not.
           resolve(action === 'accept' && content.confirm === true ? 'accept' : action === 'decline' ? 'decline' : 'cancel');
         };
         asking.set(askId, settle);
-        abort.signal.addEventListener('abort', () => { asking.delete(askId); resolve('cancel'); }, { once: true });
+        abort.signal.addEventListener('abort', () => { clearTimeout(timer); asking.delete(askId); resolve('cancel'); }, { once: true });
         send({
           jsonrpc: '2.0', id: askId, method: 'elicitation/create',
           params: {
@@ -489,6 +562,10 @@ export function createServer(deps: McpDeps) {
         });
       }) : undefined;
       const answer = await handlers[name](record(params.arguments), { progress, signal: abort.signal, ...(ask ? { ask } : {}) });
+      if (name === 'orientim_swap' && cancelled.has(id) && answer.ok !== undefined && 'exitCode' in answer) {
+        const kept = ['quoteId', 'outcome', 'signature', 'explorer', 'received', 'exitCode', 'meaning', 'error'];
+        undelivered.push({ ok: answer.ok, ...Object.fromEntries(kept.filter(k => Object.hasOwn(answer, k)).map(k => [k, answer[k]])) });
+      }
       return { result: toolResult(answer) };
     } catch (e) {
       const known = e instanceof InputError;
@@ -532,7 +609,12 @@ export function createServer(deps: McpDeps) {
       case 'initialize': {
         const asked = params.protocolVersion;
         protocolVersion = typeof asked === 'string' && (PROTOCOL_VERSIONS as readonly string[]).includes(asked) ? asked : PROTOCOL_VERSIONS[0];
-        canAsk = protocolVersion >= '2025-06-18' && !!record(params.capabilities).elicitation && typeof record(params.capabilities).elicitation === 'object';
+        // From 2025-11-25 a client names the modes it can ask in: this server asks with a form, so
+        // only a client that can show one (`form`, or no mode named, which means form) is asked.
+        const elicitation = record(params.capabilities).elicitation;
+        const modes = elicitation && typeof elicitation === 'object' && !Array.isArray(elicitation) ? Object.keys(elicitation) : null;
+        canAsk = protocolVersion >= '2025-06-18' && modes !== null
+          && (protocolVersion < '2025-11-25' || modes.length === 0 || modes.includes('form'));
         return reply({
           result: {
             protocolVersion,
@@ -578,6 +660,13 @@ export function createServer(deps: McpDeps) {
     },
     /** Calls still running, for a clean exit once the client is gone. */
     busy: () => running.size > 0,
+    /** The client is gone: no question to it can be answered any more, so none holds a call open. */
+    clientGone(): void {
+      for (const [askId, settle] of [...asking]) {
+        asking.delete(askId);
+        settle({ result: { action: 'cancel' } });
+      }
+    },
   };
 }
 
@@ -693,20 +782,37 @@ const walletAddress = async () => (await walletSigner()).address;
 /**
  * The wallet's own API key, when the owner set no ORIENTIM_API_KEY: asked of Orientim once, with the
  * wallet signing only Orientim's key message for it (checked by `orientim-verify key-challenge`), and
- * kept in ~/.orientim/api-key.json, the owner's alone, until a day before it expires.
+ * kept in ~/.orientim, the owner's alone, until a day before it expires. One file per wallet and
+ * Orientim address: two servers of one user with two wallets (Claude Desktop and Cursor, say) each
+ * keep their own, instead of asking for a new key on every call by turns.
  */
 let issuing: Promise<string> | undefined;
-const keyFile = () => join(workFolder(), 'api-key.json');
+const keyFile = (wallet: string, apiUrl = commandEnv().ORIENTIM_API_URL ?? '') =>
+  join(workFolder(), `api-key-${createHash('sha256').update(`${wallet}\n${apiUrl}`).digest('hex').slice(0, 16)}.json`);
+/** Where 1.12.3 and earlier kept the one key: still read, for the wallet and address it names. */
+const sharedKeyFile = () => join(workFolder(), 'api-key.json');
 
 function keptKey(wallet: string): string | undefined {
-  try {
-    const kept = record(JSON.parse(readFileSync(keyFile(), 'utf8')));
-    const until = Date.parse(String(kept.expiresAt));
-    if (kept.wallet === wallet && kept.apiUrl === commandEnv().ORIENTIM_API_URL && typeof kept.key === 'string' && until - Date.now() > 24 * 60 * 60_000) return kept.key;
-  } catch {
-    // none kept yet
+  for (const file of [keyFile(wallet), sharedKeyFile()]) {
+    try {
+      const kept = record(JSON.parse(readFileSync(file, 'utf8')));
+      const until = Date.parse(String(kept.expiresAt));
+      if (kept.wallet === wallet && kept.apiUrl === commandEnv().ORIENTIM_API_URL && typeof kept.key === 'string' && until - Date.now() > 24 * 60 * 60_000) return kept.key;
+    } catch {
+      // none kept there
+    }
   }
   return undefined;
+}
+
+/** Forgets the key kept for this wallet, wherever it is kept. */
+function forgetKey(wallet: string): void {
+  rmSync(keyFile(wallet), { force: true });
+  try {
+    if (record(JSON.parse(readFileSync(sharedKeyFile(), 'utf8'))).wallet === wallet) rmSync(sharedKeyFile(), { force: true });
+  } catch {
+    // none kept there
+  }
 }
 
 async function issueKey(signer: KeyPairSigner): Promise<string> {
@@ -726,33 +832,34 @@ async function issueKey(signer: KeyPairSigner): Promise<string> {
   }));
   if (issued instanceof Error) throw issued;
   if (typeof issued.key !== 'string' || issued.wallet !== signer.address) throw new Error('api-key: Orientim issued no key for this wallet.');
-  const file = keyFile();
+  const file = keyFile(signer.address);
   writeFileSync(file, `${JSON.stringify({ wallet: signer.address, apiUrl: commandEnv().ORIENTIM_API_URL, key: issued.key, expiresAt: issued.expiresAt })}\n`, { mode: 0o600 });
   chmodSync(file, 0o600);
   return issued.key;
 }
 
-async function walletKey(): Promise<string> {
+async function walletKey(): Promise<{ key: string; wallet: string }> {
   const signer = await walletSigner();
   const kept = keptKey(signer.address);
-  if (kept) return kept;
+  if (kept) return { key: kept, wallet: signer.address };
   issuing ??= issueKey(signer).finally(() => { issuing = undefined; });
-  return issuing;
+  return { key: await issuing, wallet: signer.address };
 }
 
 /** The example's command line with the wallet's API key: the owner's, or the one this server keeps. */
 async function runWithKey(command: 'swap' | 'verify', args: string[], options: RunOptions): Promise<Run> {
   if (command !== 'swap' || process.env.ORIENTIM_API_KEY) return runCommand(command, args, options);
   let key: string;
+  let wallet: string;
   try {
-    key = await walletKey();
+    ({ key, wallet } = await walletKey());
   } catch (e) {
     // Not a swap: nothing was prepared. The words name what to fix (fund the wallet, say).
     return { code: /^Set |keypair file/.test(messageOf(e)) ? 2 : 1, stdout: '', stderr: messageOf(e) };
   }
   const run = await runCommand(command, args, options, { ORIENTIM_API_KEY: key });
   // A key Orientim no longer takes is forgotten: the next call asks for a new one.
-  if (/^(unauthorized|wrong-wallet): /m.test(run.stderr)) rmSync(keyFile(), { force: true });
+  if (/^(unauthorized|wrong-wallet): /m.test(run.stderr)) forgetKey(wallet);
   return run;
 }
 
@@ -808,8 +915,9 @@ export function ownerCeilings(env: Env): { slippageBps?: number; priceImpactBps?
   const read = (name: string, min: number, max: number) => {
     const v = env[name];
     if (v === undefined) return undefined;
-    if (!/^\d{1,5}$/.test(v.trim()) || Number(v) < min || Number(v) > max) throw new Error(`${name} must be a whole number of bps from ${min} to ${max}; it is ${JSON.stringify(v).slice(0, 20)}.`);
-    return Number(v);
+    // A whole number, as a client's number field may write it ("300" or "300.0").
+    if (!/^\d{1,5}(\.0+)?$/.test(v.trim()) || Number(v) < min || Number(v) > max) throw new Error(`${name} must be a whole number of bps from ${min} to ${max}; it is ${JSON.stringify(v).slice(0, 20)}.`);
+    return Math.trunc(Number(v));
   };
   const slippageBps = read('ORIENTIM_MAX_SLIPPAGE_BPS', 10, 1500);
   const priceImpactBps = read('ORIENTIM_MAX_PRICE_IMPACT_BPS', 0, 2000);
@@ -837,6 +945,7 @@ export async function main(file: string): Promise<void> {
   self = file;
   const set = withoutBlanks(process.env);
   for (const name of Object.keys(process.env)) if (!(name in set)) delete process.env[name];
+  hideSecrets(process.env);
   const server = createServer({ run: runWithKey, wallet: walletAddress, decimals: mintDecimals, balances: walletBalances, ceilings: ownerCeilings(process.env) });
   process.stdout.on('error', () => {});
   const send = (m: unknown) => {
@@ -850,6 +959,7 @@ export async function main(file: string): Promise<void> {
   });
   // The client is gone: a swap still at work finishes and keeps its record, then the server exits.
   lines.on('close', () => {
+    server.clientGone();
     void Promise.allSettled([...inFlight]).then(() => process.exit(0));
   });
   process.stderr.write(`orientim-mcp ${SERVER_VERSION}: ready on stdio\n`);

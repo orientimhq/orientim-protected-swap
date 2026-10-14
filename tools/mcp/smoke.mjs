@@ -8,7 +8,7 @@
 // as not set. Nothing reaches the network.
 import { spawn, spawnSync } from 'node:child_process';
 import { generateKeyPairSync, verify } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -89,7 +89,7 @@ const orientim = createServer((req, res) => {
   if (url.pathname === '/api/v1/keys/challenge') {
     const host = req.headers.host;
     return send(200, {
-      message: `${host} wants you to sign in with your Solana account:\n${url.searchParams.get('wallet')}\n\nGet an Orientim API key for this wallet, and accept the Terms of Use at https://orientim.com/terms. Signing costs nothing and gives no access to your funds.\n\nURI: http://${host}\nNonce: n1`,
+      message: `${host} wants you to sign in with your Solana account:\n${url.searchParams.get('wallet')}\n\nGet an Orientim API key for this wallet, and accept the Terms of Use at https://orientim.com/terms. Signing costs nothing and gives no access to your funds.\n\nURI: http://${host}/developers#access\nVersion: 1\nChain ID: mainnet\nNonce: n1nonce\nIssued At: ${new Date().toISOString()}\nExpiration Time: ${new Date(Date.now() + 10 * 60_000).toISOString()}`,
       challenge: 'c1',
     });
   }
@@ -117,7 +117,8 @@ check(signed, 'the wallet signed Orientim\'s key message, exactly as it came');
 check(answer?.wallet === address, 'the wallet\'s address, read from its keypair file');
 check(answer?.exitCode === 2 && /SOLANA_RPC_URL/.test(answer?.error?.line ?? ''), 'a placeholder RPC is not set: the dry run asks for the owner\'s');
 check(!JSON.stringify(first).includes('ori_smoke_secret'), 'the key never reaches the answer');
-const keyFile = join(home, '.orientim', 'api-key.json');
+const keyFiles = existsSync(join(home, '.orientim')) ? readdirSync(join(home, '.orientim')).filter(f => /^api-key-[0-9a-f]{16}\.json$/.test(f)) : [];
+const keyFile = join(home, '.orientim', keyFiles[0] ?? 'api-key-none.json');
 check(existsSync(keyFile) && JSON.parse(readFileSync(keyFile, 'utf8')).wallet === address, 'the key is kept in ~/.orientim');
 if (process.platform !== 'win32') check((statSync(keyFile).mode & 0o777) === 0o600, 'the key file is its owner\'s alone');
 await serve([quote(2)], keyEnv);

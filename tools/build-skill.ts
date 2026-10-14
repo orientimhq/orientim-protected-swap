@@ -137,7 +137,7 @@ const mcpbManifest = () => json({
   display_name: 'Orientim protected swap',
   version: skillPackage().version,
   description: MCP_DESCRIPTION,
-  long_description: 'Swap Solana tokens from a wallet of your own through Orientim. The swap\'s route only ever holds the amount you approve, under a one-time key; the transaction is checked on your own RPC before your wallet signs, and less than your minimum reverts the whole swap. Claude quotes first, shows you what leaves the wallet and the least that arrives, and swaps only after your yes. Your key never reaches the model.',
+  long_description: 'Swap Solana tokens from a wallet of your own through Orientim. The swap\'s route only ever holds the amount you approve, under a one-time key; the transaction is checked on your own RPC before your wallet signs, and less than your minimum reverts the whole swap. Claude quotes first, shows you what leaves the wallet and the least that arrives, and swaps only after your yes. Your key never reaches the model. The wallet\'s API key is signed for under Orientim\'s Terms of Use (orientim.com/terms), which using it accepts.',
   author: { name: 'Orientim', url: 'https://orientim.com' },
   homepage: 'https://orientim.com/developers#mcp',
   documentation: `${REPOSITORY}/blob/main/skills/orientim-protected-swap/SKILL.md#mcp-server`,
@@ -159,6 +159,8 @@ const mcpbManifest = () => json({
         JUPITER_API_KEY: '${user_config.jupiter_api_key}',
         ORIENTIM_API_KEY: '${user_config.orientim_api_key}',
         ORIENTIM_POLICY: '${user_config.policy}',
+        ORIENTIM_MAX_SLIPPAGE_BPS: '${user_config.max_slippage_bps}',
+        ORIENTIM_MAX_PRICE_IMPACT_BPS: '${user_config.max_price_impact_bps}',
       },
     },
   },
@@ -183,11 +185,19 @@ const mcpbManifest = () => json({
     },
     orientim_api_key: {
       type: 'string', title: 'Orientim API key (optional)', sensitive: true, required: false,
-      description: 'Leave empty: the wallet gets its own key (it needs 0.01 SOL).',
+      description: 'Leave empty: the wallet gets its own key (it needs 0.01 SOL). Its key message accepts Orientim\'s Terms of Use (orientim.com/terms).',
     },
     policy: {
       type: 'file', title: 'Your limits (optional)', required: false,
-      description: 'A policy file with the most each swap and each day may spend (see the skill\'s SKILL.md). /etc/orientim/policy.json or C:\\ProgramData\\Orientim\\policy.json wins when it exists.',
+      description: 'A policy file with the most each swap and each day may spend (see the skill\'s SKILL.md). Leave empty when /etc/orientim/policy.json or C:\\ProgramData\\Orientim\\policy.json exists: that file is then the only policy, and naming another one stops every swap.',
+    },
+    max_slippage_bps: {
+      type: 'number', title: 'Most tolerance Claude may ask for, in bps (optional)', required: false, min: 10, max: 1500,
+      description: 'Default 300 (3%). Lower it to hold every quote closer to the market; "auto" is then refused.',
+    },
+    max_price_impact_bps: {
+      type: 'number', title: 'Most price impact, in bps (optional)', required: false, min: 0, max: 2000,
+      description: 'Default 500 (5%).',
     },
   },
   compatibility: {

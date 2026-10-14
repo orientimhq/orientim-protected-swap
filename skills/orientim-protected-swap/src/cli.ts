@@ -131,9 +131,11 @@ const spendsOf = (store: Partial<SpendLog>): SpendLog | undefined =>
   store.spentSince && store.recordSpend ? store as SpendLog : undefined;
 const isIntent = (v: unknown): v is Intent => {
   const i = v as Partial<Intent> | null;
-  return !!i && [i.owner, i.inputMint, i.outputMint, i.amountIn].every(x => typeof x === 'string' && x.length > 0);
+  return !!i && [i.owner, i.inputMint, i.outputMint, i.amountIn].every(x => typeof x === 'string' && x.length > 0)
+    // Base units, in digits, more than zero: "-5" or "0x10" is refused here, before anything is asked.
+    && /^\d{1,20}$/.test(i.amountIn!) && BigInt(i.amountIn!) > 0n;
 };
-const INTENT_SHAPE = '{"owner", "inputMint", "outputMint", "amountIn"} (strings)';
+const INTENT_SHAPE = '{"owner", "inputMint", "outputMint", "amountIn"} (strings; amountIn in base units, digits only)';
 /** Which dry-run approval holds for an intent: the same wallet, mints and amount. */
 const approvalKeyOf = (i: Pick<Intent, 'owner' | 'inputMint' | 'outputMint' | 'amountIn'>) =>
   ({ owner: i.owner, inputMint: i.inputMint, outputMint: i.outputMint, amountIn: i.amountIn });
@@ -448,6 +450,8 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
   }
 
   if (command === 'finalize') {
+    // An approval recorded after this moment is a newer yes than the one this swap was held to.
+    const finalizeStarted = Date.now();
     const checked = body.checked as Checked | undefined;
     const { signature, signedTransaction } = body as { signature?: unknown; signedTransaction?: unknown };
     if (!checked?.prepared || !isIntent(checked.intent) || (typeof signature !== 'string' && typeof signedTransaction !== 'string')) {
@@ -473,7 +477,7 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
         if (orderId) await settleOrder(store, orderId, { signature: result.signature, state: (result.outcome === 'unknown' ? 'pending' : result.outcome) as OrderRecord['state'] });
         if (result.outcome !== 'unknown') await store.remove(result.signature);
         // A swap that landed uses the user's approval up; one that failed or expired keeps it until it expires.
-        if (result.outcome === 'confirmed') forgetApproval(deps.stateDir, approvalKeyOf({ ...intent, owner: prepared.wallet }));
+        if (result.outcome === 'confirmed') forgetApproval(deps.stateDir, approvalKeyOf({ ...intent, owner: prepared.wallet }), finalizeStarted);
       } catch (e) {
         bookkeepingError = messageOf(e);
       }
@@ -616,6 +620,13 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
           try {
             const orderId = intent.id;
             await store.put({ ...s, ...(orderId ? { intentId: orderId } : {}) });
+            // Read again once kept, as the example does: a run that kept its swap at the same moment
+            // is seen now, and both stand down rather than both send.
+            const raced = await pendingFor(store, prepared.wallet, s.signature);
+            if (raced.length) {
+              await store.remove(s.signature);
+              throw new PendingSwapError(raced);
+            }
             if (orderId) {
               const record: OrderRecord = { signature: s.signature, state: 'pending' };
               const prior = await store.order(orderId);
@@ -715,7 +726,8 @@ export async function main(): Promise<void> {
   let input: unknown = {};
   if (command !== 'recover') {
     try {
-      input = JSON.parse(await readStdin());
+      // A byte-order mark is not JSON: C# and PowerShell 5.1 write one before UTF-8 text.
+      input = JSON.parse((await readStdin()).replace(/^\uFEFF/, ''));
     } catch {
       return print(usage('The input on stdin is not JSON.'));
     }

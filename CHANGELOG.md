@@ -3,6 +3,31 @@
 Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
 is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
 
+## 1.12.4 (unreleased)
+
+Fixes from the 14 October 2026 review.
+
+- One request, one swap: no quote is made while an earlier swap from the wallet may still land or is
+  being sent (exit 3), and the MCP server gives a swap's answer the client stopped waiting for with
+  the next call (`earlierSwaps`), before anything new. A second call for the same quote is told it
+  runs from the first moment.
+- A swap that lands uses up only the approval it was held to, never a newer yes for the same swap.
+- A stale lock is judged by the lock it reads, so two runs can no longer hold one wallet's lock;
+  `orientim-verify finalize` reads the kept swaps again after keeping its own.
+- The MCP server keeps one API key per wallet and Orientim address (`~/.orientim/api-key-<id>.json`):
+  two wallets on one machine no longer ask for a new key on every call.
+- The confirmation question is withdrawn when the quote's 10 minutes end or the client goes away; a
+  2025-11-25 client that cannot show a form is not asked.
+- An owner's lower `ORIENTIM_MAX_SLIPPAGE_BPS` / `ORIENTIM_MAX_PRICE_IMPACT_BPS` bind `"auto"` and the
+  defaults; the `.mcpb` has fields for them.
+- The model sees the agent's own tolerance, none of a refused transaction's amounts, and no RPC or
+  API key in any URL spelling.
+- The key message is checked field by field; `skill-outdated` says how to update an MCP client too;
+  the dry run applies the route's price-impact limit as the swap does.
+- `orientim-verify` reads JSON with a byte-order mark and refuses an `amountIn` that is not digits.
+- A system policy is one path in any letter case on Windows; on Linux and macOS one the agent's user
+  can write is refused.
+
 ## 1.12.3 (2026-10-13)
 
 Fixes from the October 2026 security review.

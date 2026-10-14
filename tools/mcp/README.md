@@ -29,7 +29,8 @@ Four tools: `orientim_wallet` (balances on your RPC), `orientim_quote` (prices a
 whole tokens; nothing is signed), `orientim_swap` (the quote the user said yes to, and only that, within
 10 minutes) and `orientim_recover` (settles an interrupted swap). No tool takes a key, a minimum or a fee
 limit. Without `ORIENTIM_API_KEY`, the server gets the wallet's own key and keeps it in
-`~/.orientim/api-key.json`; the wallet needs 0.01 SOL for it. The owner's limits
+`~/.orientim`, one file per wallet; the wallet needs 0.01 SOL for it, and its key message accepts
+Orientim's Terms of Use (orientim.com/terms). The owner's limits
 (`/etc/orientim/policy.json`, or `ORIENTIM_POLICY`) hold here too.
 
 Give the server a wallet of its own, holding only what it may swap. In a client where the agent also
