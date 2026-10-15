@@ -3,7 +3,7 @@
 Versions of `@orientimhq/swap` (`package.json`); up to 1.12.3, versions of the skill folder
 (`skills/orientim-protected-swap/package.json`) and of the npm package `orientim-mcp`.
 
-## Unreleased
+## 2.1.1
 
 From the 15 October 2026 audit findings:
 

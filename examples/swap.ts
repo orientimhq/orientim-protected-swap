@@ -1,5 +1,5 @@
 // One protected swap from TypeScript: 5 USDC to SOL, checked on your own RPC before the wallet signs.
-//   npm install --save-exact @orientimhq/swap@2.1.0
+//   npm install --save-exact @orientimhq/swap@2.1.1
 //   SOLANA_RPC_URL=... ORIENTIM_API_KEY=ori_... JUPITER_API_KEY=... ORIENTIM_WALLET_KEYPAIR=./wallet.json node swap.ts
 import { readFileSync } from 'node:fs';
 import { createKeyPairSignerFromBytes, createSolanaRpc } from '@solana/kit';
