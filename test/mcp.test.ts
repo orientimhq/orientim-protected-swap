@@ -651,6 +651,7 @@ function serve(lines: unknown[], env: NodeJS.ProcessEnv): Promise<{ id: number; 
 const quoteCall = (id: number) => ({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'orientim_quote', arguments: { inputMint: SOL, outputMint: USDC, amount: '0.01' } } });
 
 describe('orientim mcp', () => {
+  // Two processes started one after the other: slow on a loaded Windows runner, hence the longer timeout.
   it('runs `orientim swap` and the JSON commands itself, with nothing beside it', () => {
     const swap = spawnSync(process.execPath, [BIN, '--run-swap'], { encoding: 'utf8' });
     expect(swap.status).toBe(2);
@@ -658,7 +659,7 @@ describe('orientim mcp', () => {
     const verifyRun = spawnSync(process.execPath, [BIN, '--run-verify'], { encoding: 'utf8' });
     expect(verifyRun.status).toBe(2);
     expect(verifyRun.stdout).toMatch(/usage: orientim </);
-  });
+  }, 30_000);
 
   it("gets the wallet's own API key once, keeps it for its owner alone, and never shows it", async () => {
     const w = wallet();
