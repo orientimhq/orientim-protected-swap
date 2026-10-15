@@ -10,7 +10,8 @@
     "verbatimModuleSyntax": true,
     "erasableSyntaxOnly": true,
     "skipLibCheck": true,
-    "types": ["node"]
+    "types": ["node"],
+    "paths": { "@orientim/swap": ["./src/index.ts"] }
   },
   "include": ["packages/*/src", "packages/*/test", "src", "examples", "test", "tools"]
 }

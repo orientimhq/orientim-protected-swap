@@ -550,13 +550,15 @@ describe("the owner's policy at the system path", () => {
   });
 });
 
-describe('the Python example in SKILL.md', () => {
+describe('the Python example in the guide', () => {
   // Run as written, against the command itself: its answer is JSON on every exit code.
   const python = ['python3', 'python'].find(p => spawnSync(p, ['--version']).status === 0);
   it.runIf(python)('reads the exit code and the JSON answer, on a usage error too', () => {
-    const block = /```python\n([\s\S]*?)```/.exec(readFileSync(join(SKILL, 'SKILL.md'), 'utf8'))![1];
-    // The function only: the swap after it needs a keypair and Orientim.
-    const fn = block.slice(0, block.indexOf('\ncode, settled'));
+    const block = /```python\n([\s\S]*?)```/.exec(readFileSync(join(SKILL, 'reference/GUIDE.md'), 'utf8'))![1];
+    // The function only: the swap after it needs a keypair and Orientim. The command from its
+    // source, where the guide has it installed.
+    const fn = block.slice(0, block.indexOf('\ncode, settled')).replace('"node_modules/@orientim/swap/dist/bin/orientim.mjs"', JSON.stringify(BIN));
+    expect(fn).toContain(JSON.stringify(BIN));
     const run = spawnSync(python!, ['-c', `${fn}\nimport sys\ncode, answer = orientim("no-such-command")\nprint(json.dumps({"code": code, "ok": answer["ok"]}))`], {
       cwd: SKILL, encoding: 'utf8', env: { PATH: process.env.PATH ?? '', SYSTEMROOT: process.env.SYSTEMROOT ?? '' },
     });

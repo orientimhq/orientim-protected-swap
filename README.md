@@ -1,20 +1,26 @@
-# Orientim protected swap skill
+# Orientim protected swap
 
 Swap Solana tokens from a wallet an AI agent or a bot controls, so that the swap's route can only
 touch the amount you approve. [Orientim](https://orientim.com) builds the transaction through
-Jupiter; this skill checks it on **your own RPC**, with the verifier in this repository, before your
-wallet signs, and reads the outcome on the chain.
+Jupiter; `@orientim/swap` checks it on **your own RPC**, with the verifier in this repository, before
+your wallet signs, and reads the outcome on the chain.
 
-The skill is the folder [`skills/orientim-protected-swap`](skills/orientim-protected-swap). It is
-self-contained: copy that folder, run `npm ci` in it, and it needs nothing else from this repository.
+Everything is one npm package, [`@orientim/swap`](https://www.npmjs.com/package/@orientim/swap): the
+library, the `orientim` command, and its MCP server.
+
+```bash
+npx -y @orientim/swap@<version> mcp                     # the MCP server, for Claude Desktop, Claude Code, Cursor...
+npx -y @orientim/swap@<version> swap --in ... --dry-run  # one swap from the command line
+npm install --save-exact @orientim/swap@<version>       # import { protectedSwap } from '@orientim/swap'
+```
 
 | You are | Start with |
 | --- | --- |
-| An agent (Claude and other coding agents) | [`SKILL.md`](skills/orientim-protected-swap/SKILL.md) |
-| A bot in JavaScript or TypeScript | `protectedSwap` in [`examples/swap.ts`](skills/orientim-protected-swap/examples/swap.ts) |
-| A bot in Python, Rust, Go... | the `orientim-verify` command, `bin/orientim-verify.mjs` ("Bots in other languages" in `SKILL.md`) |
-| Claude Desktop, Cursor or another MCP client | the MCP server: `orientim.mcpb` from a release, `npx -y orientim-mcp@<version>`, or `bin/orientim-mcp.mjs` ("MCP server" in `SKILL.md`) |
-| Calling the API yourself | [`reference/AGENT-API.md`](skills/orientim-protected-swap/reference/AGENT-API.md) |
+| An agent (Claude and other coding agents) | the skill, [`SKILL.md`](skills/orientim-protected-swap/SKILL.md), and its [guide](skills/orientim-protected-swap/reference/GUIDE.md) |
+| A bot in JavaScript or TypeScript | `protectedSwap`, as in [`examples/swap.ts`](examples/swap.ts) |
+| A bot in Python, Rust, Go... | `orientim prepare`, `finalize`, `recover`: JSON in and out ("Bots in other languages" in the guide) |
+| Claude Desktop, Cursor or another MCP client | `npx -y @orientim/swap@<version> mcp`, or `orientim.mcpb` from a release |
+| Calling the API yourself | [`AGENT-API.md`](skills/orientim-protected-swap/reference/AGENT-API.md) |
 
 ## What the check enforces
 
@@ -25,9 +31,9 @@ seven rules (R1–R7), with every account read from your RPC, not from Orientim:
 - it never receives your wallet or any of your token accounts except the one that receives the output;
 - the transaction grants no new authority over your assets;
 - you receive at least the minimum you accepted, enforced on chain in the same transaction;
-- Orientim's fee goes only to the treasury the skill pins, and the skill refuses it above 0.25% (up to 0.3% only when the agent sets `maxFeeBps`).
+- Orientim's fee goes only to the treasury the package pins, and the package refuses it above 0.25% (up to 0.3% only when the agent sets `maxFeeBps`).
 
-On top of the rules, the skill brings a price floor of its own from Jupiter (a minimum more than 20%
+On top of the rules, the package brings a price floor of its own from Jupiter (a minimum more than 20%
 below it is refused), refuses a price impact above your limit, simulates the swap on your RPC, holds
 each swap to the owner's spending limits and the tokens the wallet may buy (`/etc/orientim/policy.json`
 or `ORIENTIM_POLICY`), and never lets a server's text reach the agent as instructions. A compromised
@@ -38,81 +44,59 @@ built so that you do not have to trust it.
 ## Repository layout
 
 ```
-skills/orientim-protected-swap/   the skill, exactly as it is distributed
-  SKILL.md, README.md, LICENSE      what an agent and a person read
-  examples/swap.ts                  the whole flow, with recovery and one worker per wallet
-  src/                              sources of the verifier entry point, the command and the MCP server
-  lib/orientim-verify.mjs           the verifier, bundled (generated)
-  bin/orientim-verify.mjs           the command, bundled (generated)
-  bin/orientim-mcp.mjs              the MCP server, bundled (generated)
-  reference/AGENT-API.md            the API reference
-  SHA256SUMS                        the hash of every file above (generated)
+src/                              the package: the client (api, keys, chain, lock, policy, store, swap),
+                                  the verifier's entry (verify.ts), the commands (cli.ts, agent.ts),
+                                  the MCP server (mcp.ts), index.ts and bin.ts
 packages/verifier/                the verifier: rules R1–R7 on the transaction bytes
 packages/core/                    constants, types and the protected-swap layout the verifier checks
-packages/solana/                  the RPC reads the skill makes, and when "no record" proves a swap never landed
-tools/build-skill.ts              builds the generated files, the zip, orientim.mcpb and the npm package
-tools/mcp/                        the README and icon of orientim.mcpb and the npm package
-test/                             tests of the skill itself
+packages/solana/                  the RPC reads, and when "no record" proves a swap never landed
+skills/orientim-protected-swap/   the skill: SKILL.md, its guide and the API reference
+examples/swap.ts                  one protected swap from TypeScript
+tools/build.ts                    builds dist/ (the package) and dist/orientim.mcpb
+tools/mcp/                        the README and icon of orientim.mcpb, and a smoke test of the server
+test/                             tests of the client, the commands and the MCP server
 ```
 
 ## Build and test
 
-Node 22.18 or later.
+Node 22.18 or later to build and test; the package runs on Node 20.18 or later.
 
 ```bash
 npm ci
 npm run typecheck
 npm test               # unit and property tests
-npm run check          # the committed bundles and SHA256SUMS match a fresh build
-npm run build          # rebuild them, and dist/orientim-protected-swap.zip
+npm run build          # dist/: the package, its declarations, and orientim.mcpb
 npm run test:fuzz      # the verifier's properties at 100,000 cases each (slow)
 ```
 
-Only `@solana/kit` stays outside the bundle; the skill pins it to one version, with a lockfile of
-hashes.
+Only `@solana/kit` stays outside the bundle, a dependency pinned to one version; the workspace
+packages are bundled in.
 
 ## Check your copy
 
-The build is reproducible: the same source gives the same bytes on any machine. To check a copy of the
-skill you received, from Orientim or anywhere else:
+Check the package against GitHub, not against the site that told you about it: it exists to protect
+you from a dishonest server, so a server cannot vouch for it. Each version is published from this
+repository's release workflow with npm's provenance, which names the repository, the workflow and the
+commit:
 
 ```bash
-git clone https://github.com/orientimhq/orientim-protected-swap && cd orientim-protected-swap
-git checkout v<version>          # the version in skills/orientim-protected-swap/package.json
-npm ci --ignore-scripts && npm run check   # the committed files are what this source builds
-cd skills/orientim-protected-swap && sha256sum -c SHA256SUMS
+npm install --save-exact @orientim/swap@<version> && npm audit signatures
 ```
 
-then compare that `SHA256SUMS` with the one in your copy. `npm run build` also writes
-`dist/orientim-protected-swap.zip`, byte for byte the archive Orientim serves at
-`/skill/orientim-protected-swap.zip` for the same version, and `dist/orientim.mcpb`, byte for byte the
-Claude Desktop extension at `/skill/orientim.mcpb`.
-
-Check a download against GitHub, not against the site that served it: the skill exists to protect you
-from a dishonest server, so the server's own list (`https://orientim.com/skill/SHA256SUMS`) cannot vouch
-for its own zip. Check the whole archive before you unzip it: `sha256sum -c SHA256SUMS` inside the
-folder checks the files it lists, but not a file added beside them.
-
-From 1.11.2, each release's zip and `SHA256SUMS` carry GitHub's signed statement that this
-repository's release workflow built them from that tag:
+`orientim.mcpb` on each GitHub release carries GitHub's signed statement that the same workflow built
+it from that tag, and `RELEASE-SHA256SUMS` lists its sha256:
 
 ```bash
-gh attestation verify orientim-protected-swap.zip -R orientimhq/orientim-protected-swap
+gh attestation verify orientim.mcpb -R orientimhq/orientim-protected-swap
 ```
 
-From 1.12.1, so does `orientim.mcpb`, and the npm package `orientim-mcp` carries npm's provenance for the
-same workflow (`npm audit signatures`). From 1.12.3, each release also lists the sha256 of the zip and
-of the `.mcpb` in `RELEASE-SHA256SUMS`, itself attested:
-
-```bash
-gh release download v<version> -R orientimhq/orientim-protected-swap -p RELEASE-SHA256SUMS
-sha256sum -c --ignore-missing RELEASE-SHA256SUMS   # next to the zip or .mcpb you downloaded
-```
+The build is reproducible: `git checkout v<version> && npm ci --ignore-scripts && npm run build` gives
+the same `dist/` from any machine.
 
 ## Using it
 
 You need an API key from Orientim (`ORIENTIM_API_KEY`, issued at once to a wallet that signs one
-message: see `SKILL.md`) and an RPC of your own (`SOLANA_RPC_URL`). Use of the Orientim service is
+message: see the skill's guide) and an RPC of your own (`SOLANA_RPC_URL`). Use of the Orientim service is
 governed by its [Terms of Use](https://orientim.com/terms).
 
 ## Security

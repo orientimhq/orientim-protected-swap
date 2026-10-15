@@ -23,23 +23,25 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run typecheck
       - run: npm test
-      # The bundles and SHA256SUMS must be exactly what the source builds.
-      - run: npm run check
-      - name: The shipped files match SHA256SUMS
-        working-directory: skills/orientim-protected-swap
-        run: sha256sum -c SHA256SUMS
-      - name: The skill installs on its own
+      - run: npm run build
+      - name: The package installs on its own, and its types hold for a strict consumer
         run: |
-          cp -r skills/orientim-protected-swap "$RUNNER_TEMP/skill"
-          cd "$RUNNER_TEMP/skill"
-          npm ci --ignore-scripts
-          status=0; node bin/orientim-verify.mjs > /dev/null || status=$?
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP"
+          mkdir "$RUNNER_TEMP/consumer" && cd "$RUNNER_TEMP/consumer"
+          echo '{"name":"consumer","private":true,"type":"module"}' > package.json
+          npm install --ignore-scripts --no-audit --no-fund "$RUNNER_TEMP"/orientim-swap-*.tgz @types/node@26.6.1 typescript@7.0.2
+          cp "$GITHUB_WORKSPACE/examples/swap.ts" .
+          echo '{"compilerOptions":{"target":"ES2022","module":"nodenext","moduleResolution":"nodenext","strict":true,"noEmit":true,"types":["node"],"lib":["ES2022","DOM","ESNext.Disposable"],"allowImportingTsExtensions":true},"files":["swap.ts"]}' > tsconfig.json
+          npx tsc -p tsconfig.json
+          status=0; npx orientim > /dev/null || status=$?
           test "$status" -eq 2
           echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}' \
-            | node bin/orientim-mcp.mjs | grep -q '"protocolVersion":"2025-11-25"'
+            | npx orientim mcp | grep -q '"protocolVersion":"2025-11-25"'
+          echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}' \
+            | npx orientim-mcp | grep -q '"protocolVersion":"2025-11-25"'
 
   windows:
-    # The skill runs on Windows too: its policy path, its state directory and the command.
+    # The package runs on Windows too: its policy path, its state directory and the command.
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -70,7 +72,8 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node }}
-      - run: node tools/mcp/smoke.mjs dist/orientim-mcp/bin/orientim-mcp.mjs
+      - run: node tools/mcp/smoke.mjs dist/bin/orientim.mjs
+      - run: node tools/mcp/smoke.mjs dist/orientim.mcpb
 
   reproducible:
     # The same source must give the same bytes on another runner image.
@@ -85,12 +88,5 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: npm run check
       - run: npm run build
-      - run: shasum -a 256 dist/orientim-protected-swap.zip skills/orientim-protected-swap/SHA256SUMS dist/orientim.mcpb dist/orientim-mcp/bin/orientim-mcp.mjs
-      - name: The MCP server for npm and Claude Desktop needs nothing beside it
-        run: |
-          cp dist/orientim-mcp/bin/orientim-mcp.mjs "$RUNNER_TEMP/"
-          cd "$RUNNER_TEMP"
-          echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}' \
-            | node orientim-mcp.mjs | grep -q '"protocolVersion":"2025-11-25"'
+      - run: cd dist && find . -type f ! -name '*.tgz' | LC_ALL=C sort | xargs shasum -a 256

@@ -1,11 +1,32 @@
 # Changelog
 
-Versions of the skill (`skills/orientim-protected-swap/package.json`). Each version's `SHA256SUMS`
-is the list Orientim serves at `/skill/SHA256SUMS` while it is current.
+Versions of `@orientim/swap` (`package.json`); up to 1.12.3, versions of the skill folder
+(`skills/orientim-protected-swap/package.json`) and of the npm package `orientim-mcp`.
 
-## 1.12.4 (unreleased)
+## 2.0.0 (unreleased)
 
-Fixes from the 14 October 2026 review.
+One npm package, `@orientim/swap`, in place of the skill's zip, its bundled files and `orientim-mcp`.
+
+- The library: `import { protectedSwap, recoverPending, acquireLock, createFileStore, loadPolicy } from
+  '@orientim/swap'`, with its types, and `@orientim/swap/verifier`, `/core` and `/solana`. The code of
+  `examples/swap.ts` is now `src/` (api, keys, chain, lock, policy, store, swap, agent); `examples/swap.ts`
+  is one protected swap in 26 lines.
+- One command, `orientim`: `orientim mcp` is the MCP server (`npx -y @orientim/swap@2.0.0 mcp`),
+  `orientim swap` the command line `node examples/swap.ts` was, and `orientim prepare`, `finalize`,
+  `check`, `recover`, `resolve`, `key-challenge` and `key` the JSON commands `orientim-verify` ran, with
+  the same input, output and exit codes. `orientim-mcp` and `orientim-verify` are installed too, as the
+  same command under their old names.
+- `SKILL.md` is the short version; the rest is in `reference/GUIDE.md`.
+- Checked with `npm audit signatures` (npm's provenance) instead of `SHA256SUMS`; `orientim.mcpb` is
+  still attached to each release, attested, and listed in `RELEASE-SHA256SUMS` with the package.
+- A daily limit no longer counts a swap the chain proves moved nothing: one that failed, or that can no
+  longer land, frees its share as soon as it is settled (by `protectedSwap`, `finalize` or `recover`).
+  One settled by hand on the owner's word alone still counts for its 24 hours.
+- The check's reads are held together: with lookup tables, every account is read no older than the
+  slot the RPC was at when the tables were read, and every batch after the first no older than the
+  first.
+
+Also, from the 14 October 2026 review:
 
 - One request, one swap: no quote is made while an earlier swap from the wallet may still land or is
   being sent (exit 3), and the MCP server gives a swap's answer the client stopped waiting for with

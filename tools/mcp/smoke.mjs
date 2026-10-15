@@ -1,7 +1,8 @@
 // The MCP server as it ships (npm, Claude Desktop), started as a client starts it: plain JavaScript, so
 // that it runs on every Node the package claims (CI runs it on each, on Linux, macOS and Windows).
 //
-//   node tools/mcp/smoke.mjs dist/orientim-mcp/bin/orientim-mcp.mjs
+//   node tools/mcp/smoke.mjs dist/bin/orientim.mjs     `orientim mcp`, from the npm package
+//   node tools/mcp/smoke.mjs dist/orientim.mcpb        the extension's server, alone in a folder of its own
 //
 // The protocol in every version it speaks, the four tools, the commands the file runs itself, the
 // wallet's own API key from a stand-in for Orientim on 127.0.0.1, and a client's placeholders taken
@@ -13,7 +14,24 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-const server = resolve(process.argv[2] ?? 'dist/orientim-mcp/bin/orientim-mcp.mjs');
+/** The extension's server, out of its zip (stored, as tools/build.ts writes it), with nothing beside it. */
+function unpacked(mcpb) {
+  const zip = readFileSync(mcpb);
+  for (let at = 0; zip.readUInt32LE(at) === 0x04034b50;) {
+    const nameLength = zip.readUInt16LE(at + 26), size = zip.readUInt32LE(at + 18);
+    const name = zip.toString('utf8', at + 30, at + 30 + nameLength);
+    const data = zip.subarray(at + 30 + nameLength, at + 30 + nameLength + size);
+    if (name === 'server/orientim.mjs') {
+      const file = join(mkdtempSync(join(tmpdir(), 'orientim-mcpb-')), 'orientim.mjs');
+      writeFileSync(file, data);
+      return file;
+    }
+    at += 30 + nameLength + size;
+  }
+  throw new Error(`${mcpb} holds no server/orientim.mjs`);
+}
+const given = resolve(process.argv[2] ?? 'dist/bin/orientim.mjs');
+const server = given.endsWith('.mcpb') ? unpacked(given) : given;
 const SOL = 'So11111111111111111111111111111111111111112';
 const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 let failed = 0;
@@ -43,7 +61,7 @@ for (const name of ['ORIENTIM_API_KEY', 'ORIENTIM_API_URL', 'ORIENTIM_POLICY', '
 
 function serve(lines, env) {
   return new Promise((done, fail) => {
-    const child = spawn(process.execPath, [server], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [server, 'mcp'], { env, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
     child.stdout.setEncoding('utf8').on('data', d => { stdout += d; });
     child.on('error', fail);
@@ -75,9 +93,9 @@ check(JSON.stringify(by(5)?.result) === '{}', 'ping');
 
 // The commands the file runs itself.
 const swapRun = spawnSync(process.execPath, [server, '--run-swap'], { encoding: 'utf8', env: baseEnv });
-check(swapRun.status === 2 && /^usage: node swap\.ts/.test(swapRun.stderr), 'the example\'s command line, from the same file');
+check(swapRun.status === 2 && /^usage: orientim swap/.test(swapRun.stderr), '`orientim swap`, from the same file');
 const verifyRun = spawnSync(process.execPath, [server, '--run-verify'], { encoding: 'utf8', env: baseEnv });
-check(verifyRun.status === 2 && /usage: orientim-verify/.test(verifyRun.stdout), 'orientim-verify, from the same file');
+check(verifyRun.status === 2 && /usage: orientim </.test(verifyRun.stdout), 'the JSON commands, from the same file');
 
 // The wallet's own API key, from a stand-in for Orientim; then the dry run asks for the owner's RPC.
 const seen = [];

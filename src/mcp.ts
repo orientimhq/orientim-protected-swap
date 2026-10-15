@@ -759,7 +759,7 @@ async function walletSigner(): Promise<KeyPairSigner> {
   if (process.platform !== 'win32') {
     try {
       const mode = statSync(resolve(path)).mode & 0o777;
-      if (mode & 0o077) process.stderr.write(`orientim-mcp: the wallet's keypair file can be read by other users of this machine (mode ${mode.toString(8)}): run chmod 600 on it.\n`);
+      if (mode & 0o077) process.stderr.write(`orientim mcp: the wallet's keypair file can be read by other users of this machine (mode ${mode.toString(8)}): run chmod 600 on it.\n`);
     } catch {
       // Said below, when it is read.
     }
@@ -962,5 +962,5 @@ export async function main(file: string): Promise<void> {
     server.clientGone();
     void Promise.allSettled([...inFlight]).then(() => process.exit(0));
   });
-  process.stderr.write(`orientim-mcp ${SERVER_VERSION}: ready on stdio\n`);
+  process.stderr.write(`orientim mcp ${SERVER_VERSION}: ready on stdio\n`);
 }

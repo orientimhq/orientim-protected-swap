@@ -1,17 +1,16 @@
-# orientim-mcp
+# Orientim protected swap, for MCP clients
 
 Protected swaps on Solana for Claude Desktop, Claude Code, Cursor and any client that starts a local
 MCP server. The swap's route can only touch the amount you approve, and every transaction is checked
-on **your own RPC** before your wallet signs. This is the MCP server of the
-[Orientim protected swap skill](https://github.com/orientimhq/orientim-protected-swap), as one file
-with no dependencies.
+on **your own RPC** before your wallet signs. This is `orientim mcp`, the MCP server of
+[`@orientim/swap`](https://github.com/orientimhq/orientim-protected-swap).
 
 ```json
 {
   "mcpServers": {
     "orientim": {
       "command": "npx",
-      "args": ["-y", "orientim-mcp@VERSION"],
+      "args": ["-y", "@orientim/swap@VERSION", "mcp"],
       "env": {
         "SOLANA_RPC_URL": "https://your-own-rpc.example/...",
         "ORIENTIM_WALLET_KEYPAIR": "/absolute/path/to/agent-wallet.json",
@@ -22,7 +21,7 @@ with no dependencies.
 }
 ```
 
-Claude Code: `claude mcp add --transport stdio orientim --env SOLANA_RPC_URL=... --env ORIENTIM_WALLET_KEYPAIR=... -- npx -y orientim-mcp@VERSION`.
+Claude Code: `claude mcp add --transport stdio orientim --env SOLANA_RPC_URL=... --env ORIENTIM_WALLET_KEYPAIR=... -- npx -y @orientim/swap@VERSION mcp`.
 Claude Desktop also takes `orientim.mcpb`, from the same release or from orientim.com, installed with a click.
 
 Four tools: `orientim_wallet` (balances on your RPC), `orientim_quote` (prices and verifies a swap, in
@@ -35,7 +34,7 @@ Orientim's Terms of Use (orientim.com/terms). The owner's limits
 
 Give the server a wallet of its own, holding only what it may swap. In a client where the agent also
 runs commands, it can read a key file the server can read: see "MCP server" and "Safe setup for an
-agent" in the skill's `SKILL.md`. Pin the version: this package is published with npm's provenance,
+agent" in the skill's guide. Pin the version: `@orientim/swap` is published with npm's provenance,
 and `orientim.mcpb` with GitHub's attestation, both from the repository's release workflow.
 
 Apache-2.0.

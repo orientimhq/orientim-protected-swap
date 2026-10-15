@@ -1,0 +1,26 @@
+// One protected swap from TypeScript: 5 USDC to SOL, checked on your own RPC before the wallet signs.
+//   npm install --save-exact @orientim/swap@2.0.0
+//   SOLANA_RPC_URL=... ORIENTIM_API_KEY=ori_... JUPITER_API_KEY=... ORIENTIM_WALLET_KEYPAIR=./wallet.json node swap.ts
+import { readFileSync } from 'node:fs';
+import { createKeyPairSignerFromBytes, createSolanaRpc } from '@solana/kit';
+import { acquireLock, createFileStore, loadPolicy, policyPathFor, protectedSwap, recoverPending, stateDirFor } from '@orientim/swap';
+
+const wallet = await createKeyPairSignerFromBytes(new Uint8Array(JSON.parse(readFileSync(process.env.ORIENTIM_WALLET_KEYPAIR!, 'utf8'))));
+const rpc = createSolanaRpc(process.env.SOLANA_RPC_URL!);
+const policyPath = policyPathFor(process.env.ORIENTIM_POLICY); // the owner's limits; /etc/orientim/policy.json first
+const policy = policyPath ? loadPolicy(policyPath) : undefined;
+const { dir } = stateDirFor(policy, process.env.ORIENTIM_STATE_DIR);
+const store = createFileStore(dir); // keeps every signed swap until the chain settles it
+const release = acquireLock(dir, wallet.address); // one run per wallet at a time
+try {
+  // What a stopped run left is settled first: nothing new while an earlier swap may still land.
+  if ((await recoverPending(store, rpc, { orders: store, spends: store })).unknown.length) throw new Error('Settle the earlier swap first.');
+  const result = await protectedSwap({
+    apiUrl: 'https://orientim.com', apiKey: process.env.ORIENTIM_API_KEY!, jupiterApiKey: process.env.JUPITER_API_KEY, rpc, wallet,
+    intent: { id: 'order-1', inputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', outputMint: 'So11111111111111111111111111111111111111112', amountIn: '5000000' },
+    pending: store, orders: store, spends: store, ...(policy ? { policy } : {}),
+  });
+  console.log(result.outcome, result.signature, result.received ?? '');
+} finally {
+  release();
+}
