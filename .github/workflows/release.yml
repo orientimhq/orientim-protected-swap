@@ -114,5 +114,6 @@ jobs:
               exit 1
             fi
           else
-            npm publish "$tarball" --provenance --access public --ignore-scripts
+            # "./": a bare release/x.tgz reads to npm as a GitHub repository, user/repo.
+            npm publish "./$tarball" --provenance --access public --ignore-scripts
           fi
