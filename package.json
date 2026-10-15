@@ -1,12 +1,56 @@
 {
-  "name": "orientim-protected-swap-repo",
-  "private": true,
-  "type": "module",
+  "name": "@orientim/swap",
+  "version": "2.0.0",
+  "description": "Protected swaps on Solana through Orientim, for agents and bots: the route can only touch the approved amount, verified on your own RPC before your wallet signs.",
   "license": "Apache-2.0",
+  "type": "module",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/orientimhq/orientim-protected-swap.git"
   },
+  "homepage": "https://orientim.com/developers",
+  "bugs": "https://github.com/orientimhq/orientim-protected-swap/issues",
+  "keywords": [
+    "solana",
+    "swap",
+    "jupiter",
+    "agent",
+    "mcp",
+    "model-context-protocol",
+    "wallet"
+  ],
+  "bin": {
+    "orientim": "./dist/bin/orientim.mjs",
+    "orientim-mcp": "./dist/bin/orientim-mcp.mjs",
+    "orientim-verify": "./dist/bin/orientim-verify.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/types/src/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./core": {
+      "types": "./dist/types/packages/core/src/index.d.ts",
+      "import": "./dist/core.mjs"
+    },
+    "./solana": {
+      "types": "./dist/types/packages/solana/src/index.d.ts",
+      "import": "./dist/solana.mjs"
+    },
+    "./verifier": {
+      "types": "./dist/types/packages/verifier/src/index.d.ts",
+      "import": "./dist/verifier.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/",
+    "!dist/*.mcpb",
+    "!dist/*.tgz",
+    "!dist/RELEASE-SHA256SUMS",
+    "skills/orientim-protected-swap/SKILL.md",
+    "skills/orientim-protected-swap/reference/"
+  ],
   "workspaces": [
     "packages/*"
   ],
@@ -14,14 +58,15 @@
     "test": "vitest run",
     "test:fuzz": "vitest run packages/verifier/test/property.test.ts packages/verifier/test/extensions.test.ts packages/verifier/test/slippage.property.test.ts packages/verifier/test/extremes.property.test.ts packages/verifier/test/mutation.property.test.ts --mode fuzz",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "build": "node tools/build-skill.ts",
-    "check": "node tools/build-skill.ts --check"
+    "build": "node tools/build.ts"
+  },
+  "dependencies": {
+    "@solana/kit": "8.3.0"
   },
   "devDependencies": {
     "@solana-program/compute-budget": "0.18.1",
     "@solana-program/system": "0.14.1",
     "@solana-program/token": "0.16.1",
-    "@solana/kit": "8.3.0",
     "@types/node": "26.6.1",
     "fast-check": "4.10.1",
     "rolldown": "1.2.9",
@@ -29,6 +74,6 @@
     "vitest": "4.1.11"
   },
   "engines": {
-    "node": ">=22.18"
+    "node": ">=20.18"
   }
 }

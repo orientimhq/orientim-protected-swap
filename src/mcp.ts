@@ -1,10 +1,10 @@
 /**
- * The skill as an MCP server (`bin/orientim-mcp.mjs`), for an agent that works through tools: Claude
- * Desktop, Claude Code, Cursor, and any client that starts a local MCP server. It speaks MCP over
- * stdio, one JSON-RPC message per line, and needs nothing beyond the skill's own @solana/kit.
+ * `orientim mcp`: the MCP server, for an agent that works through tools: Claude Desktop, Claude
+ * Code, Cursor, and any client that starts a local MCP server. It speaks MCP over stdio, one JSON-RPC
+ * message per line, and needs nothing beyond @solana/kit.
  *
- * Every swap is the example's own command line (examples/swap.ts, bundled into the same file): its dry
- * run for `orientim_quote`, its swap for `orientim_swap`, each in a process of its own. The floor, the
+ * Every swap is `orientim swap` (./agent.ts, in the same file), in a process of its own: its dry
+ * run for `orientim_quote`, its swap for `orientim_swap`. The floor, the
  * check on your own RPC, the owner's policy, the lock, the record kept before finalize and the outcome
  * read on the chain are the same code every other agent runs. This file adds only what a tool needs: amounts in whole tokens, read against the mint's own
  * decimals on your RPC; a swap tied to the quote the user saw, under an order id the model never
@@ -23,7 +23,7 @@ import { createInterface } from 'node:readline';
 import { address, createKeyPairSignerFromBytes, createSolanaRpc, isAddress, signBytes, type KeyPairSigner } from '@solana/kit';
 
 /** The skill's version (package.json); a test holds them equal. */
-export const SERVER_VERSION = '1.12.4';
+export const SERVER_VERSION = '2.0.0';
 
 /** The MCP versions this server speaks, newest first. A client asking for another gets the newest. */
 export const PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'] as const;
@@ -123,7 +123,7 @@ export type RunOptions = { input?: string; onLine?: (line: string) => void; sign
 
 /** What the server needs from the world; the tests give it their own. */
 export type McpDeps = {
-  /** Runs one of the skill's commands with node: the example's command line, or orientim-verify. */
+  /** Runs one of the package's commands with node: `orientim swap`, or a JSON command. */
   run: (command: 'swap' | 'verify', args: string[], options: RunOptions) => Promise<Run>;
   /** The wallet's address, from the keypair the owner configured. */
   wallet: () => Promise<string>;
@@ -272,7 +272,7 @@ const mintOf = (v: unknown, name: string) => {
 
 /**
  * The server: `receive` takes one line from the client and sends what it answers. Several calls run at
- * once; the swaps of one wallet are kept one at a time by the example's own lock.
+ * once; the swaps of one wallet are kept one at a time by the wallet's lock.
  */
 export function createServer(deps: McpDeps) {
   const now = deps.now ?? Date.now;
@@ -674,10 +674,10 @@ export function createServer(deps: McpDeps) {
 
 const DEFAULT_API_URL = 'https://orientim.com';
 
-/** What the server's own file is started with to run the example's command line, or orientim-verify's. */
+/** What the server's own file is started with to run `orientim swap`, or a JSON command. */
 export const RUN_SWAP = '--run-swap';
 export const RUN_VERIFY = '--run-verify';
-/** The server's own file (bin/orientim-mcp.mjs), which runs both commands; set by `main`. */
+/** The server's own file (dist/bin/orientim.mjs), which runs both commands; set by `main`. */
 let self = '';
 
 type Env = Record<string, string | undefined>;
@@ -781,7 +781,7 @@ const walletAddress = async () => (await walletSigner()).address;
 
 /**
  * The wallet's own API key, when the owner set no ORIENTIM_API_KEY: asked of Orientim once, with the
- * wallet signing only Orientim's key message for it (checked by `orientim-verify key-challenge`), and
+ * wallet signing only Orientim's key message for it (checked by `orientim key-challenge`), and
  * kept in ~/.orientim, the owner's alone, until a day before it expires. One file per wallet and
  * Orientim address: two servers of one user with two wallets (Claude Desktop and Cursor, say) each
  * keep their own, instead of asking for a new key on every call by turns.

@@ -1,23 +1,23 @@
 /**
- * `orientim-verify`: Orientim's protected swap for bots in any language (Python, Rust, Go...). The bot
- * keeps its key and signs one message itself; this command does everything else the example does,
+ * `orientim`: Orientim's protected swap for bots in any language (Python, Rust, Go...). The bot
+ * keeps its key and signs one message itself; this command does everything else `protectedSwap` does,
  * the same code: your own floor, the full check on your RPC, the durable record before finalize,
  * finalize, and the outcome read on the chain for the wallet's own signature. JSON in (stdin), JSON
  * out (stdout), and an exit code:
  *
- *   orientim-verify prepare    {"intent": {...}}                       0 ok: sign `message`   1 refused   3 settle first   4 Orientim said no
- *   orientim-verify finalize   {"checked": ..., "signature": "..."}    0 confirmed   1 not swapped   3 unknown: recover before anything new
+ *   orientim prepare           {"intent": {...}}                       0 ok: sign `message`   1 refused   3 settle first   4 Orientim said no
+ *   orientim finalize          {"checked": ..., "signature": "..."}    0 confirmed   1 not swapped   3 unknown: recover before anything new
  *                                                                      (3 too for a confirmed swap whose record could not be updated)
  *                                                                      5 this order already swapped, or another run has it
- *   orientim-verify recover                                            0 all settled   3 something is still unknown, or a run holds the wallet
- *   orientim-verify resolve    {"signature": "...", "outcome": "..."}  0 settled   1 refused (it could still land, or is not kept)
+ *   orientim recover                                                   0 all settled   3 something is still unknown, or a run holds the wallet
+ *   orientim resolve           {"signature": "...", "outcome": "..."}  0 settled   1 refused (it could still land, or is not kept)
  *   3 also when the state directory cannot be made, read or written: nothing is prepared or changed until
  *   it can, and when another run from the wallet holds its lock (`busy`: that run may have sent the swap).
- *   orientim-verify check      {"prepared": ..., "intent": {...}}      0 safe to sign   1 refused   2 usage   (for bots that call the API themselves)
- *   orientim-verify key-challenge  {"wallet": "<address>"}             0 sign `message` (checked: Orientim's key message for this wallet, nothing else)
- *   orientim-verify key        {"message", "challenge", "signature"}   0 `key`, bound to that wallet   4 Orientim said no
+ *   orientim check             {"prepared": ..., "intent": {...}}      0 safe to sign   1 refused   2 usage   (for bots that call the API themselves)
+ *   orientim key-challenge     {"wallet": "<address>"}             0 sign `message` (checked: Orientim's key message for this wallet, nothing else)
+ *   orientim key               {"message", "challenge", "signature"}   0 `key`, bound to that wallet   4 Orientim said no
  *   (both key commands: 1 when Orientim did not answer, with `code` `unavailable`; their `error` is a string, `code` beside it)
- *   A dry run's approval kept in the state directory (`node examples/swap.ts --dry-run`) holds here too:
+ *   A dry run's approval kept in the state directory (`orientim swap --dry-run`) holds here too:
  *   prepare, check and finalize refuse a lower minimum, or an expired approval (exit 1, `error.code` `approval`).
  *   2 on any usage or configuration error (a slippageBps, maxPriceImpactBps, maxFeeBps or minOut it cannot use included); 5 when `intent.id` names an order that already swapped or
  *   whose transaction may still land (the same order is never swapped twice). finalize without
@@ -32,7 +32,7 @@
  * (an explorer), a kept swap whose outcome the chain can no longer prove: `outcome` is `confirmed`,
  * `failed` or `expired`; the chain's own answer is used instead whenever your RPC still has one.
  *
- * `intent` is the example's `Intent`: owner, inputMint, outputMint, amountIn (base units, strings),
+ * `intent` is `Intent`: owner, inputMint, outputMint, amountIn (base units, strings),
  * and optionally slippageBps, maxPriceImpactBps, minOut, maxFeeBps, maxNetworkFeeLamports, maxRouteCostLamports,
  * maxSolFeeLamports (only ever lower than the skill's own limit), acceptCostBps, version. Orientim's treasury is never
  * taken from the JSON: only ORIENTIM_TREASURY names another. `prepare` answers `checked` (pass it to finalize unchanged) and `message`,
@@ -61,14 +61,18 @@ import {
   isSolanaError, SOLANA_ERROR__RPC__TRANSPORT_HTTP_ERROR,
 } from '@solana/kit';
 import type { Address, Rpc, SignatureBytes, SolanaRpcApi } from '@solana/kit';
-import {
-  acquireLock, apiKeyChallenge, OrientimApiError, checkPrepared, createFileStore, finalizeSigned, isApiKeyMessage, pendingFor, PendingSwapError,
-  prepareChecked, PriceImpactError, FloorError, ownFloor, receivedFor, recoverPending, redeemApiKey, resolvePending, resumeSigned, takeOrder,
-  checkPolicy, loadPolicy, policyPathFor, PolicyError, LockBusyError, OrientimOrderError, holdSolFee, releaseHeldLocks, stateDirFor, DEFAULT_STATE_DIR, IntentError,
-  exitCodeOf, outcomeMeaning, settleOrder, ApprovalError, forgetApproval, heldToApproval, keptApproval, rpcSender,
-} from '../examples/swap.ts';
-import type { Checked, FoundOrder, Intent, OrderBook, OrderRecord, OwnerPolicy, PendingStore, Prepared, SendTransaction, SpendLog } from '../examples/swap.ts';
-import { isRpcFailure, ORIENTIM_TREASURY, preparationBudget } from '../lib/orientim-verify.mjs';
+import { exitCodeOf, outcomeMeaning } from './agent.ts';
+import { OrientimApiError, rpcSender } from './api.ts';
+import { apiKeyChallenge, isApiKeyMessage, redeemApiKey } from './keys.ts';
+import { acquireLock, LockBusyError, releaseHeldLocks } from './lock.ts';
+import { ApprovalError, checkPolicy, DEFAULT_STATE_DIR, forgetApproval, heldToApproval, keptApproval, loadPolicy, PolicyError, policyPathFor, stateDirFor } from './policy.ts';
+import { createFileStore, pendingFor, PendingSwapError, recoverPending, resolvePending, settleOrder, takeOrder } from './store.ts';
+import { checkPrepared, finalizeSigned, FloorError, holdSolFee, IntentError, OrientimOrderError, ownFloor, prepareChecked, PriceImpactError, receivedFor, resumeSigned } from './swap.ts';
+import type { Intent, Prepared, SendTransaction } from './api.ts';
+import type { OwnerPolicy, SpendLog } from './policy.ts';
+import type { FoundOrder, OrderBook, OrderRecord, PendingStore } from './store.ts';
+import type { Checked } from './swap.ts';
+import { isRpcFailure, ORIENTIM_TREASURY, preparationBudget } from './verify.ts';
 
 export type CliDeps = {
   rpc: Rpc<SolanaRpcApi>;
@@ -315,7 +319,7 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
         code: open ? 3 : 0,
         output: {
           ok: !open, settled, unknown, ...(bookkeepingErrors.length ? { bookkeepingErrors } : {}),
-          ...(unknown.length ? { next: 'Check each unknown signature before swapping again. One the network can no longer prove: look it up in a full history (an explorer), then `orientim-verify resolve`.' } : {}),
+          ...(unknown.length ? { next: 'Check each unknown signature before swapping again. One the network can no longer prove: look it up in a full history (an explorer), then `orientim resolve`.' } : {}),
         },
       };
     } catch (e) {
@@ -406,11 +410,11 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
       return { code: 3, output: { ok: false, sent: false, error: `The kept swaps could not be read: ${messageOf(e)}. Nothing was prepared; fix the state directory first.` } };
     }
     if (pending.length) {
-      return { code: 3, output: { ok: false, pending, error: 'Earlier swaps are not settled yet: run `orientim-verify recover` first. Nothing was prepared.' } };
+      return { code: 3, output: { ok: false, pending, error: 'Earlier swaps are not settled yet: run `orientim recover` first. Nothing was prepared.' } };
     }
     // The same order, asked again: said, not swapped twice.
     if (prior && (prior.state === 'confirmed' || prior.state === 'pending')) {
-      return { code: 5, output: { ok: false, order: { id: orderId, ...prior }, error: prior.state === 'confirmed' ? 'This order already swapped. Nothing new was prepared.' : 'This order has a transaction that may still land: run `orientim-verify recover`. Nothing new was prepared.' } };
+      return { code: 5, output: { ok: false, order: { id: orderId, ...prior }, error: prior.state === 'confirmed' ? 'This order already swapped. Nothing new was prepared.' : 'This order has a transaction that may still land: run `orientim recover`. Nothing new was prepared.' } };
     }
     const { owner, ...rest } = own;
     try {
@@ -522,7 +526,7 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
         code: 3,
         output: {
           ok: false, busy: true, ...(incoming ? { signature: incoming } : {}), outcome: 'unknown',
-          error: `${messageOf(e)} That run may have sent this swap: wait for it, then run \`orientim-verify recover\` before anything new.`,
+          error: `${messageOf(e)} That run may have sent this swap: wait for it, then run \`orientim recover\` before anything new.`,
         },
       };
     }
@@ -544,7 +548,7 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
           code: 3,
           output: {
             ok: false, ...(incoming ? { signature: incoming } : {}), outcome: 'unknown',
-            error: `The kept swaps could not be read: ${messageOf(e)}. An earlier run may have sent this swap; fix the state directory, then run \`orientim-verify recover\`.`,
+            error: `The kept swaps could not be read: ${messageOf(e)}. An earlier run may have sent this swap; fix the state directory, then run \`orientim recover\`.`,
           },
         };
       }
@@ -569,7 +573,7 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
       // One swap per wallet: another that may still land stops this one before anything is sent,
       // whichever order it was prepared for.
       if (waiting.length) {
-        return { code: 3, output: { ok: false, sent: false, pending: waiting, error: 'An earlier swap from this wallet may still land: run `orientim-verify recover` first. Nothing was sent.' } };
+        return { code: 3, output: { ok: false, sent: false, pending: waiting, error: 'An earlier swap from this wallet may still land: run `orientim recover` first. Nothing was sent.' } };
       }
       // Checked again here, on your RPC, as for a first check: finalize takes nothing on trust, not
       // even prepare's output. The floor is held to Jupiter's own price and the hard limits again,
@@ -604,7 +608,7 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
         pollMs: deps.pollMs, maxWaitMs: deps.maxWaitMs, requestTimeoutMs: deps.requestTimeoutMs, archive: deps.archive,
         ...(deps.sendTransaction ? { sendTransaction: deps.sendTransaction } : {}),
         // Kept on disk before finalize: if this process stops, `recover` settles it first. The swap is
-        // kept before the order is taken, as the example does, so a run that stops between the two
+        // kept before the order is taken, as `protectedSwap` does, so a run that stops between the two
         // leaves a kept swap `recover` settles, never an order pending with nothing kept. The order is
         // taken atomically, new or retried, so two runs cannot both send it.
         onSigned: async s => {
@@ -620,7 +624,7 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
           try {
             const orderId = intent.id;
             await store.put({ ...s, ...(orderId ? { intentId: orderId } : {}) });
-            // Read again once kept, as the example does: a run that kept its swap at the same moment
+            // Read again once kept, as `protectedSwap` does: a run that kept its swap at the same moment
             // is seen now, and both stand down rather than both send.
             const raced = await pendingFor(store, prepared.wallet, s.signature);
             if (raced.length) {
@@ -657,7 +661,7 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
           output: {
             ok: false, sent: false, order: { id: e.id, ...e.record },
             error: e.record.state === 'confirmed' ? `Order ${e.id} already swapped (${e.record.signature}). This run sent nothing.`
-              : e.record.state === 'pending' ? `Order ${e.id} has a transaction that may still land (${e.record.signature}): run \`orientim-verify recover\`. This run sent nothing.`
+              : e.record.state === 'pending' ? `Order ${e.id} has a transaction that may still land (${e.record.signature}): run \`orientim recover\`. This run sent nothing.`
                 : `Order ${e.id} was taken by another run, or this order book cannot retry it safely. This run sent nothing.`,
           },
         };
@@ -686,7 +690,7 @@ export async function main(): Promise<void> {
     process.stdout.write(`${JSON.stringify(r.output, null, 2)}\n`);
     process.exitCode = r.code;
   };
-  if (!(COMMANDS as readonly string[]).includes(command)) return print(usage(`usage: orientim-verify <${COMMANDS.join('|')}> < input.json`));
+  if (!(COMMANDS as readonly string[]).includes(command)) return print(usage(`usage: orientim <${COMMANDS.join('|')}> < input.json`));
   const rpcUrl = process.env.SOLANA_RPC_URL;
   if (!rpcUrl && !KEY_COMMANDS.includes(command)) return print(usage('Set SOLANA_RPC_URL to your own RPC.'));
   // Only the commands that ask Jupiter for a price.

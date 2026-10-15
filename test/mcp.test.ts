@@ -1,5 +1,5 @@
 /**
- * The skill's MCP server (src/mcp.ts, bin/orientim-mcp.mjs): the protocol, the four tools, whole
+ * The MCP server (src/mcp.ts, `orientim mcp`): the protocol, the four tools, whole
  * tokens to base units and back, a swap tied to the quote the user saw, and answers that never carry
  * an RPC's key. The swap itself is the example's command line, tested in skill.test.ts; here it is a
  * fake that answers as the command does.
@@ -14,12 +14,11 @@ import { describe, expect, it } from 'vitest';
 import {
   commandEnv, createServer, fromBaseUnits, InputError, MODEL_CEILINGS, mintDecimalsOf, ownerCeilings, PROTOCOL_VERSIONS, SERVER_VERSION, toBaseUnits, tokenAmountOf, TOOLS, withoutBlanks, withoutSecrets,
   type McpDeps, type Run, type RunOptions,
-} from '../skills/orientim-protected-swap/src/mcp.ts';
-import { SKILL_VERSION } from '../skills/orientim-protected-swap/examples/swap.ts';
+} from '../src/mcp.ts';
+import { SKILL_VERSION } from '../src/api.ts';
 import { TOKEN_2022_PROGRAM, TOKEN_PROGRAM } from '../packages/core/src/constants.ts';
 
 const ROOT = join(import.meta.dirname, '..');
-const SKILL = join(ROOT, 'skills/orientim-protected-swap');
 const W = 'Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr';
 const SOL = 'So11111111111111111111111111111111111111112';
 const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -28,7 +27,7 @@ const SIG = '5'.repeat(87);
 
 type Call = { command: 'swap' | 'verify'; args: string[]; options: RunOptions };
 
-/** The dry run's answer, as examples/swap.ts prints it. */
+/** The dry run's answer, as `orientim swap` prints it. */
 const dryRun = (over: Record<string, unknown> = {}) => JSON.stringify({
   yourFloor: '1490000', yourQuote: '1497000',
   approval: { minOut: '1490000', until: new Date(Date.UTC(2026, 9, 11, 12, 10)).toISOString() },
@@ -582,7 +581,7 @@ describe('secrets in what the model reads', () => {
 });
 
 describe('orientim_recover', () => {
-  it('runs orientim-verify recover and passes on its words', async () => {
+  it('runs orientim recover and passes on its words', async () => {
     const h = harness([
       () => ok(JSON.stringify({ ok: true, settled: [] })),
       () => ({ code: 2, stdout: JSON.stringify({ ok: false, error: 'Set SOLANA_RPC_URL to your own RPC.' }), stderr: '' }),
@@ -616,7 +615,8 @@ describe('the environment of the commands', () => {
   });
 });
 
-const BIN = join(SKILL, 'bin/orientim-mcp.mjs');
+/** The `orientim` command, from its source (the build is tested as shipped in CI: tools/mcp/smoke.mjs). */
+const BIN = join(ROOT, 'src/bin.ts');
 const BASE58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 const base58 = (bytes: Uint8Array) => {
   let n = BigInt(`0x${Buffer.from(bytes).toString('hex')}`);
@@ -639,7 +639,7 @@ function wallet() {
 /** The server on stdio, fed these lines; its answers once it exits. */
 function serve(lines: unknown[], env: NodeJS.ProcessEnv): Promise<{ id: number; result: any }[]> {
   return new Promise((done, fail) => {
-    const child = spawn(process.execPath, [BIN], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [BIN, 'mcp'], { env, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
     child.stdout.setEncoding('utf8').on('data', (d: string) => { stdout += d; });
     child.on('error', fail);
@@ -650,14 +650,14 @@ function serve(lines: unknown[], env: NodeJS.ProcessEnv): Promise<{ id: number; 
 
 const quoteCall = (id: number) => ({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'orientim_quote', arguments: { inputMint: SOL, outputMint: USDC, amount: '0.01' } } });
 
-describe('bin/orientim-mcp.mjs', () => {
-  it('runs the example and orientim-verify itself, with nothing beside it', () => {
+describe('orientim mcp', () => {
+  it('runs `orientim swap` and the JSON commands itself, with nothing beside it', () => {
     const swap = spawnSync(process.execPath, [BIN, '--run-swap'], { encoding: 'utf8' });
     expect(swap.status).toBe(2);
-    expect(swap.stderr).toMatch(/^usage: node swap\.ts/);
+    expect(swap.stderr).toMatch(/^usage: orientim swap/);
     const verifyRun = spawnSync(process.execPath, [BIN, '--run-verify'], { encoding: 'utf8' });
     expect(verifyRun.status).toBe(2);
-    expect(verifyRun.stdout).toMatch(/usage: orientim-verify/);
+    expect(verifyRun.stdout).toMatch(/usage: orientim </);
   });
 
   it("gets the wallet's own API key once, keeps it for its owner alone, and never shows it", async () => {

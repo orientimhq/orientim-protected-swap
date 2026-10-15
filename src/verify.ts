@@ -15,8 +15,8 @@
  * derives the key could collect them. Rent a route keeps is a cost
  * that does not come back, accepted only up to the agent's own limit (0.001 SOL by default).
  *
- * Bundled into ../lib/orientim-verify.mjs by tools/build-skill.ts (only @solana/kit stays external), so
- * the skill works on its own; CI rebuilds it and fails if the committed file differs.
+ * Part of @orientim/swap, with @orientim/verifier bundled in (tools/build.ts): only @solana/kit is a
+ * dependency.
  */
 import {
   fetchAddressesForLookupTables, getCompiledTransactionMessageDecoder, getTransactionDecoder, isSolanaError,
@@ -30,7 +30,7 @@ import { balancesAfterSimulation, readAccounts } from '@orientim/solana';
 import { hasPermanentDelegate, hasTransferFee, jupiterRouteArgs, routeAccountFor, transferFeeOf, transferFeeOn, verify } from '@orientim/verifier';
 import type { TransferFee } from '@orientim/verifier';
 
-/** When "no record" proves a transaction never landed; `confirm` in the example uses them. */
+/** When "no record" proves a transaction never landed; `confirm` uses them. */
 export { pastProof, provesNeverLanded, STATUS_CACHE_BLOCKS } from '@orientim/solana';
 
 /**
@@ -760,7 +760,7 @@ export type OwnQuoteArgs = {
 /**
  * A floor of the agent's own (`ownQuote`), for a swap within the price impact limit: an amount that
  * moves the market more than `maxPriceImpactBps` (default 5%, at most 20%) is refused here, as the
- * example and `orientim-verify` refuse it, so that a bot built on `ownMinimum` and `verifyPrepared`
+ * example and `orientim` refuse it, so that a bot built on `ownMinimum` and `verifyPrepared`
  * keeps that check. `verifyPrepared` itself checks the bytes against your limits, not the market.
  */
 export async function ownMinimum(args: OwnQuoteArgs & { maxPriceImpactBps?: number }): Promise<string> {

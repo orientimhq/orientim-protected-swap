@@ -10,28 +10,31 @@ import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Rpc, SolanaRpcApi } from '@solana/kit';
 import { describe, expect, it } from 'vitest';
-import {
-  acquireLock, ApprovalError, approvalFor, checkPolicy, ConfigError, createFileStore, forgetApproval, heldToApproval, keptApproval, recordApproval, dataOnly, errorExitCode, errorLine, exitCodeOf, fillAgainstQuote, IntentError, isApiKeyMessage,
-  loadPolicy, LockBusyError, OrientimApiError, OrientimOrderError, PendingSwapError, PolicyError, preparedData, receivedFor, recoverPending,
-  releaseHeldLocks, safeCode, settleOrder, SKILL_VERSION, stateDirFor, untrustedLine,
-  policyPathFor, lockHeld,
-} from '../skills/orientim-protected-swap/examples/swap.ts';
-import { runCli } from '../skills/orientim-protected-swap/src/cli.ts';
+import { errorExitCode, errorLine, exitCodeOf } from '../src/agent.ts';
+import { ConfigError, dataOnly, OrientimApiError, safeCode, SKILL_VERSION, untrustedLine } from '../src/api.ts';
+import { isApiKeyMessage } from '../src/keys.ts';
+import { acquireLock, LockBusyError, lockHeld, releaseHeldLocks } from '../src/lock.ts';
+import { ApprovalError, approvalFor, checkPolicy, forgetApproval, heldToApproval, keptApproval, loadPolicy, PolicyError, policyPathFor, recordApproval, stateDirFor } from '../src/policy.ts';
+import { createFileStore, PendingSwapError, recoverPending, settleOrder } from '../src/store.ts';
+import { fillAgainstQuote, IntentError, OrientimOrderError, preparedData, receivedFor } from '../src/swap.ts';
+import { runCli } from '../src/cli.ts';
 import {
   DEFAULT_FEE_BPS, feeLimitBps, isSlippageBps, MAX_BELOW_BPS, MAX_FEE_BPS, MAX_PRICE_IMPACT_BPS, noticesOf, ORIENTIM_TREASURY, ownMinimum, ownQuote, solFeeOf, tokenRisk,
-} from '../skills/orientim-protected-swap/lib/orientim-verify.mjs';
+} from '../src/verify.ts';
 
 const ROOT = join(import.meta.dirname, '..');
 const SKILL = join(ROOT, 'skills/orientim-protected-swap');
+/** The `orientim` command, from its source. */
+const BIN = join(ROOT, 'src/bin.ts');
 const W = 'Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr';
 const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const BONK = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
 const tmp = () => mkdtempSync(join(tmpdir(), 'orientim-skill-'));
 const POSIX = process.platform !== 'win32';
 
-describe('the skill names its version', () => {
+describe('the package names its version', () => {
   it("SKILL_VERSION is the package's version", () => {
-    const pkg = JSON.parse(readFileSync(join(SKILL, 'package.json'), 'utf8')) as { version: string };
+    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as { version: string };
     expect(SKILL_VERSION).toBe(pkg.version);
   });
 });
@@ -180,7 +183,7 @@ describe('what arrived, against the quote', () => {
   });
 });
 
-describe('orientim-verify, the command', () => {
+describe('orientim, the command', () => {
   const noRpc = {} as Rpc<SolanaRpcApi>;
 
   it('usage errors exit 2, and the bundled command runs as a command only', async () => {
@@ -188,9 +191,9 @@ describe('orientim-verify, the command', () => {
     expect((await runCli('prepare', {}, deps)).code).toBe(2);
     expect((await runCli('finalize', { checked: {} }, deps)).code).toBe(2);
     expect((await runCli('swap', {}, deps)).code).toBe(2);
-    const run = spawnSync(process.execPath, [join(SKILL, 'bin/orientim-verify.mjs')], { encoding: 'utf8' });
+    const run = spawnSync(process.execPath, [BIN], { encoding: 'utf8' });
     expect(run.status).toBe(2);
-    expect(JSON.parse(run.stdout).error).toContain('usage: orientim-verify');
+    expect(JSON.parse(run.stdout).error).toContain('usage: orientim <');
   });
 
   it('a state directory that cannot be made: exit 3 in JSON, and nothing is asked of Orientim', async () => {
@@ -205,7 +208,7 @@ describe('orientim-verify, the command', () => {
       expect(String(r.output.error), command).toContain('cannot be used');
     }
     expect(calls).toBe(0);
-    const run = spawnSync(process.execPath, [join(SKILL, 'bin/orientim-verify.mjs'), 'recover'], {
+    const run = spawnSync(process.execPath, [BIN, 'recover'], {
       encoding: 'utf8', input: '', env: { ...process.env, SOLANA_RPC_URL: 'http://127.0.0.1:1', ORIENTIM_STATE_DIR: notADir },
     });
     expect(run.status).toBe(3);
@@ -298,7 +301,7 @@ describe('the skill holds its own state and limits against what it is handed', (
     expect(exitCodeOf({ outcome: 'confirmed', bookkeepingError: 'disk full' })).toBe(3);
   });
 
-  it('an intent outside the allowed range exits 2; an order that already swapped exits 5, as orientim-verify does', async () => {
+  it('an intent outside the allowed range exits 2; an order that already swapped exits 5, as the JSON commands do', async () => {
     const deps = { rpc: noRpc, apiUrl: 'http://orientim.test', apiKey: 'k', stateDir: tmp() };
     for (const bad of [{ slippageBps: 5 }, { slippageBps: 1_501 }, { maxPriceImpactBps: 2_001 }, { maxFeeBps: 31 }, { minOut: '1.5' }]) {
       const r = await runCli('prepare', { intent: { owner: W, inputMint: USDC, outputMint: BONK, amountIn: '1000000', id: 'order-1', ...bad } }, deps);
@@ -488,7 +491,7 @@ describe('the skill holds its own state and limits against what it is handed', (
     expect(noticesOf(risk).join()).toContain('could not be read');
   });
 
-  it("orientim-verify never takes Orientim's treasury from its JSON", async () => {
+  it("the JSON commands never take Orientim's treasury from its JSON", async () => {
     const intent = { owner: W, inputMint: USDC, outputMint: BONK, amountIn: '1000000', id: 'order-1', treasury: BONK };
     const deps = { rpc: noRpc, apiUrl: 'http://orientim.test', apiKey: 'k', stateDir: tmp() };
     const r = await runCli('prepare', { intent }, deps);
@@ -505,26 +508,25 @@ describe('the skill holds its own state and limits against what it is handed', (
     expect(readdirSync(stateDir)).toContain('order-victim.json');
   });
 
-  it("the example's dry run holds the owner's policy, and a key file is never repeated in an error", () => {
+  it("orientim swap's dry run holds the owner's policy, and a key file is never repeated in an error", () => {
     const dir = tmp();
     const policy = join(dir, 'policy.json');
     writeFileSync(policy, JSON.stringify({ maxAmountIn: { [BONK]: '1000' } }));
     const key = join(dir, 'key');
     writeFileSync(key, 'Nx8TkWq3JfSecretKeyInBase58');
     const env = { ...process.env, ORIENTIM_API_URL: 'http://127.0.0.1:1', ORIENTIM_API_KEY: 'k', SOLANA_RPC_URL: 'http://127.0.0.1:1', ORIENTIM_WALLET_KEYPAIR: key, JUPITER_API_KEY: 'j' };
-    const example = join(SKILL, 'examples/swap.ts');
-    const dry = spawnSync(process.execPath, [example, '--in', USDC, '--out', BONK, '--amount', '1000000', '--owner', W, '--dry-run'], {
+    const dry = spawnSync(process.execPath, [BIN, 'swap', '--in', USDC, '--out', BONK, '--amount', '1000000', '--owner', W, '--dry-run'], {
       encoding: 'utf8', env: { ...env, ORIENTIM_POLICY: policy },
     });
     expect(dry.status).toBe(1);
     expect(dry.stderr).toContain('mint-not-allowed');
     // A tolerance outside 10 to 1500 bps is a usage error, before anything is asked of anyone.
-    const narrow = spawnSync(process.execPath, [example, '--in', USDC, '--out', BONK, '--amount', '1000000', '--owner', W, '--dry-run', '--slippage-bps', '5'], {
+    const narrow = spawnSync(process.execPath, [BIN, 'swap', '--in', USDC, '--out', BONK, '--amount', '1000000', '--owner', W, '--dry-run', '--slippage-bps', '5'], {
       encoding: 'utf8', env,
     });
     expect(narrow.status).toBe(2);
     expect(narrow.stderr).toContain('slippageBps must be "auto" or a whole number of bps from 10 to 1500');
-    const run = spawnSync(process.execPath, [example, '--in', USDC, '--out', BONK, '--amount', '1000000', '--id', 'k'], {
+    const run = spawnSync(process.execPath, [BIN, 'swap', '--in', USDC, '--out', BONK, '--amount', '1000000', '--id', 'k'], {
       encoding: 'utf8', env: { ...env, ORIENTIM_STATE_DIR: join(dir, 'state') },
     });
     // A keypair file it cannot use is a configuration error: exit 2.
@@ -560,18 +562,6 @@ describe('the Python example in SKILL.md', () => {
     });
     expect(run.stderr).toBe('');
     expect(JSON.parse(run.stdout)).toEqual({ code: 2, ok: false });
-  });
-});
-
-describe('the shipped files', () => {
-  it('SHA256SUMS lists every file the skill ships, with its hash', async () => {
-    const { createHash } = await import('node:crypto');
-    const lines = readFileSync(join(SKILL, 'SHA256SUMS'), 'utf8').trim().split('\n');
-    expect(lines.length).toBe(16);
-    for (const line of lines) {
-      const [hash, file] = line.split(/\s+/);
-      expect(createHash('sha256').update(readFileSync(join(SKILL, file))).digest('hex'), file).toBe(hash);
-    }
   });
 });
 
