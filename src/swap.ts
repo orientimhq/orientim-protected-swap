@@ -25,7 +25,7 @@ import type { OwnerCeilings, OwnerPolicy, SpendLog } from './policy.ts';
 import { movedNothing, pendingFor, PendingSwapError, settleOrder, takeOrder } from './store.ts';
 import type { OrderBook, OrderRecord, PendingStore, Signed } from './store.ts';
 import { BASE58, DIGITS, hex, sameBytes, wait } from './util.ts';
-import { DEFAULT_MAX_PRICE_IMPACT_BPS, feeLimitBps, inputTransferFee, isRpcFailure, isSlippageBps, MAX_BELOW_BPS, MAX_FEE_BPS, MAX_PRICE_IMPACT_BPS, MAX_SLIPPAGE_BPS, MIN_SLIPPAGE_BPS, noticesOf, ownQuote, ownSolFeeLimit, preparationBudget, timeLeftOf, tokenRisk, verifyPrepared } from './verify.ts';
+import { CERTIFICATE_MISMATCH, DEFAULT_MAX_PRICE_IMPACT_BPS, feeLimitBps, inputTransferFee, isRpcFailure, isSlippageBps, MAX_BELOW_BPS, MAX_FEE_BPS, MAX_PRICE_IMPACT_BPS, MAX_SLIPPAGE_BPS, MIN_SLIPPAGE_BPS, noticesOf, ownQuote, ownSolFeeLimit, preparationBudget, timeLeftOf, tokenRisk, verifyPrepared } from './verify.ts';
 import type { JupiterBudget, TokenRisk } from './verify.ts';
 
 /**
@@ -60,6 +60,7 @@ export async function checkPrepared(
     ...(p.amounts?.priceImpactPct != null && !(typeof p.amounts.priceImpactPct === 'number' && Number.isFinite(p.amounts.priceImpactPct)) ? ['amounts.priceImpactPct'] : []),
     ...(!digits(p.lastValidBlockHeight) ? ['lastValidBlockHeight'] : []),
     ...(p.blocksLeft !== undefined && !digits(p.blocksLeft) ? ['blocksLeft'] : []),
+    ...(p.contextSlot !== undefined && !digits(p.contextSlot) ? ['contextSlot'] : []),
     ...(['totalDebit', 'orientimFee'] as const).filter(k => !digits(p.certificate?.input?.[k])).map(k => `certificate.input.${k}`),
     ...(!digits(p.certificate?.output?.minimumOutput) ? ['certificate.output.minimumOutput'] : []),
   ];
@@ -86,8 +87,8 @@ export async function checkPrepared(
   const maxFee = (base * BigInt(feeLimitBps(intent.maxFeeBps))) / 10_000n;
   const stated = BigInt(p.certificate.input.orientimFee) + BigInt(p.certificate.output.orientimFee ?? '0') + BigInt(p.certificate.solFee?.lamports ?? '0');
   if (!inSol && BigInt(p.amounts.fee) > maxFee) problems.push(`the Orientim fee ${p.amounts.fee} is above ${maxFee}`);
-  if (stated !== BigInt(p.amounts.fee)) problems.push('the fee the certificate states differs from the one in amounts');
-  if (p.certificate.output.minimumOutput !== p.amounts.minOut) problems.push('the enforced minimum differs from the one stated');
+  if (stated !== BigInt(p.amounts.fee)) problems.push(`${CERTIFICATE_MISMATCH}: the fee the certificate states differs from the one in amounts`);
+  if (p.certificate.output.minimumOutput !== p.amounts.minOut) problems.push(`${CERTIFICATE_MISMATCH}: the enforced minimum differs from the one stated`);
   // The amounts shown are the policy's own, the one the verifier holds the bytes to: the fee, what
   // is routed, and the minimum the wallet keeps.
   const policy = p.policy as Record<string, unknown>;
@@ -98,7 +99,7 @@ export async function checkPrepared(
     BigInt(p.amounts.minOut) !== (policy.feeSide === 'output' ? enforced - policyFee : enforced)
     || BigInt(p.amounts.fee) !== policyFee || BigInt(p.amounts.swapAmount) !== routed
   ) {
-    problems.push('the amounts stated differ from the policy the transaction is checked against');
+    problems.push(`${CERTIFICATE_MISMATCH}: the amounts stated differ from the policy the transaction is checked against`);
   }
   if (intent.minOut && /^\d{1,20}$/.test(intent.minOut) && BigInt(p.amounts.minOut) < BigInt(intent.minOut)) {
     problems.push(`the minimum ${p.amounts.minOut} is below yours, ${intent.minOut}`);
@@ -122,7 +123,7 @@ export async function checkPrepared(
       ['amounts.feeMint', p.amounts.feeMint, String(feeMint)],
     ];
     const differ = stated.filter(([, v, want], i) => (i < 2 || v !== undefined) && v !== String(want)).map(([k]) => k);
-    if (differ.length) problems.push(`the figures stated differ from the policy the transaction is checked against: ${differ.join(', ')}`);
+    if (differ.length) problems.push(`${CERTIFICATE_MISMATCH}: the figures stated differ from the policy the transaction is checked against: ${differ.join(', ')}`);
   }
   // The answer's own claims are not evidence: what the bytes do is decided by the verifier.
   // "auto" is resolved to a number before prepare (`ownFloor`): the route is held to that number.

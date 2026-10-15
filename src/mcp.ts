@@ -16,14 +16,14 @@
  */
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { chmodSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { address, createKeyPairSignerFromBytes, createSolanaRpc, isAddress, signBytes, type KeyPairSigner } from '@solana/kit';
 
 /** The skill's version (package.json); a test holds them equal. */
-export const SERVER_VERSION = '2.0.1';
+export const SERVER_VERSION = '2.1.0';
 
 /** The MCP versions this server speaks, newest first. A client asking for another gets the newest. */
 export const PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'] as const;
@@ -135,6 +135,8 @@ export type McpDeps = {
   newId?: () => string;
   /** The owner's ceilings on what the model may ask for; MODEL_CEILINGS when not set. */
   ceilings?: { slippageBps?: number; priceImpactBps?: number };
+  /** Where quotes outlive the server (`fileQuoteStore`); in memory only when not set. */
+  quoteStore?: QuoteStore;
 };
 
 /** Input the tool cannot use: answered as a tool error, so the model can correct it. */
@@ -247,12 +249,76 @@ const RECOVER_MEANINGS: Readonly<Record<number, string>> = {
 const meaningOf = (meanings: Readonly<Record<number, string>>, code: number | null) =>
   code === null || code === 130 || code === 143 ? STOPPED : meanings[code] ?? `The command exited ${code}.`;
 
-type Quote = {
+export type Quote = {
   wallet: string; inputMint: string; outputMint: string; amountIn: string; inputDecimals: number; outputDecimals: number;
+  /** The least that arrives, as the dry run approved it (base units); the swap is held to it. */
+  minOut: string;
   flags: string[]; at: number; until: number; tried: boolean;
   /** What the user is asked to approve, in words, for a client that can ask them itself. */
   question: string;
 };
+
+/**
+ * Where quotes outlive the server: a client that restarts it (Claude Desktop, Cursor) between the
+ * quote and the user's yes keeps the quote, and its 10 minutes. `all` gives what is kept, `save`
+ * keeps or replaces one, `remove` forgets it.
+ */
+export type QuoteStore = {
+  all(): [string, Quote][];
+  save(id: string, quote: Quote): void;
+  remove(id: string): void;
+};
+
+/** The digest a kept quote is read back against: what the user said yes to, in one text. */
+export function quoteDigest(id: string, q: Quote): string {
+  return createHash('sha256').update(JSON.stringify([
+    id, q.wallet, q.inputMint, q.outputMint, q.amountIn, q.minOut, q.until, q.flags, q.inputDecimals, q.outputDecimals,
+  ])).digest('hex');
+}
+
+/**
+ * Quotes as files in `dir`, the owner's alone, one per quote, each written whole and renamed into
+ * place. A file whose digest does not match what it says (cut short, or changed) is not a quote,
+ * and is forgotten.
+ */
+export function fileQuoteStore(dir: string): QuoteStore {
+  const file = (id: string) => join(dir, `quote-${id}.json`);
+  const QUOTE_ID = /^[0-9a-f-]{8,64}$/;
+  return {
+    all() {
+      let names: string[];
+      try {
+        names = readdirSync(dir);
+      } catch {
+        return [];
+      }
+      const out: [string, Quote][] = [];
+      for (const name of names) {
+        const m = /^quote-([0-9a-f-]{8,64})\.json$/.exec(name);
+        if (!m) continue;
+        try {
+          const kept = record(JSON.parse(readFileSync(join(dir, name), 'utf8')));
+          const q = kept.quote as Quote;
+          if (q && typeof q === 'object' && kept.digest === quoteDigest(m[1], q)) out.push([m[1], q]);
+          else rmSync(join(dir, name), { force: true });
+        } catch {
+          rmSync(join(dir, name), { force: true });
+        }
+      }
+      return out;
+    },
+    save(id, quote) {
+      if (!QUOTE_ID.test(id)) return;
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      const temporary = `${file(id)}.${randomUUID()}.tmp`;
+      writeFileSync(temporary, JSON.stringify({ quote, digest: quoteDigest(id, quote) }), { mode: 0o600 });
+      renameSync(temporary, file(id));
+    },
+    remove(id) {
+      if (QUOTE_ID.test(id)) rmSync(file(id), { force: true });
+    },
+  };
+}
 
 type Answer = Record<string, unknown> & { ok: boolean };
 type Context = {
@@ -279,7 +345,43 @@ export function createServer(deps: McpDeps) {
   const maxSlippageBps = deps.ceilings?.slippageBps ?? MODEL_CEILINGS.slippageBps;
   const maxPriceImpactBps = deps.ceilings?.priceImpactBps ?? MODEL_CEILINGS.priceImpactBps;
   const newId = deps.newId ?? randomUUID;
-  const quotes = new Map<string, Quote>();
+  // Quotes kept before a restart come back, the ones whose day is over aside.
+  const kept = (() => {
+    try {
+      return deps.quoteStore?.all() ?? [];
+    } catch {
+      return [];
+    }
+  })();
+  const quotes = new Map<string, Quote>(kept.filter(([, q]) => now() - q.at <= QUOTE_KEPT_MS));
+  for (const [id] of kept) if (!quotes.has(id)) forget(id);
+  /** Keeps a quote, on disk too: a disk that fails keeps it in memory, as before. */
+  function keep(id: string, q: Quote): void {
+    quotes.set(id, q);
+    try {
+      deps.quoteStore?.save(id, q);
+    } catch {
+      // Kept in memory: it holds until this server stops.
+    }
+  }
+  function forget(id: string): void {
+    quotes.delete(id);
+    try {
+      deps.quoteStore?.remove(id);
+    } catch {
+      // A file left behind is pruned once its day is over.
+    }
+  }
+  /** A quote another server of the same owner kept after this one started (two windows of one client). */
+  function keptElsewhere(id: string): Quote | undefined {
+    try {
+      const found = deps.quoteStore?.all().find(([k, q]) => k === id && now() - q.at <= QUOTE_KEPT_MS)?.[1];
+      if (found) quotes.set(id, found);
+      return found;
+    } catch {
+      return undefined;
+    }
+  }
   const swapping = new Set<string>();
   const running = new Map<string | number, AbortController>();
   /** Calls the client cancelled while they ran: they get no answer. */
@@ -387,12 +489,12 @@ export function createServer(deps: McpDeps) {
         // the one before, and every earlier quote of the same swap goes with it. One that was tried
         // is settled by orientim_recover, and by every swap before it starts.
         const same = q.wallet === owner && q.inputMint === inputMint && q.outputMint === outputMint && q.amountIn === amountIn;
-        if (now() - q.at > QUOTE_KEPT_MS || (same && !swapping.has(id))) quotes.delete(id);
+        if (now() - q.at > QUOTE_KEPT_MS || (same && !swapping.has(id))) forget(id);
       }
       quoteId = newId();
       const until = Date.parse(String(approval.until));
-      quotes.set(quoteId, {
-        wallet: owner, inputMint, outputMint, amountIn, inputDecimals, outputDecimals, flags, at: now(),
+      keep(quoteId, {
+        wallet: owner, inputMint, outputMint, amountIn, inputDecimals, outputDecimals, minOut: approval.minOut as string, flags, at: now(),
         until: Number.isFinite(until) ? until : now() + 10 * 60_000, tried: false, question: '',
       });
     }
@@ -413,9 +515,12 @@ export function createServer(deps: McpDeps) {
     } : undefined;
     if (quoteId && summary) {
       const q = quotes.get(quoteId);
-      if (q) q.question = `Swap ${summary.pay.amount} of ${inputMint} for at least ${summary.receiveAtLeast.amount} of ${outputMint}`
-        + `${summary.orientimFee.amount !== undefined ? `, Orientim's fee ${summary.orientimFee.amount} of ${feeMint}` : ''}`
-        + `${summary.solCost !== undefined ? `, ${summary.solCost} SOL in network costs` : ''}?`;
+      if (q) {
+        q.question = `Swap ${summary.pay.amount} of ${inputMint} for at least ${summary.receiveAtLeast.amount} of ${outputMint}`
+          + `${summary.orientimFee.amount !== undefined ? `, Orientim's fee ${summary.orientimFee.amount} of ${feeMint}` : ''}`
+          + `${summary.solCost !== undefined ? `, ${summary.solCost} SOL in network costs` : ''}?`;
+        keep(quoteId, q);
+      }
     }
     const error = run.code === 0 ? undefined : errorOf(run.stderr);
     return {
@@ -428,8 +533,8 @@ export function createServer(deps: McpDeps) {
   async function swap(args: Record<string, unknown>, context: Context): Promise<Answer> {
     const quoteId = args.quoteId;
     if (typeof quoteId !== 'string' || !/^[0-9a-f-]{8,64}$/.test(quoteId)) throw new InputError('quoteId must be the id orientim_quote answered.');
-    const q = quotes.get(quoteId);
-    if (!q) throw new InputError('No quote with this id here: a newer quote of the same swap replaced it, or the server restarted. Run orientim_quote again, show the user, and swap after their yes.');
+    const q = quotes.get(quoteId) ?? keptElsewhere(quoteId);
+    if (!q) throw new InputError('No quote with this id here: a newer quote of the same swap replaced it, or it is more than a day old. Run orientim_quote again, show the user, and swap after their yes.');
     if (swapping.has(quoteId)) throw new InputError('This swap is already running: wait for its answer, then act on it.');
     const earlier = earlierAnswers();
     if (earlier) return earlier;
@@ -462,6 +567,7 @@ export function createServer(deps: McpDeps) {
       if (now() > q.until) throw new InputError('The user\'s yes to this quote held 10 minutes and has expired: run orientim_quote again, show the user, and swap after their new yes.');
     }
     q.tried = true;
+    keep(quoteId, q);
     context.progress('Verifying the swap on your RPC, then signing and waiting for the chain');
     // The order's id is the quote's: every retry of this quote is the same order, and lands once.
     // Not stopped when the client gives up: what it signed is kept, and settled on the chain.
@@ -946,7 +1052,10 @@ export async function main(file: string): Promise<void> {
   const set = withoutBlanks(process.env);
   for (const name of Object.keys(process.env)) if (!(name in set)) delete process.env[name];
   hideSecrets(process.env);
-  const server = createServer({ run: runWithKey, wallet: walletAddress, decimals: mintDecimals, balances: walletBalances, ceilings: ownerCeilings(process.env) });
+  const server = createServer({
+    run: runWithKey, wallet: walletAddress, decimals: mintDecimals, balances: walletBalances, ceilings: ownerCeilings(process.env),
+    quoteStore: fileQuoteStore(join(workFolder(), 'quotes')),
+  });
   process.stdout.on('error', () => {});
   const send = (m: unknown) => {
     process.stdout.write(`${JSON.stringify(m)}\n`);

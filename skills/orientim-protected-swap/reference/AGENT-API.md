@@ -142,6 +142,7 @@ A prepare answers within 45 seconds in all; one that takes longer, because Jupit
   "temporaryAuthority": "<the one-time key E>",
   "lastValidBlockHeight": "312345678",
   "blocksLeft": "148",
+  "contextSlot": "334567890",
   "amounts": { "amountIn": "5000000", "fee": "106363", "feeMint": "So11111111111111111111111111111111111111112",
                "feeBps": "25", "swapAmount": "5000000", "quotedOut": "42780667", "minOut": "42439063",
                "priceImpactPct": 0.0001 },
@@ -162,6 +163,9 @@ A prepare answers within 45 seconds in all; one that takes longer, because Jupit
 All amounts are strings in base units. The transaction lives 150 blocks, about 40 seconds at
 today's block times (until `lastValidBlockHeight`; `blocksLeft` is what was left when prepare
 answered). Verify, sign and finalize promptly; with fewer than 30 blocks left, prepare again instead.
+`contextSlot` is the slot Orientim built and verified the transaction at: the check waits a few
+seconds for your RPC to reach it, so a node a few slots behind does not refuse a swap built on state
+it has not seen yet (an output account the last swap opened, say).
 
 Before signing, run the verifier: `verifyPrepared(prepared, limits, yourRpc)` from
 `@orientimhq/swap`, where `limits` is what you asked for and the most you accept (fee, network
@@ -185,7 +189,9 @@ account's rent is apart: that account stays yours. `costs.breakdown` gives each 
 amount swapped (`principal`), Orientim's fee in its own token, the network fee, and rent that comes
 back or stays a cost. To hold it to one ceiling of your own, set `maxSolCostLamports`; the check computes it from
 the bytes, not from this statement. The `certificate` and `amounts` are Orientim's statements; the check is what makes them
-evidence, and holds the amounts stated to the policy the bytes are checked against.
+evidence, and holds the amounts stated to the policy the bytes are checked against, and
+`costs.networkFeeLamports` to the most the bytes can pay. A figure that differs is refused as
+`certificate-mismatch: ...`.
 
 `notices.networkBusy` means the network fee is at its limit, so the swap may land late or expire.
 `amounts.priceImpactPct` is `null` when Jupiter

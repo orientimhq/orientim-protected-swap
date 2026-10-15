@@ -1,6 +1,6 @@
 /**
  * One run per wallet at a time: a lock file in the state directory, taken over only when its holder
- * is provably gone (its process ended on this host) or the lock is stale.
+ * is provably gone (its process ended on this host, or this host restarted since) or the lock is stale.
  */
 import { randomUUID } from 'node:crypto';
 import { closeSync, constants as fsConstants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, utimesSync, writeSync } from 'node:fs';
@@ -21,6 +21,25 @@ export class LockBusyError extends Error {
 
 /** The locks this process holds, released when it is told to stop (`releaseHeldLocks`). */
 const heldLocks = new Set<() => void>();
+/** The tokens of the locks this process holds: a lock with this process's pid and another token is not its own. */
+const heldTokens = new Set<string>();
+
+/**
+ * This boot of the machine (Linux), or undefined: a lock written in an earlier boot is left by a
+ * process that is gone, whatever process has its pid now.
+ */
+let bootIdRead: string | null | undefined;
+export function bootId(): string | undefined {
+  if (bootIdRead === undefined) {
+    try {
+      const id = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+      bootIdRead = /^[0-9a-f-]{16,64}$/i.test(id) ? id : null;
+    } catch {
+      bootIdRead = null;
+    }
+  }
+  return bootIdRead ?? undefined;
+}
 
 /**
  * Releases every lock this process holds. For a process told to stop (SIGTERM, SIGINT): what it
@@ -31,9 +50,19 @@ export function releaseHeldLocks(): void {
   for (const release of [...heldLocks]) release();
 }
 
-/** Is the process that wrote a lock on this machine gone? Only a process on this host can be asked. */
-function holderIsGone(lock: { pid?: unknown; host?: unknown } | null): boolean {
+type LockFile = { token?: unknown; pid?: unknown; host?: unknown; bootId?: unknown };
+
+/**
+ * Is the process that wrote a lock on this machine gone? Only a process on this host can be asked. It
+ * is when the host restarted since (another boot id), when its pid is this process's own but the lock
+ * is not (a process restarted in a container gets the pid its predecessor had), or when no process
+ * has its pid (it ended: a crash, SIGKILL, the OOM killer).
+ */
+export function holderIsGone(lock: LockFile | null): boolean {
   if (!lock || lock.host !== hostname() || !Number.isInteger(lock.pid) || (lock.pid as number) <= 0) return false;
+  const boot = bootId();
+  if (boot && typeof lock.bootId === 'string' && lock.bootId !== boot) return true;
+  if (lock.pid === process.pid) return !(typeof lock.token === 'string' && heldTokens.has(lock.token));
   try {
     process.kill(lock.pid as number, 0);
     return false;
@@ -53,7 +82,7 @@ export function lockHeld(dir: string, owner: string, staleMs = 10 * 60_000): boo
     const info = lstatSync(path);
     if (!info.isFile()) return true;
     if (Date.now() - info.mtimeMs >= staleMs) return false;
-    const lock = JSON.parse(readFileSync(path, 'utf8')) as { pid?: unknown; host?: unknown } | null;
+    const lock = JSON.parse(readFileSync(path, 'utf8')) as LockFile | null;
     return !holderIsGone(lock && typeof lock === 'object' ? lock : null);
   } catch (e) {
     // No lock, or one that went between the two reads; one that cannot be read (yet) is held.
@@ -63,8 +92,8 @@ export function lockHeld(dir: string, owner: string, staleMs = 10 * 60_000): boo
 
 /**
  * One worker per wallet at a time, across processes sharing `dir`: the lock file is created only if
- * it does not exist, and names its holder (a token of its own, its process and host). A lock whose
- * process is gone from this host, or one older than `staleMs`, is left by a process that died: it is
+ * it does not exist, and names its holder (a token of its own, its process, host and boot). A lock whose
+ * process is gone from this host (`holderIsGone`), or one older than `staleMs`, is left by a process that died: it is
  * moved aside, which only one process can do, and only if it is still the lock that was judged, then
  * taken. The release deletes the lock only while it still carries this holder's token, so a worker
  * whose lock was taken over never removes its successor's. Keep `staleMs` above the longest swap
@@ -88,7 +117,7 @@ export function acquireLock(dir: string, owner: string, staleMs = 10 * 60_000): 
   const path = join(dir, `lock-${owner}`);
   const token = randomUUID();
   const busy = () => new LockBusyError(owner, path);
-  const lockAt = (file: string): { token?: unknown; pid?: unknown; host?: unknown } | null => {
+  const lockAt = (file: string): LockFile | null => {
     try {
       // Only a regular file is a lock; a link or a directory is never followed, moved or removed.
       if (!lstatSync(file).isFile()) return null;
@@ -105,7 +134,8 @@ export function acquireLock(dir: string, owner: string, staleMs = 10 * 60_000): 
   const take = () => {
     const fd = openSync(path, 'wx', FILE_MODE);
     try {
-      writeSync(fd, JSON.stringify({ pid: process.pid, host: hostname(), at: Date.now(), token }));
+      const boot = bootId();
+      writeSync(fd, JSON.stringify({ pid: process.pid, host: hostname(), at: Date.now(), token, ...(boot ? { bootId: boot } : {}) }));
       fsyncSync(fd);
     } finally {
       closeSync(fd);
@@ -123,7 +153,7 @@ export function acquireLock(dir: string, owner: string, staleMs = 10 * 60_000): 
       // place between two reads by name would otherwise be judged by the old one's age, and taken.
       const fd = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
       let info: ReturnType<typeof fstatSync>;
-      let lock: { token?: unknown; pid?: unknown; host?: unknown } | null = null;
+      let lock: LockFile | null = null;
       try {
         info = fstatSync(fd);
         if (!info.isFile()) throw busy();
@@ -182,7 +212,9 @@ export function acquireLock(dir: string, owner: string, staleMs = 10 * 60_000): 
     clearInterval(beat);
     heldLocks.delete(release);
     if (tokenAt(path) === token) rmSync(path, { force: true });
+    heldTokens.delete(token);
   };
+  heldTokens.add(token);
   heldLocks.add(release);
   return release;
 }

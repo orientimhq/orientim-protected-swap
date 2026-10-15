@@ -13,13 +13,13 @@ import { describe, expect, it } from 'vitest';
 import { errorExitCode, errorLine, exitCodeOf } from '../src/agent.ts';
 import { ConfigError, dataOnly, OrientimApiError, safeCode, SKILL_VERSION, untrustedLine } from '../src/api.ts';
 import { isApiKeyMessage } from '../src/keys.ts';
-import { acquireLock, LockBusyError, lockHeld, releaseHeldLocks } from '../src/lock.ts';
+import { acquireLock, bootId, LockBusyError, lockHeld, releaseHeldLocks } from '../src/lock.ts';
 import { ApprovalError, approvalFor, checkPolicy, forgetApproval, heldToApproval, keptApproval, loadPolicy, PolicyError, policyPathFor, recordApproval, stateDirFor } from '../src/policy.ts';
 import { createFileStore, movedNothing, PendingSwapError, recoverPending, resolvePending, settleOrder } from '../src/store.ts';
 import { fillAgainstQuote, IntentError, OrientimOrderError, preparedData, receivedFor } from '../src/swap.ts';
-import { runCli } from '../src/cli.ts';
+import { runCli, withRetryHints } from '../src/cli.ts';
 import {
-  DEFAULT_FEE_BPS, feeLimitBps, isSlippageBps, MAX_BELOW_BPS, MAX_FEE_BPS, MAX_PRICE_IMPACT_BPS, noticesOf, ORIENTIM_TREASURY, ownMinimum, ownQuote, solFeeOf, tokenRisk,
+  DEFAULT_FEE_BPS, EPOCH_EDGE_SLOTS, feeLimitBps, higherTransferFee, inputTransferFee, isSlippageBps, MAX_BELOW_BPS, MAX_FEE_BPS, MAX_PRICE_IMPACT_BPS, noticesOf, ORIENTIM_TREASURY, ownMinimum, ownQuote, solFeeOf, tokenRisk,
 } from '../src/verify.ts';
 
 const ROOT = join(import.meta.dirname, '..');
@@ -650,5 +650,82 @@ describe('a yes and a lock that stay their own (14 October 2026 review)', () => 
     writeFileSync(system, '{}');
     expect(policyPathFor(system.toUpperCase(), system, 'win32')).toBe(system);
     expect(() => policyPathFor(system.toUpperCase(), system, 'linux')).toThrow('not used');
+  });
+});
+
+describe('the 15 October 2026 review', () => {
+  it.runIf(!!bootId())('a lock written before this machine restarted is taken at once, whatever process has its pid now', () => {
+    const dir = tmp();
+    // The parent process lives: only the boot id says its lock is from before the restart.
+    writeFileSync(join(dir, `lock-${W}`), JSON.stringify({ pid: process.ppid, host: hostname(), at: Date.now(), token: 'before', bootId: '00000000-0000-0000-0000-000000000000' }));
+    acquireLock(dir, W)();
+    writeFileSync(join(dir, `lock-${W}`), JSON.stringify({ pid: process.ppid, host: hostname(), at: Date.now(), token: 'now', bootId: bootId() }));
+    expect(() => acquireLock(dir, W)).toThrow(LockBusyError);
+  });
+
+  it("a lock with this process's pid that this process does not hold is its predecessor's (a restarted container): taken at once", () => {
+    const dir = tmp();
+    writeFileSync(join(dir, `lock-${W}`), JSON.stringify({ pid: process.pid, host: hostname(), at: Date.now(), token: 'predecessor' }));
+    const release = acquireLock(dir, W);
+    // Its own lock it still holds, and keeps.
+    expect(() => acquireLock(dir, W)).toThrow(LockBusyError);
+    expect(lockHeld(dir, W)).toBe(true);
+    release();
+  });
+
+  // A Token-2022 mint charging 1% this epoch (10) and 3% from the next (11), capped at 1,000,000 each.
+  const taxedMint = () => {
+    const data = new Uint8Array(165 + 1 + 4 + 108);
+    const view = new DataView(data.buffer);
+    data[165] = 1;
+    view.setUint16(166, 1, true);
+    view.setUint16(168, 108, true);
+    const fee = (at: number, epoch: bigint, bps: number) => {
+      view.setBigUint64(at, epoch, true);
+      view.setBigUint64(at + 8, 1_000_000n, true);
+      view.setUint16(at + 16, bps, true);
+    };
+    fee(170 + 72, 0n, 100);
+    fee(170 + 90, 11n, 300);
+    return data;
+  };
+  const epochRpc = (slotIndex: bigint, epoch = 10n) => ({
+    getMultipleAccounts: () => ({
+      send: async () => ({
+        context: { slot: 1n },
+        value: [{ owner: 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb', lamports: 1n, data: [Buffer.from(taxedMint()).toString('base64'), 'base64'], executable: false }],
+      }),
+    }),
+    getEpochInfo: () => ({ send: async () => ({ epoch, slotIndex, slotsInEpoch: 432_000n, absoluteSlot: 1n, blockHeight: 1n }) }),
+  }) as unknown as Rpc<SolanaRpcApi>;
+
+  it("a token's transfer fee is the epoch's own, and the higher of the two near the epoch's end", async () => {
+    expect(await inputTransferFee(epochRpc(1_000n), BONK)).toEqual({ bps: 100, maximum: 1_000_000n });
+    expect(await inputTransferFee(epochRpc(432_000n - EPOCH_EDGE_SLOTS), BONK)).toEqual({ bps: 300, maximum: 1_000_000n });
+    expect(await inputTransferFee(epochRpc(5n, 11n), BONK)).toEqual({ bps: 300, maximum: 1_000_000n });
+    expect(higherTransferFee({ bps: 50, maximum: 9n }, { bps: 20, maximum: 99n })).toEqual({ bps: 50, maximum: 99n });
+    expect(higherTransferFee(null, { bps: 20, maximum: 99n })).toEqual({ bps: 20, maximum: 99n });
+    expect(higherTransferFee(null, null)).toBeNull();
+  });
+
+  it('every answer that is not a success says whether it may be retried, and never asks for a new order id', async () => {
+    const hint = (code: number, output: Record<string, unknown>) => withRetryHints({ code, output: { ok: false, ...output } }).output;
+    for (const c of ['mint-not-allowed', 'output-not-allowed', 'amount-over-limit', 'daily-limit', 'approval', 'floor-too-low', 'price-impact-high', 'price-moved', 'costs-more']) {
+      expect(hint(1, { error: { code: c } }), c).toMatchObject({ retryable: false, requiresNewOrderId: false });
+    }
+    for (const c of ['unavailable', 'busy', 'rate-limited', 'expired', 'no-route']) expect(hint(4, { error: { code: c } }).retryable, c).toBe(true);
+    // The key commands put the code beside a string error.
+    expect(hint(1, { error: 'Orientim did not answer.', code: 'unavailable' }).retryable).toBe(true);
+    // Settled without moving anything: the same order may be tried again under its own id.
+    for (const outcome of ['failed', 'expired', 'rejected']) expect(hint(1, { outcome }).retryable, outcome).toBe(true);
+    expect(hint(1, { problems: ['certificate-mismatch: the network fee stated is 1 lamports; the transaction can pay up to 5000'] }).retryable).toBe(false);
+    expect(hint(3, { recoveryRequired: true }).retryable).toBe(true);
+    expect(hint(5, { order: {} }).retryable).toBe(false);
+    expect(hint(2, { error: 'usage' }).retryable).toBe(false);
+    expect(withRetryHints({ code: 0, output: { ok: true } }).output).toEqual({ ok: true });
+    const usage = await runCli('prepare', {}, { rpc: {} as Rpc<SolanaRpcApi>, apiUrl: 'http://orientim.test', apiKey: 'k', stateDir: tmp() });
+    expect(usage.output).toMatchObject({ ok: false, retryable: false, requiresNewOrderId: false });
+    const run = spawnSync(process.execPath, [BIN], { encoding: 'utf8' });
+    expect(JSON.parse(run.stdout)).toMatchObject({ ok: false, retryable: false, requiresNewOrderId: false });
   });
 });

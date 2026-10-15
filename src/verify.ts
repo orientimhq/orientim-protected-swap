@@ -26,7 +26,7 @@ import type { Address, Rpc, SolanaRpcApi, Transaction } from '@solana/kit';
 import { findAssociatedTokenPda } from '@solana-program/token';
 import { JUPITER_PROGRAM, PUMP_AMM_PROGRAM, PUMP_CURVE_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, USDC_MINT, WSOL_MINT } from '@orientim/core/constants';
 import type { ChainSnapshot, Policy } from '@orientim/core/types';
-import { balancesAfterSimulation, readAccounts } from '@orientim/solana';
+import { balancesAfterSimulation, notOlderThan, readAccounts } from '@orientim/solana';
 import { hasPermanentDelegate, hasTransferFee, jupiterRouteArgs, routeAccountFor, transferFeeOf, transferFeeOn, verify } from '@orientim/verifier';
 import type { TransferFee } from '@orientim/verifier';
 
@@ -420,7 +420,50 @@ export type PreparedSwap = {
   messageSha256: string;
   temporaryAuthority: string;
   policy: Record<string, unknown>;
+  /**
+   * The slot Orientim read the chain at to build the transaction, as digits. The check reads your
+   * RPC at least that recent, so a node a few slots behind is waited for, not taken
+   * for a transaction that does not fit the chain (an output account it does not see yet, say).
+   */
+  contextSlot?: string;
+  /** What the answer says the swap costs; the network fee is held to what the bytes can pay. */
+  costs?: { networkFeeLamports?: unknown };
 };
+
+/**
+ * The mark of a problem where the answer's stated figures (`amounts`, `costs`, the certificate)
+ * differ from what the transaction is checked against: the bytes, or the policy the verifier holds
+ * them to. A bot reads it as `certificate-mismatch`: the server said one thing and built another.
+ */
+export const CERTIFICATE_MISMATCH = 'certificate-mismatch';
+
+/**
+ * How far ahead of your RPC Orientim's slot may be and still be waited for. Further ahead, your RPC
+ * is far behind the chain, or the slot is not one: the check reads your RPC as it is.
+ */
+export const MAX_SLOT_LEAD = 150n;
+/** How long the check waits for your RPC to reach the slot Orientim built at (about 15 slots). */
+export const SLOT_WAIT_MS = 6_000;
+
+/**
+ * Your RPC's slot once it reached `slot`, or the latest it reached within `SLOT_WAIT_MS`: asked
+ * every 400 ms, a slot's time. Never more than your RPC said, so a read held to it is answered.
+ */
+async function slotReached(rpc: Rpc<SolanaRpcApi>, slot: bigint, timeoutMs: number): Promise<bigint> {
+  const deadline = Date.now() + SLOT_WAIT_MS;
+  let seen = 0n;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 400));
+    try {
+      const now = await rpc.getSlot({ commitment: 'confirmed' }).send({ abortSignal: AbortSignal.timeout(timeoutMs) });
+      if (now > seen) seen = now;
+      if (now >= slot) return now;
+    } catch {
+      // asked again until the time is up
+    }
+  }
+  return seen;
+}
 
 /**
  * Orientim's fee in lamports when it is in SOL, whichever side it is taken from: from SOL the swap
@@ -546,15 +589,31 @@ export async function verifyPrepared(
       addressTableLookups?: { lookupTableAddress: Address; writableIndexes: number[]; readonlyIndexes: number[] }[];
     };
     const lookups = compiled.addressTableLookups ?? [];
-    // The tables, and at the same time the slot your RPC is at: every account below is read at least
-    // that recent, so the snapshot cannot hold state older than the moment the check began. (A table
-    // read from a node behind can only lack entries added since, and the check then refuses.)
-    const [lookupTables, floor] = lookups.length
+    // The slot your RPC is at: every account below is read at least that recent, so the snapshot
+    // cannot hold state older than the moment the check began. (A table read from a node behind can
+    // only lack entries added since, and the check then refuses.)
+    const stated = typeof prepared.contextSlot === 'string' && /^\d{1,20}$/.test(prepared.contextSlot) ? BigInt(prepared.contextSlot) : undefined;
+    const tables = (minContextSlot?: bigint) => notOlderThan(() => fetchAddressesForLookupTables(lookups.map(l => l.lookupTableAddress), rpc as never, {
+      abortSignal: AbortSignal.timeout(timeoutMs), ...(minContextSlot !== undefined ? { minContextSlot } : {}),
+    }), minContextSlot) as Promise<Record<string, readonly Address[]>>;
+    let [lookupTables, floor] = lookups.length || stated !== undefined
       ? await Promise.all([
-        fetchAddressesForLookupTables(lookups.map(l => l.lookupTableAddress), rpc as never, { abortSignal: AbortSignal.timeout(timeoutMs) }) as Promise<Record<string, readonly Address[]>>,
-        rpc.getSlot({ commitment: 'confirmed' }).send({ abortSignal: AbortSignal.timeout(timeoutMs) }),
+        lookups.length ? tables() : Promise.resolve({} as Record<string, readonly Address[]>),
+        // Asked only for Orientim's slot, an RPC that does not say its own is read as before.
+        rpc.getSlot({ commitment: 'confirmed' }).send({ abortSignal: AbortSignal.timeout(timeoutMs) })
+          .catch((e: unknown) => { if (lookups.length) throw e; return undefined; }),
       ])
       : [{} as Record<string, readonly Address[]>, undefined];
+    // Orientim built the swap at `stated`: a node a few slots behind it may not see what the
+    // transaction was built on yet (an output account the last swap opened, say), so it is waited
+    // for, a few seconds at most. One that does not catch up is read as before.
+    if (stated !== undefined && floor !== undefined && stated > floor && stated - floor <= MAX_SLOT_LEAD) {
+      const reached = await slotReached(rpc, stated, timeoutMs);
+      if (reached > floor) {
+        floor = reached;
+        if (lookups.length) lookupTables = await tables(floor);
+      }
+    }
     const resolved = lookups.flatMap(l =>
       [...l.writableIndexes, ...l.readonlyIndexes].map(i => lookupTables[l.lookupTableAddress]?.[i]).filter((a): a is Address => !!a));
     const derived = Object.values(p.accounts).filter((a): a is Address => !!a);
@@ -577,6 +636,11 @@ export async function verifyPrepared(
   for (const v of verdict.violations) problems.push(`${v.rule}: ${v.detail}`);
   // The owner's ceiling, on the bytes that are signed: every Jupiter route, whatever its kind.
   if (limits.maxSlippageCeilingBps !== undefined) problems.push(...routesAboveCeiling(transaction.messageBytes, limits.maxSlippageCeilingBps));
+  // The network fee the answer states is what the user is shown: never less than the bytes can pay.
+  const statedFee = prepared.costs?.networkFeeLamports;
+  if (typeof statedFee === 'string' && /^\d{1,20}$/.test(statedFee) && verdict.networkFeeLamports !== undefined && BigInt(statedFee) < verdict.networkFeeLamports) {
+    problems.push(`${CERTIFICATE_MISMATCH}: the network fee stated is ${statedFee} lamports; the transaction can pay up to ${verdict.networkFeeLamports}`);
+  }
   if (limits.maxSolCostLamports !== undefined && verdict.networkFeeLamports !== undefined) {
     const solCost = verdict.networkFeeLamports + routeCost + solFeeOf(p);
     if (solCost > BigInt(limits.maxSolCostLamports)) {
@@ -907,15 +971,38 @@ export function noticesOf(risk: TokenRisk): string[] {
 }
 
 /**
- * The transfer fee a Token-2022 input token charges in the current epoch, read on your RPC; null
+ * Slots before an epoch ends within which a swap checked now may land in the next one: a
+ * transaction lives 150 blocks, and the swap is prepared, checked, signed and sent within that.
+ */
+export const EPOCH_EDGE_SLOTS = 300n;
+
+/**
+ * The fee a transfer may be charged at either side of an epoch's end: the larger rate and the larger
+ * cap of the two. Near the end, the swap may land in the next epoch, under the fee set for it.
+ */
+export function higherTransferFee(a: TransferFee | null, b: TransferFee | null): TransferFee | null {
+  if (!a) return b;
+  if (!b) return a;
+  return { bps: Math.max(a.bps, b.bps), maximum: a.maximum > b.maximum ? a.maximum : b.maximum };
+}
+
+/**
+ * The transfer fee a Token-2022 input token charges where the swap may land, read on your RPC; null
  * when it charges none (a classic token, or no TransferFeeConfig). For `ownMinimum`'s `inputTax`.
+ * Within `EPOCH_EDGE_SLOTS` of the epoch's end it is the higher of this epoch's fee and the next
+ * one's (`higherTransferFee`): the floor is then priced for the less that may arrive.
  */
 export async function inputTransferFee(rpc: Rpc<SolanaRpcApi>, mint: string, timeoutMs = 10_000): Promise<TransferFee | null> {
   const state = (await readAccounts(rpc as never, [mint as Address], { timeoutMs })).accounts.get(mint);
   if (!state || state.owner !== TOKEN_2022_PROGRAM || !hasTransferFee(state.data)) return null;
   // Which of the two fee settings applies depends on the epoch, as the token program decides it.
-  const { epoch } = await rpc.getEpochInfo({ commitment: 'confirmed' }).send({ abortSignal: AbortSignal.timeout(timeoutMs) });
-  return transferFeeOf(state.data, BigInt(epoch));
+  const info = await rpc.getEpochInfo({ commitment: 'confirmed' }).send({ abortSignal: AbortSignal.timeout(timeoutMs) });
+  const epoch = BigInt(info.epoch);
+  const now = transferFeeOf(state.data, epoch);
+  // An answer that does not say where in the epoch it is cannot be near its end, as far as it says.
+  const { slotIndex, slotsInEpoch } = info as { slotIndex?: bigint | number; slotsInEpoch?: bigint | number };
+  const near = slotIndex !== undefined && slotsInEpoch !== undefined && BigInt(slotsInEpoch) - BigInt(slotIndex) <= EPOCH_EDGE_SLOTS;
+  return near ? higherTransferFee(now, transferFeeOf(state.data, epoch + 1n)) : now;
 }
 
 /**

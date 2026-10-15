@@ -42,7 +42,9 @@
  * Jupiter's own price and the hard limits included: `checked` is taken on trust for nothing.
  *
  * A refusal because a service did not answer (Jupiter busy, your RPC or Orientim not answering) carries
- * `error.code` `unavailable` and `retryAfter`: try again later. Any other refusal is not a retry.
+ * `error.code` `unavailable` and `retryAfter`: try again later. Every answer that is not a success
+ * says `retryable` (the same call may be made again, unchanged) and `requiresNewOrderId` (always
+ * false: an order is retried under its own id): see `withRetryHints`.
  *
  * Environment: SOLANA_RPC_URL (your own RPC; always), ORIENTIM_API_URL and ORIENTIM_API_KEY (prepare,
  * finalize), JUPITER_API_KEY (Jupiter throttles keyless calls), ORIENTIM_STATE_DIR (default ./.orientim-state; an
@@ -240,12 +242,46 @@ async function resolveOrderOnly(
 }
 
 /**
- * One contract for every command: `sent` says only what this call did, and `recoveryRequired` (every
- * exit 3) says whether anything may still be in flight from earlier: run `recover` before anything new.
+ * The refusals that are not a verdict on the swap: a service busy or down, a session or a transaction
+ * that ran out of time, a route not found at this moment. The same call, made again once the wait
+ * (`retryAfter`, or a few seconds) has passed, may succeed. Every other refusal is the owner's,
+ * the user's or the check's answer, and stands until something changes.
+ */
+export const RETRYABLE_CODES: ReadonlySet<string> = new Set([
+  'unavailable', 'busy', 'rate-limited', 'expired', 'bad-session', 'routes-needed', 'route-format', 'paused',
+  'fee-unavailable', 'bad-quote', 'internal', 'token-data-mismatch', 'no-route', 'simulation-failed', 'output-balance-changed',
+]);
+
+/**
+ * `retryable` and `requiresNewOrderId` on every answer that is not a success, for a bot that reads
+ * no prose. `retryable`: the same call may be made again, unchanged (after `recover` when
+ * `recoveryRequired` says so, and after `retryAfter` when there is one): a service that did not
+ * answer, a swap that settled without moving anything, a run that holds the wallet. Not retryable:
+ * the owner's policy (`mint-not-allowed`, `daily-limit`...), the user's minimum, a check that refused
+ * the transaction, a usage error, an order that already swapped. `requiresNewOrderId` is always
+ * false: an order is retried under its own id, which is what keeps it from being swapped twice; a new
+ * id is a new order.
+ */
+export function withRetryHints(result: CliResult): CliResult {
+  if (result.output.ok !== false) return result;
+  const error = result.output.error;
+  const code = error && typeof error === 'object' ? (error as { code?: unknown }).code : result.output.code;
+  const outcome = result.output.outcome;
+  const retryable = result.code === 3
+    || (result.code !== 2 && result.code !== 5 && (
+      (typeof code === 'string' && RETRYABLE_CODES.has(code))
+      || outcome === 'failed' || outcome === 'expired' || outcome === 'rejected'));
+  return { code: result.code, output: { ...result.output, retryable, requiresNewOrderId: false } };
+}
+
+/**
+ * One contract for every command: `sent` says only what this call did, `recoveryRequired` (every
+ * exit 3) says whether anything may still be in flight from earlier: run `recover` before anything
+ * new; and every answer that is not a success says whether it may be retried (`withRetryHints`).
  */
 export async function runCli(command: string, input: unknown, deps: CliDeps): Promise<CliResult> {
   const result = await runCommand(command, input, deps);
-  return result.code === 3 ? { code: 3, output: { ...result.output, recoveryRequired: true } } : result;
+  return withRetryHints(result.code === 3 ? { code: 3, output: { ...result.output, recoveryRequired: true } } : result);
 }
 
 async function runCommand(command: string, input: unknown, deps: CliDeps): Promise<CliResult> {
@@ -688,7 +724,8 @@ async function readStdin(): Promise<string> {
 
 export async function main(): Promise<void> {
   const command = process.argv[2] ?? '';
-  const print = (r: CliResult) => {
+  const print = (result: CliResult) => {
+    const r = withRetryHints(result);
     process.stdout.write(`${JSON.stringify(r.output, null, 2)}\n`);
     process.exitCode = r.code;
   };

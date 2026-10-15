@@ -74,7 +74,7 @@ export {
 export * from './verify.ts';
 
 // For bots that drive the swap as JSON commands (the `orientim` command, in-process).
-export { runCli } from './cli.ts';
+export { RETRYABLE_CODES, runCli, withRetryHints } from './cli.ts';
 export type { CliDeps, CliResult } from './cli.ts';
 
 // The seven rules (R1–R7) on the exact bytes the wallet signs, for a transaction built elsewhere.

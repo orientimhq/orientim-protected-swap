@@ -3,6 +3,29 @@
 Versions of `@orientimhq/swap` (`package.json`); up to 1.12.3, versions of the skill folder
 (`skills/orientim-protected-swap/package.json`) and of the npm package `orientim-mcp`.
 
+## 2.1.0
+
+From the 15 October 2026 review:
+
+- A wallet's lock left by a process that is gone is taken at once in two more cases: the machine
+  restarted since (the lock names the boot, `/proc/sys/kernel/random/boot_id`), and the lock carries
+  this process's own pid without being its own (a container restarted, and its process got the pid its
+  predecessor had). Before, such a lock answered `busy` until it went stale (10 minutes).
+- The check reads your RPC no older than the slot Orientim built the swap at (`contextSlot` in the
+  prepare answer): a node a few slots behind is waited for, up to 6 seconds, instead of judging the
+  transaction on state older than it was built on. A node that does not catch up is read as before.
+- A Token-2022 input token's transfer fee, within 300 slots of an epoch's end, is the higher of this
+  epoch's and the next one's: the swap may land in the next epoch, and your floor is priced for the
+  less that may then arrive.
+- The network fee the prepare answer states (`costs.networkFeeLamports`) is held to the most the
+  transaction's bytes can pay. Every stated figure that differs from what the bytes are checked against
+  is refused as `certificate-mismatch: ...`.
+- The JSON commands say on every answer that is not a success whether it may be retried
+  (`retryable`) and that no new order id is needed (`requiresNewOrderId`, always `false`).
+- The MCP server keeps its quotes on disk (`~/.orientim/quotes`, each read back against its SHA-256
+  digest): a client that restarts the server between the quote and the user's yes keeps the quote, its
+  10 minutes and its order id.
+
 ## 2.0.1
 
 - `npx -y @orientimhq/swap mcp` starts the MCP server: `orientim` is the package's one command, so npx

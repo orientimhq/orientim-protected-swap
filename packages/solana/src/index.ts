@@ -88,7 +88,7 @@ export async function fetchAccounts(rpc: SolanaRpc, addresses: readonly Address[
  * A read that must not be older than `minContextSlot`: a node behind it says so, and is asked again
  * for about four and a half seconds (it usually catches up in a slot or two) before the read fails.
  */
-async function notOlderThan<T>(read: () => Promise<T>, minContextSlot: bigint | undefined): Promise<T> {
+export async function notOlderThan<T>(read: () => Promise<T>, minContextSlot: bigint | undefined): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
       return await read();

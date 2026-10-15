@@ -81,6 +81,8 @@ export type Prepared = {
   lastValidBlockHeight: string;
   /** Blocks left in the transaction's life when prepare answered (150 at most, about a minute). */
   blocksLeft?: string;
+  /** The slot Orientim read the chain at to build it: the check reads your RPC at least that recent. */
+  contextSlot?: string;
   /**
    * `fee` is in `feeMint`: SOL first, then USDC or USDT, on whichever side; otherwise the input token.
    * `minOut` is what the wallet keeps at least, after a fee taken from the output.
@@ -213,7 +215,7 @@ export function errorDetails(body: Record<string, unknown>): Record<string, unkn
 
 /** The fields of a prepare answer the skill reads or shows; any other field is dropped. */
 export const PREPARED_FIELDS = [
-  'ticket', 'transaction', 'messageSha256', 'wallet', 'temporaryAuthority', 'version', 'lastValidBlockHeight', 'blocksLeft',
+  'ticket', 'transaction', 'messageSha256', 'wallet', 'temporaryAuthority', 'version', 'lastValidBlockHeight', 'blocksLeft', 'contextSlot',
   'amounts', 'costs', 'notices', 'tokens', 'slippageBps', 'route', 'certificate', 'policy',
 ] as const;
 
@@ -280,7 +282,7 @@ export type Fetch = typeof fetch;
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */
-export const SKILL_VERSION = '2.0.1';
+export const SKILL_VERSION = '2.1.0';
 
 /** Seconds to wait from an answer's Retry-After header; null without one. */
 export const retryAfterOf = (res: Response) => {

@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
-  commandEnv, createServer, fromBaseUnits, InputError, MODEL_CEILINGS, mintDecimalsOf, ownerCeilings, PROTOCOL_VERSIONS, SERVER_VERSION, toBaseUnits, tokenAmountOf, TOOLS, withoutBlanks, withoutSecrets,
+  commandEnv, createServer, fileQuoteStore, fromBaseUnits, InputError, MODEL_CEILINGS, mintDecimalsOf, ownerCeilings, PROTOCOL_VERSIONS, SERVER_VERSION, toBaseUnits, tokenAmountOf, TOOLS, withoutBlanks, withoutSecrets,
   type McpDeps, type Run, type RunOptions,
 } from '../src/mcp.ts';
 import { SKILL_VERSION } from '../src/api.ts';
@@ -736,4 +736,52 @@ describe('orientim mcp', () => {
     expect(quote.structuredContent.error.line).toMatch(/SOLANA_RPC_URL/);
     expect(quote.content[0].text).not.toContain('ori_test');
   }, 30_000);
+});
+
+describe('a quote outlives the server (15 October 2026 review)', () => {
+  const swapped = () => ok(JSON.stringify({ signature: SIG, outcome: 'confirmed', refusal: null, meaning: 'Swapped.', amounts: {}, received: '1497000' }));
+
+  it('a client that restarts the server between the quote and the yes keeps the quote, and its order', async () => {
+    const quoteStore = fileQuoteStore(mkdtempSync(join(tmpdir(), 'orientim-quotes-')));
+    const before = harness([() => ok(dryRun())], { quoteStore });
+    const { answer: q } = await before.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01', slippageBps: 100 });
+    // A new server, as a client starts after a restart: the same quote, under the same order id.
+    const after = harness([swapped], { quoteStore });
+    const { answer } = await after.tool('orientim_swap', { quoteId: q.quoteId });
+    expect(answer).toMatchObject({ ok: true, outcome: 'confirmed', quoteId: q.quoteId });
+    expect(after.calls[0].args).toEqual(['--in', SOL, '--out', USDC, '--amount', '10000000', '--id', `mcp-${q.quoteId}`, '--slippage-bps', '100']);
+  });
+
+  it('a quote whose yes expired before the restart is still refused after it', async () => {
+    const quoteStore = fileQuoteStore(mkdtempSync(join(tmpdir(), 'orientim-quotes-')));
+    const before = harness([() => ok(dryRun())], { quoteStore });
+    const { answer: q } = await before.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01' });
+    const after = harness([], { quoteStore });
+    after.advance(11 * 60_000);
+    expect((await after.tool('orientim_swap', { quoteId: q.quoteId })).answer.error.line).toMatch(/has expired/);
+    expect(after.calls).toHaveLength(0);
+  });
+
+  it('a kept quote that was changed on disk is no quote at all', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orientim-quotes-'));
+    const before = harness([() => ok(dryRun())], { quoteStore: fileQuoteStore(dir) });
+    const { answer: q } = await before.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01' });
+    const file = join(dir, `quote-${q.quoteId}.json`);
+    const kept = JSON.parse(readFileSync(file, 'utf8'));
+    kept.quote.amountIn = '20000000';
+    writeFileSync(file, JSON.stringify(kept));
+    const after = harness([], { quoteStore: fileQuoteStore(dir) });
+    expect((await after.tool('orientim_swap', { quoteId: q.quoteId })).answer.error.line).toMatch(/No quote with this id/);
+    expect(existsSync(file)).toBe(false);
+  });
+
+  it('a tried quote stays tried across a restart: the person is not asked twice for one yes', async () => {
+    const quoteStore = fileQuoteStore(mkdtempSync(join(tmpdir(), 'orientim-quotes-')));
+    const before = harness([() => ok(dryRun()), () => ({ code: 3, stdout: '', stderr: 'The outcome is still unknown.\n' })], { quoteStore });
+    const { answer: q } = await before.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01' });
+    await before.tool('orientim_swap', { quoteId: q.quoteId });
+    const kept = quoteStore.all().find(([id]) => id === q.quoteId)?.[1];
+    expect(kept?.tried).toBe(true);
+    expect(kept?.minOut).toBe('1490000');
+  });
 });
