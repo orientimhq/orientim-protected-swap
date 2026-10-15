@@ -425,13 +425,14 @@ one to ask") lists what to do with each code.
 | 409 | `routes-needed` | With `ownRoutes`: fetch `requests` from Jupiter with your own key and prepare again with `session` and every route you have (see "Your own Jupiter key"). |
 | 409 | `session-used` | With `ownRoutes`: Orientim already signed another transaction with this session's one-time key, and signs one per key. Prepare again without the session; this request signed and sent nothing. |
 | 409 | `output-balance-changed` | Your balance of the output token moved since prepare, so this request signed nothing. Check `signature` as above, then prepare again. |
+| 409 | `output-in-flight` | Another swap into the same output account (`inFlight`, its signature) is signed and has not landed or expired: its tokens would count towards this swap's minimum, so this request signed nothing. Wait `Retry-After` seconds and finalize again; once that swap has landed, this one is signed if your output balance is still the one prepare saw, and refused as `output-balance-changed` if not. |
 | 410 | `expired` | The transaction's lifetime passed before this finalize signed it. Check `signature` as above, then prepare again. |
 | 422 | `unsupported-token`, `no-route`, `bad-quote`, `insufficient-sol`, `insufficient-balance`, `simulation-failed`, `verification-failed`, `token-data-mismatch`, `output-account-restricted`, `input-account-restricted` | This swap cannot be built safely right now; `message` says why. |
 | 422 | `amount-too-small` | The amount is below the smallest swap Orientim takes, about 0.004 SOL, or $1 of USDC or USDT (for a swap between two other tokens, its value in SOL). Swap a larger amount. Selling the whole balance of a token (not SOL) is allowed at any size. |
 | 426 | `skill-outdated` | This copy of the skill is older than Orientim serves (`minimum`). Download the current one; a swap already signed still finalizes. |
 | 429 | `rate-limited` | Too many requests for this key (per wallet for a self-serve key). Wait `Retry-After` seconds. |
 | 500 | `internal` | Something unexpected failed; nothing was signed by Orientim or sent. Retry later. |
-| 503 | `busy`, `unavailable` | Jupiter or Orientim's Solana RPC is rate limited, overloaded or silent (from finalize: Orientim could not read whether the transaction was already sent). Wait `Retry-After` seconds and retry. |
+| 503 | `busy`, `unavailable` | Jupiter or Orientim's Solana RPC is rate limited, overloaded or silent (from finalize: Orientim could not read whether the transaction was already sent, or could not reach the state its instances share). Wait `Retry-After` seconds and retry. |
 | 503 | `fee-unavailable` | Orientim cannot collect its fee on this swap right now, so it built nothing. Wait `Retry-After` (60) seconds and retry. |
 | 503 | `paused` | Orientim has paused protected swaps, and issues no API keys meanwhile. Your funds are not affected. A transaction already on chain is still reported by finalize. |
 | 503 | `route-format` | Jupiter changed its swap instruction and Orientim refuses what it cannot read. Nothing builds until Orientim is updated: wait `Retry-After` (300) seconds, not less. |

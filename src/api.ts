@@ -152,6 +152,7 @@ export const ERROR_MEANINGS: Readonly<Record<string, string>> = {
   'bad-session': 'The routes session expired or belongs to another swap. Prepare again from the start.',
   'costs-more': 'The protected route costs more than the open market. Ask the user; to accept, prepare again with acceptCostBps set to gapBps.',
   'output-balance-changed': 'Your balance of the output token changed since prepare, so nothing was signed. Settle what may still land, then prepare again.',
+  'output-in-flight': 'Another swap into the same output account is signed and has not landed or expired yet, so nothing was signed. Wait the Retry-After seconds, then finalize again.',
   busy: "Jupiter or Orientim's Solana RPC is busy. Wait the Retry-After seconds, then try again.",
   unavailable: "Orientim, Jupiter or Orientim's Solana RPC did not answer. Wait the Retry-After seconds, then try again.",
   'rate-limited': 'Too many requests. Wait the Retry-After seconds, then try again.',

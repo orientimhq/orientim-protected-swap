@@ -338,6 +338,8 @@ names the transaction (`signature`, `lastValidBlockHeight`); follow step 7 befor
   again; your `minOut` still holds. Tell the user so when you ask.
 - `409 output-balance-changed`: your balance of the output token changed between prepare and
   finalize (another swap or a transfer), so that finalize signed nothing. Step 7, then prepare again.
+- `409 output-in-flight`: another swap into the same output account is signed and has not landed or
+  expired yet, so that finalize signed nothing. Wait the `Retry-After` seconds and finalize again.
 - `503 busy` / `unavailable`, `429 rate-limited`, and the commands' own `unavailable` (Jupiter,
   your RPC or Orientim did not answer; with `retryAfter`): wait the `Retry-After` seconds
   (`OrientimApiError.retryAfter`), then retry. Do not retry in a tight loop.

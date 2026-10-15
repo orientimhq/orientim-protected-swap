@@ -25,6 +25,9 @@ From the 15 October 2026 review:
 - The MCP server keeps its quotes on disk (`~/.orientim/quotes`, each read back against its SHA-256
   digest): a client that restarts the server between the quote and the user's yes keeps the quote, its
   10 minutes and its order id.
+- A new finalize refusal, `409 output-in-flight` (retryable): Orientim signs one swap at a time into
+  an output account, until it lands or expires, since a second one's minimum would count the first's
+  tokens. Its signature is `inFlight`.
 
 ## 2.0.1
 

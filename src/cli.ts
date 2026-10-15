@@ -250,6 +250,7 @@ async function resolveOrderOnly(
 export const RETRYABLE_CODES: ReadonlySet<string> = new Set([
   'unavailable', 'busy', 'rate-limited', 'expired', 'bad-session', 'routes-needed', 'route-format', 'paused',
   'fee-unavailable', 'bad-quote', 'internal', 'token-data-mismatch', 'no-route', 'simulation-failed', 'output-balance-changed',
+  'output-in-flight',
 ]);
 
 /**
