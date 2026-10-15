@@ -27,7 +27,7 @@ import { findAssociatedTokenPda } from '@solana-program/token';
 import { JUPITER_PROGRAM, PUMP_AMM_PROGRAM, PUMP_CURVE_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, USDC_MINT, WSOL_MINT } from '@orientim/core/constants';
 import type { ChainSnapshot, Policy } from '@orientim/core/types';
 import { balancesAfterSimulation, notOlderThan, readAccounts } from '@orientim/solana';
-import { hasPermanentDelegate, hasTransferFee, jupiterRouteArgs, routeAccountFor, transferFeeOf, transferFeeOn, verify } from '@orientim/verifier';
+import { hasPermanentDelegate, hasTransferFee, hasTransferHookAuthority, jupiterRouteArgs, routeAccountFor, transferFeeOf, transferFeeOn, verify } from '@orientim/verifier';
 import type { TransferFee } from '@orientim/verifier';
 
 /** When "no record" proves a transaction never landed; `confirm` uses them. */
@@ -912,11 +912,12 @@ const QUIET_MINTS = new Set<string>([WSOL_MINT, USDC_MINT, 'Es9vMFrzaCERmJfrF4H2
  * protects the wallet, not the value of what is bought. Never fails: an unreadable mint gives no note.
  */
 /** What a mint lets its issuer do, read on your RPC. `wellKnown`: SOL, USDC or USDT, which keep these powers by design. */
-export type TokenPowers = { freezeAuthority: boolean; mintAuthority: boolean; permanentDelegate: boolean; wellKnown: boolean };
+export type TokenPowers = { freezeAuthority: boolean; mintAuthority: boolean; permanentDelegate: boolean; transferHookAuthority: boolean; wellKnown: boolean };
 /**
  * The issuer's powers over each token, or `unavailable` when the mint accounts could not be read:
  * a failed read is never reported as no risk. A Token-2022 permanent delegate can move or burn any
- * holder's balance; a freeze authority can freeze it; a mint authority can mint more.
+ * holder's balance; a freeze authority can freeze it; a mint authority can mint more; a transfer-hook
+ * authority can later add code that runs on every transfer.
  */
 export type TokenRisk =
   | { status: 'known'; tokens: Record<string, TokenPowers | { exists: false }> }
@@ -938,6 +939,7 @@ export async function tokenRisk(rpc: Rpc<SolanaRpcApi>, mints: readonly string[]
         freezeAuthority: view.getUint32(46, true) === 1,
         mintAuthority: view.getUint32(0, true) === 1,
         permanentDelegate: s.owner === TOKEN_2022_PROGRAM && hasPermanentDelegate(s.data),
+        transferHookAuthority: s.owner === TOKEN_2022_PROGRAM && hasTransferHookAuthority(s.data),
         wellKnown: QUIET_MINTS.has(m),
       };
     }
@@ -966,6 +968,7 @@ export function noticesOf(risk: TokenRisk): string[] {
     if (t.permanentDelegate) notes.push(`${name} has a permanent delegate: its issuer can move or burn your balance at any time`);
     if (t.freezeAuthority) notes.push(`${name} has a freeze authority: its issuer can freeze your balance`);
     if (t.mintAuthority) notes.push(`${name} can still be minted by its issuer`);
+    if (t.transferHookAuthority) notes.push(`${name} has a transfer-hook authority: its issuer can later add code that runs on every transfer`);
   }
   return notes;
 }

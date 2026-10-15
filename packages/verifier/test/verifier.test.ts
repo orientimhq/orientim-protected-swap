@@ -262,6 +262,15 @@ describe('Token-2022', () => {
     expect(rules(await verify(await compileHonest(s, 0), s.policy, s.snapshot))).toContain('R7');
   });
 
+  it('a permanent delegate that is the wallet or the one-time key, signers of the transaction → R7', async () => {
+    for (const who of ['owner', 'ephemeral'] as const) {
+      const s = await t22([[12, 32]]);
+      s.snapshot.accounts.get(USDC)!.data.set(getAddressEncoder().encode(s.policy[who]), 166 + 4);
+      const v = await verify(await compileHonest(s, 0), s.policy, s.snapshot);
+      expect(v.violations.some(x => x.rule === 'R7' && x.detail.includes('signer of this transaction'))).toBe(true);
+    }
+  });
+
   it('new accounts that start initialized change nothing, so the default-state extension is accepted', async () => {
     const s = await t22([[6, 1]]);
     s.snapshot.accounts.get(USDC)!.data[166 + 4] = 1; // AccountState::Initialized

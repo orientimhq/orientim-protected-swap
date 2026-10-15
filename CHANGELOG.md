@@ -3,6 +3,16 @@
 Versions of `@orientimhq/swap` (`package.json`); up to 1.12.3, versions of the skill folder
 (`skills/orientim-protected-swap/package.json`) and of the npm package `orientim-mcp`.
 
+## Unreleased
+
+From the 15 October 2026 audit findings:
+
+- R7 refuses a Token-2022 mint whose permanent delegate is the wallet or the one-time key, whatever
+  its curve: both sign the transaction, so a route handed the one-time key could move that token's
+  balances with its signature.
+- `tokenRisk` and the notices report a mint whose issuer can still turn on a transfer hook (an
+  authority set, no program yet): no code runs today, but code set later would run on every transfer.
+
 ## 2.1.0
 
 From the 15 October 2026 review:

@@ -491,6 +491,11 @@ describe('the skill holds its own state and limits against what it is handed', (
     expect(noticesOf(risk).join()).toContain('could not be read');
   });
 
+  it('an issuer that can still turn on a transfer hook is told before signing', () => {
+    const notes = noticesOf({ status: 'known', tokens: { [BONK]: { freezeAuthority: false, mintAuthority: false, permanentDelegate: false, transferHookAuthority: true, wellKnown: false } } });
+    expect(notes.join()).toContain('transfer-hook authority');
+  });
+
   it("the JSON commands never take Orientim's treasury from its JSON", async () => {
     const intent = { owner: W, inputMint: USDC, outputMint: BONK, amountIn: '1000000', id: 'order-1', treasury: BONK };
     const deps = { rpc: noRpc, apiUrl: 'http://orientim.test', apiKey: 'k', stateDir: tmp() };

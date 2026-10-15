@@ -179,6 +179,24 @@ export function hasTransferFee(data: Uint8Array): boolean {
  * `allowTransferFee` is set for swap and intermediate mints whose temporary accounts are harvested
  * before they are closed. Output accounts belong to the user and do not need to be closed.
  */
+/**
+ * Can this mint's issuer still turn on a transfer hook (extension 14, an authority set and no program
+ * yet)? No code runs today; one set later would run on every transfer of the token.
+ */
+export function hasTransferHookAuthority(data: Uint8Array): boolean {
+  if (data.length <= TOKEN_ACCOUNT_SIZE || data[TOKEN_ACCOUNT_SIZE] !== 1) return false;
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  for (let at = TOKEN_ACCOUNT_SIZE + 1; at + 4 <= data.length; ) {
+    const type = view.getUint16(at, true);
+    const length = view.getUint16(at + 2, true);
+    const value = at + 4;
+    if (type === 0) break;
+    if (type === 14) return value + 32 <= data.length && data.subarray(value, value + 32).some(b => b !== 0);
+    at = value + length;
+  }
+  return false;
+}
+
 /** Does this mint have an issuer that can move or burn its balance anywhere (extension 12, set)? */
 export function hasPermanentDelegate(data: Uint8Array): boolean {
   if (data.length <= TOKEN_ACCOUNT_SIZE || data[TOKEN_ACCOUNT_SIZE] !== 1) return false;
@@ -196,7 +214,12 @@ export function hasPermanentDelegate(data: Uint8Array): boolean {
 
 const addressDecoder = getAddressDecoder();
 
-export function unsupportedExtension(data: Uint8Array, options: { allowTransferFee?: boolean } = {}): string | null {
+/**
+ * `signers`: the transaction's own signers (the wallet and the one-time key). A permanent delegate that
+ * is one of them is refused whatever its curve: its signature is already in the transaction, so a
+ * program handed that signer could move this mint's balances with it.
+ */
+export function unsupportedExtension(data: Uint8Array, options: { allowTransferFee?: boolean; signers?: readonly string[] } = {}): string | null {
   if (data.length === MINT_SIZE) return null;
   if (data.length <= TOKEN_ACCOUNT_SIZE || data[TOKEN_ACCOUNT_SIZE] !== 1) return 'malformed extension area';
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
@@ -232,8 +255,10 @@ export function unsupportedExtension(data: Uint8Array, options: { allowTransferF
       // are the route's anyway, and W_out, whose minimum-output check counts every token taken out
       // (SECURITY.md). What the issuer can do outside the transaction is the token's own nature:
       // it holds in every wallet, is disclosed to the user, and is not Orientim's to grant.
-      if (nonZero(value, value + 32) && isOffCurveAddress(addressDecoder.decode(data.subarray(value, value + 32)))) {
-        return 'permanent delegate controlled by a program';
+      if (nonZero(value, value + 32)) {
+        const delegate = addressDecoder.decode(data.subarray(value, value + 32));
+        if (options.signers?.includes(delegate)) return 'permanent delegate is a signer of this transaction';
+        if (isOffCurveAddress(delegate)) return 'permanent delegate controlled by a program';
       }
     } else if (type === 6) {
       // New accounts, Orientim's temporary ones included, start in this state. Frozen, they could never
@@ -849,7 +874,7 @@ export async function verify(transaction: Transaction, policy: Policy, snapshot:
     if (m.tokenProgram !== TOKEN_2022_PROGRAM) continue;
     const state = snapshot.accounts.get(m.mint);
     const risky = state && state.owner === TOKEN_2022_PROGRAM
-      ? unsupportedExtension(state.data, { allowTransferFee: true })
+      ? unsupportedExtension(state.data, { allowTransferFee: true, signers: [W, E] })
       : 'missing mint';
     if (risky) fail('R7', `intermediate mint ${m.mint}: ${risky}`);
   }
@@ -861,7 +886,7 @@ export async function verify(transaction: Transaction, policy: Policy, snapshot:
     if (!state) { fail('R7', `mint ${mint} not found`); continue; }
     if (state.owner === TOKEN_PROGRAM) continue;
     if (state.owner !== TOKEN_2022_PROGRAM) { fail('R7', `mint ${mint} is not a token mint`); continue; }
-    const bad = unsupportedExtension(state.data, { allowTransferFee: true });
+    const bad = unsupportedExtension(state.data, { allowTransferFee: true, signers: [W, E] });
     if (bad) fail('R7', `mint ${mint}: ${bad}`);
   }
 
