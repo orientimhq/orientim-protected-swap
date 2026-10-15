@@ -2,7 +2,7 @@
 # Orientim protected swap: the full guide
 
 The short version is `SKILL.md`; this is everything else. In this guide, `orientim <command>` is the
-command of the npm package `@orientim/swap` (see "Install and check").
+command of the npm package `@orientimhq/swap` (see "Install and check").
 
 Orientim builds a swap in which Jupiter's route only ever holds a one-time key and a temporary account
 with the approved amount. The wallet signs first, Orientim signs last with the one-time key, and if
@@ -11,7 +11,7 @@ key. The API itself: `AGENT-API.md`, beside this file.
 
 **What this rests on.** Orientim's server builds the transaction your wallet signs. Before signing,
 the agent runs Orientim's full verifier on the exact bytes, with chain state read from **its own RPC**
-(`checkPrepared` in `@orientim/swap`). With that check, a
+(`checkPrepared` in `@orientimhq/swap`). With that check, a
 compromised Orientim server, relay or impostor URL can refuse or delay a swap, but cannot make the
 wallet sign one that moves more than the approved amount, or one priced below a floor you got
 yourself. **Without it, you are trusting Orientim's server with the whole wallet.** Never skip it.
@@ -90,7 +90,7 @@ the wallet for anyone else.
    # /usr/local/bin/orientim-swap, owned by root, mode 0755
    #!/bin/sh
    set -a; . /etc/orientim/env; set +a   # owned by orientim, mode 0600: ORIENTIM_API_KEY, SOLANA_RPC_URL...
-   exec /usr/bin/node /opt/orientim/node_modules/@orientim/swap/dist/bin/orientim.mjs "$@"   # npm install @orientim/swap@2.0.0 in /opt/orientim
+   exec /usr/bin/node /opt/orientim/node_modules/@orientimhq/swap/dist/bin/orientim.mjs "$@"   # npm install @orientimhq/swap@2.0.0 in /opt/orientim
 
    # /etc/sudoers.d/orientim (edit with visudo)
    agent ALL=(orientim) NOPASSWD: /usr/local/bin/orientim-swap
@@ -109,7 +109,7 @@ rewrites its own environment. Without 5, the daily limit holds the same way.
 The user provides these; never ask for them in chat, and never print or log them:
 
 - `ORIENTIM_API_URL`: Orientim's address, `https://orientim.com`
-- `ORIENTIM_API_KEY`: `ori_...`, sent as `Authorization: Bearer <key>`. The wallet gets one itself, at once: `requestApiKey({ apiUrl, address, signMessage })` from `@orientim/swap`, or `orientim key-challenge` then `key`; both sign only Orientim's key message for that wallet, which accepts Orientim's Terms of Use (orientim.com/terms). The key works for that wallet only, for 90 days; Orientim issues at most 5 a day to one wallet.
+- `ORIENTIM_API_KEY`: `ori_...`, sent as `Authorization: Bearer <key>`. The wallet gets one itself, at once: `requestApiKey({ apiUrl, address, signMessage })` from `@orientimhq/swap`, or `orientim key-challenge` then `key`; both sign only Orientim's key message for that wallet, which accepts Orientim's Terms of Use (orientim.com/terms). The key works for that wallet only, for 90 days; Orientim issues at most 5 a day to one wallet.
 - `SOLANA_RPC_URL`: the agent's **own** RPC. Never Orientim's: the verification is worth what the
   chain state it reads is worth.
 - `ORIENTIM_WALLET_KEYPAIR`: path to the wallet's keypair file. Load the key from the file in code; it
@@ -198,30 +198,30 @@ The user provides these; never ask for them in chat, and never print or log them
 
 ## Install and check
 
-`@orientim/swap` is one npm package: the library, the `orientim` command and its MCP server, with
+`@orientimhq/swap` is one npm package: the library, the `orientim` command and its MCP server, with
 Orientim's verifier inside. Its one dependency is `@solana/kit` 8.3.0. Node 20.18 or later. Pin the
 version, in a project of its own with a lockfile:
 
 ```bash
-npm install --save-exact @orientim/swap@2.0.0
+npm install --save-exact @orientimhq/swap@2.0.0
 npx orientim --version
 npm audit signatures      # the package's provenance: built by this repository's release workflow
 ```
 
-Or, without installing, `npx -y @orientim/swap@2.0.0 <command>`. Check the package against GitHub, not
+Or, without installing, `npx -y @orientimhq/swap@2.0.0 <command>`. Check the package against GitHub, not
 against Orientim's site (it guards against a dishonest server, so the server cannot vouch for it):
 `npm audit signatures` checks npm's provenance, which names the repository, the workflow and the
 commit it was built from. Bots written in another language: see "Bots in other languages" below.
 
 ## The flow
 
-Run `orientim swap`, or call `protectedSwap` from `@orientim/swap` (`examples/swap.ts` in the
+Run `orientim swap`, or call `protectedSwap` from `@orientimhq/swap` (`examples/swap.ts` in the
 repository is the whole call). Do not write the flow from scratch, and never drop the verification.
 `protectedSwap`'s optional `onTiming(phase, ms)` reports each step's own duration (steps that run at the
 same time overlap) and `readyToSign`, the whole wait, without changing the signing decision.
 
 1. **Your own floor first.** The rules cannot see the price, so the agent brings a minimum of its
-   own: the user's, or `ownMinimum(...)` from `@orientim/swap`, which asks Jupiter directly
+   own: the user's, or `ownMinimum(...)` from `@orientimhq/swap`, which asks Jupiter directly
    and takes 2% off its price (5% on a Pump.fun bonding curve), or, with `slippageBps` set, that
    tolerance and 1.5% more (2% on a curve). A minimum of your own may be higher than that, never more
    than 20% below Jupiter's own price: `protectedSwap` asks Jupiter every time and refuses a lower one
@@ -354,7 +354,7 @@ names the transaction (`signature`, `lastValidBlockHeight`); follow step 7 befor
   balance of a token is allowed at any size, so a position that has lost its value can always be left
   (not SOL, and not below a fee that is nothing at all).
 - `426 skill-outdated`: this copy of the skill is older than Orientim serves (`minimum`).
-  Update `@orientim/swap` to at least that version; a swap already signed still finalizes.
+  Update `@orientimhq/swap` to at least that version; a swap already signed still finalizes.
 - `400 transaction-changed` / `wallet-changed-transaction`: the signed transaction differs from the
   one prepared, or the wallet's signature is missing. Sign exactly what prepare returned.
 - `422` (`unsupported-token`, `no-route`, `insufficient-sol`, `insufficient-balance`,
@@ -488,7 +488,7 @@ It comes three ways, the same server:
   GitHub release. Open it; Claude Desktop asks for your RPC, the wallet's keypair file and,
   optionally, your Jupiter key and your limits, and keeps the secrets itself. Claude Desktop brings
   its own Node.
-- **npm, one line:** `npx -y @orientim/swap@2.0.0 mcp`. Claude Desktop
+- **npm, one line:** `npx -y @orientimhq/swap@2.0.0 mcp`. Claude Desktop
   (`claude_desktop_config.json`), Cursor (`.cursor/mcp.json`) and most clients take this shape:
 
   ```json
@@ -496,7 +496,7 @@ It comes three ways, the same server:
     "mcpServers": {
       "orientim": {
         "command": "npx",
-        "args": ["-y", "@orientim/swap@2.0.0", "mcp"],
+        "args": ["-y", "@orientimhq/swap@2.0.0", "mcp"],
         "env": {
           "SOLANA_RPC_URL": "https://your-own-rpc.example/...",
           "ORIENTIM_WALLET_KEYPAIR": "/absolute/path/to/agent-wallet.json",
@@ -508,10 +508,10 @@ It comes three ways, the same server:
   ```
 
   Claude Code: `claude mcp add --transport stdio orientim --env SOLANA_RPC_URL=... --env
-  ORIENTIM_WALLET_KEYPAIR=... -- npx -y @orientim/swap@2.0.0 mcp`. Pin the version: the package
+  ORIENTIM_WALLET_KEYPAIR=... -- npx -y @orientimhq/swap@2.0.0 mcp`. Pin the version: the package
   is published with npm's provenance from the repository's release workflow.
-- **Installed:** `"command": "node"`, `"args": ["/absolute/path/to/node_modules/@orientim/swap/dist/bin/orientim.mjs", "mcp"]`,
-  after `npm install --save-exact @orientim/swap@2.0.0` (Node 20.18 or later).
+- **Installed:** `"command": "node"`, `"args": ["/absolute/path/to/node_modules/@orientimhq/swap/dist/bin/orientim.mjs", "mcp"]`,
+  after `npm install --save-exact @orientimhq/swap@2.0.0` (Node 20.18 or later).
 
 - `ORIENTIM_API_URL` defaults to `https://orientim.com`.
 - `ORIENTIM_API_KEY` is optional. Without it, the server gets the wallet's own key once (the wallet
@@ -539,8 +539,8 @@ wallet's key is, never on a server of Orientim's.
 can start a process: JSON in on stdin, JSON out on stdout, an exit code. The bot keeps its key and
 signs one message itself; the command does the rest with `protectedSwap`'s own code: the floor, the
 check on your RPC, the record kept before finalize, finalize, and the outcome read on the chain.
-Install the package in the bot's folder (`npm install --save-exact @orientim/swap@2.0.0`) and run
-`node node_modules/@orientim/swap/dist/bin/orientim.mjs <command>`. It reads `SOLANA_RPC_URL`,
+Install the package in the bot's folder (`npm install --save-exact @orientimhq/swap@2.0.0`) and run
+`node node_modules/@orientimhq/swap/dist/bin/orientim.mjs <command>`. It reads `SOLANA_RPC_URL`,
 `ORIENTIM_API_URL`, `ORIENTIM_API_KEY`, `JUPITER_API_KEY`, `ORIENTIM_POLICY` (see Setup), `ORIENTIM_STATE_DIR` (default
 `./.orientim-state`) and, optionally, `ORIENTIM_ARCHIVE_RPC_URL` (an RPC with the full history, a second
 proof of expiry; see The flow) and `ORIENTIM_SEND_RPC_URL` (an RPC of yours that sends the swap, a
@@ -585,7 +585,7 @@ key in `solders`:
 ```python
 import base64, json, subprocess
 
-ORIENTIM = "node_modules/@orientim/swap/dist/bin/orientim.mjs"  # npm install --save-exact @orientim/swap@2.0.0
+ORIENTIM = "node_modules/@orientimhq/swap/dist/bin/orientim.mjs"  # npm install --save-exact @orientimhq/swap@2.0.0
 
 def orientim(command, payload=None):
     # No short timeout: finalize waits for the chain. ORIENTIM_STATE_DIR is set in the bot's

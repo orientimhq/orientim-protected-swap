@@ -15,7 +15,7 @@
  * derives the key could collect them. Rent a route keeps is a cost
  * that does not come back, accepted only up to the agent's own limit (0.001 SOL by default).
  *
- * Part of @orientim/swap, with @orientim/verifier bundled in (tools/build.ts): only @solana/kit is a
+ * Part of @orientimhq/swap, with @orientim/verifier bundled in (tools/build.ts): only @solana/kit is a
  * dependency.
  */
 import {

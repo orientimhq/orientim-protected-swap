@@ -6,13 +6,13 @@ description: Swap tokens on Solana through Orientim's agent API, so the swap pro
 # Orientim protected swap
 
 Orientim builds a swap in which Jupiter's route only ever holds a one-time key and the approved amount;
-less than the minimum reverts the whole transaction. Before the wallet signs, `@orientim/swap` checks
+less than the minimum reverts the whole transaction. Before the wallet signs, `@orientimhq/swap` checks
 the exact bytes on **your own RPC**, so a compromised server can refuse or delay a swap, never make the
 wallet sign one that moves more. Never skip that check. Everything else: `reference/GUIDE.md`; the API:
 `reference/AGENT-API.md`.
 
 ```bash
-npx -y @orientim/swap@2.0.0 <command>       # or: npm install --save-exact @orientim/swap@2.0.0
+npx -y @orientimhq/swap@2.0.0 <command>       # or: npm install --save-exact @orientimhq/swap@2.0.0
 ```
 
 ## Before any swap
@@ -49,10 +49,10 @@ orientim swap --in <mint> --out <mint> --amount <base units> --id <order id>    
 Exit 0 confirmed; 1 nothing swapped; 2 usage or setup; 3 settle first (run again with the same `--id`);
 5 this order already swapped or may still land. `--slippage-bps N|auto`: only within the owner's limits.
 
-- **MCP clients** (Claude Desktop, Claude Code, Cursor): `npx -y @orientim/swap@2.0.0 mcp`, four tools
+- **MCP clients** (Claude Desktop, Claude Code, Cursor): `npx -y @orientimhq/swap@2.0.0 mcp`, four tools
   (`orientim_wallet`, `orientim_quote`, `orientim_swap`, `orientim_recover`); or `orientim.mcpb`.
 - **Bots in any language:** `orientim prepare | finalize | recover | resolve | check` with JSON on stdin and
   JSON on stdout, the same exit codes; the bot signs `message` itself ("Bots in other languages").
-- **TypeScript:** `import { protectedSwap, createFileStore, acquireLock, loadPolicy } from '@orientim/swap'`
+- **TypeScript:** `import { protectedSwap, createFileStore, acquireLock, loadPolicy } from '@orientimhq/swap'`
   (`examples/swap.ts` in the repository), with `signerFromSignBytes` or `signerFromSignTransaction` for
   a wallet held by a signing service.

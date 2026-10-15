@@ -1,9 +1,9 @@
 /**
- * @orientim/swap: Orientim's protected swap on Solana, for agents and bots. The route can only touch
+ * @orientimhq/swap: Orientim's protected swap on Solana, for agents and bots. The route can only touch
  * the amount the wallet approves, and the exact transaction is checked on your own RPC before your
  * wallet signs it (see SKILL.md and reference/AGENT-API.md).
  *
- *   import { protectedSwap, createFileStore, acquireLock, loadPolicy } from '@orientim/swap';
+ *   import { protectedSwap, createFileStore, acquireLock, loadPolicy } from '@orientimhq/swap';
  *
  * The same package is the `orientim` command (prepare, finalize, check, recover, resolve, swap,
  * key-challenge, key) and, as `orientim mcp`, the MCP server.

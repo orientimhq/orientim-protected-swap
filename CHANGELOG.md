@@ -1,17 +1,17 @@
 # Changelog
 
-Versions of `@orientim/swap` (`package.json`); up to 1.12.3, versions of the skill folder
+Versions of `@orientimhq/swap` (`package.json`); up to 1.12.3, versions of the skill folder
 (`skills/orientim-protected-swap/package.json`) and of the npm package `orientim-mcp`.
 
 ## 2.0.0 (unreleased)
 
-One npm package, `@orientim/swap`, in place of the skill's zip, its bundled files and `orientim-mcp`.
+One npm package, `@orientimhq/swap`, in place of the skill's zip, its bundled files and `orientim-mcp`.
 
 - The library: `import { protectedSwap, recoverPending, acquireLock, createFileStore, loadPolicy } from
-  '@orientim/swap'`, with its types, and `@orientim/swap/verifier`, `/core` and `/solana`. The code of
+  '@orientimhq/swap'`, with its types, and `@orientimhq/swap/verifier`, `/core` and `/solana`. The code of
   `examples/swap.ts` is now `src/` (api, keys, chain, lock, policy, store, swap, agent); `examples/swap.ts`
   is one protected swap in 26 lines.
-- One command, `orientim`: `orientim mcp` is the MCP server (`npx -y @orientim/swap@2.0.0 mcp`),
+- One command, `orientim`: `orientim mcp` is the MCP server (`npx -y @orientimhq/swap@2.0.0 mcp`),
   `orientim swap` the command line `node examples/swap.ts` was, and `orientim prepare`, `finalize`,
   `check`, `recover`, `resolve`, `key-challenge` and `key` the JSON commands `orientim-verify` ran, with
   the same input, output and exit codes. `orientim-mcp` and `orientim-verify` are installed too, as the

@@ -2,16 +2,16 @@
 
 Swap Solana tokens from a wallet an AI agent or a bot controls, so that the swap's route can only
 touch the amount you approve. [Orientim](https://orientim.com) builds the transaction through
-Jupiter; `@orientim/swap` checks it on **your own RPC**, with the verifier in this repository, before
+Jupiter; `@orientimhq/swap` checks it on **your own RPC**, with the verifier in this repository, before
 your wallet signs, and reads the outcome on the chain.
 
-Everything is one npm package, [`@orientim/swap`](https://www.npmjs.com/package/@orientim/swap): the
+Everything is one npm package, [`@orientimhq/swap`](https://www.npmjs.com/package/@orientimhq/swap): the
 library, the `orientim` command, and its MCP server.
 
 ```bash
-npx -y @orientim/swap@<version> mcp                     # the MCP server, for Claude Desktop, Claude Code, Cursor...
-npx -y @orientim/swap@<version> swap --in ... --dry-run  # one swap from the command line
-npm install --save-exact @orientim/swap@<version>       # import { protectedSwap } from '@orientim/swap'
+npx -y @orientimhq/swap@<version> mcp                     # the MCP server, for Claude Desktop, Claude Code, Cursor...
+npx -y @orientimhq/swap@<version> swap --in ... --dry-run  # one swap from the command line
+npm install --save-exact @orientimhq/swap@<version>       # import { protectedSwap } from '@orientimhq/swap'
 ```
 
 | You are | Start with |
@@ -19,7 +19,7 @@ npm install --save-exact @orientim/swap@<version>       # import { protectedSwap
 | An agent (Claude and other coding agents) | the skill, [`SKILL.md`](skills/orientim-protected-swap/SKILL.md), and its [guide](skills/orientim-protected-swap/reference/GUIDE.md) |
 | A bot in JavaScript or TypeScript | `protectedSwap`, as in [`examples/swap.ts`](examples/swap.ts) |
 | A bot in Python, Rust, Go... | `orientim prepare`, `finalize`, `recover`: JSON in and out ("Bots in other languages" in the guide) |
-| Claude Desktop, Cursor or another MCP client | `npx -y @orientim/swap@<version> mcp`, or `orientim.mcpb` from a release |
+| Claude Desktop, Cursor or another MCP client | `npx -y @orientimhq/swap@<version> mcp`, or `orientim.mcpb` from a release |
 | Calling the API yourself | [`AGENT-API.md`](skills/orientim-protected-swap/reference/AGENT-API.md) |
 
 ## What the check enforces
@@ -80,7 +80,7 @@ repository's release workflow with npm's provenance, which names the repository,
 commit:
 
 ```bash
-npm install --save-exact @orientim/swap@<version> && npm audit signatures
+npm install --save-exact @orientimhq/swap@<version> && npm audit signatures
 ```
 
 `orientim.mcpb` on each GitHub release carries GitHub's signed statement that the same workflow built

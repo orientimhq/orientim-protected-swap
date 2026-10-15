@@ -158,7 +158,7 @@ export const ERROR_MEANINGS: Readonly<Record<string, string>> = {
   paused: 'Orientim has paused swaps; funds are not affected. Try later.',
   'fee-unavailable': 'Orientim cannot collect its fee on this swap right now, so it built nothing. Wait the Retry-After seconds.',
   'amount-too-small': 'The amount is below the smallest swap Orientim takes. Swap a larger amount, or sell your whole balance of the token, which is allowed at any size.',
-  'skill-outdated': 'This copy of the skill is too old for Orientim. Update it: use @orientim/swap@<minimum or later> (in an MCP client, in its configuration, or the current orientim.mcpb).',
+  'skill-outdated': 'This copy of the skill is too old for Orientim. Update it: use @orientimhq/swap@<minimum or later> (in an MCP client, in its configuration, or the current orientim.mcpb).',
   'transaction-changed': 'The signed transaction differs from the one prepared. Sign exactly what prepare returned.',
   'wallet-changed-transaction': 'The wallet changed the transaction or did not sign it. Sign exactly what prepare returned.',
   'unsupported-token': 'This token cannot be swapped safely now.',
@@ -276,7 +276,7 @@ export class OrientimApiError extends Error {
 export type Fetch = typeof fetch;
 
 /**
- * This copy of @orientim/swap, as its package.json says. Sent with every call to Orientim (x-orientim-skill), so
+ * This copy of @orientimhq/swap, as its package.json says. Sent with every call to Orientim (x-orientim-skill), so
  * that a change old copies cannot follow (a commitment level Solana retires, a new Jupiter format) is
  * answered with "update the skill" (426 skill-outdated) instead of failing in some other way.
  */

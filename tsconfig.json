@@ -11,7 +11,7 @@
     "erasableSyntaxOnly": true,
     "skipLibCheck": true,
     "types": ["node"],
-    "paths": { "@orientim/swap": ["./src/index.ts"] }
+    "paths": { "@orientimhq/swap": ["./src/index.ts"] }
   },
   "include": ["packages/*/src", "packages/*/test", "src", "examples", "test", "tools"]
 }

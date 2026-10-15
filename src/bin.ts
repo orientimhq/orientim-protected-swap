@@ -1,7 +1,7 @@
 /**
  * The `orientim` command (dist/bin/orientim.mjs):
  *
- *   orientim mcp                     the MCP server, over stdio (`npx -y @orientim/swap mcp`)
+ *   orientim mcp                     the MCP server, over stdio (`npx -y @orientimhq/swap mcp`)
  *   orientim swap --in ... --out ... one protected swap from the command line (see ./agent.ts)
  *   orientim <command> < input.json  prepare, finalize, check, recover, resolve, key-challenge, key:
  *                                    JSON in on stdin, JSON out on stdout (see ./cli.ts)

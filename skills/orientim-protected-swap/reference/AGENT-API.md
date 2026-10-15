@@ -16,7 +16,7 @@ independent verification ran.
 
 **Verify before you sign.** Orientim's server builds the transaction your wallet signs. Run Orientim's
 verifier on it, with chain state from your own RPC, before signing: the skill below does it
-(`checkPrepared` in the npm package `@orientim/swap`, with the verifier inside). With that check, a compromised server
+(`checkPrepared` in the npm package `@orientimhq/swap`, with the verifier inside). With that check, a compromised server
 or impostor URL can refuse or delay a swap, not make you sign one that moves more than the approved
 amount, or one whose minimum is below a floor you got yourself (`minOut`; the check asks Jupiter
 for one when you have none). **Without it, you are trusting Orientim's server with your whole wallet.**
@@ -26,11 +26,11 @@ Phantom's embedded wallets (sign-and-send only) and multisig or smart-wallet vau
 A local keypair or a remote signer that signs one key (Turnkey, for one) works: `protectedSwap`
 takes a service that signs raw bytes (`signerFromSignBytes`) or one that signs a transaction and
 hands it back unsent (`signerFromSignTransaction`). Bots in other languages use the
-`orientim` command of `@orientim/swap` (needs Node): it prepares, checks, finalizes and settles, and the bot only
+`orientim` command of `@orientimhq/swap` (needs Node): it prepares, checks, finalizes and settles, and the bot only
 signs one message with its own key.
 
 For coding agents there is a skill, `orientim-protected-swap` (`SKILL.md`), on the package
-`@orientim/swap` (`npx -y @orientim/swap@<version> <command>`, or `import` it; its one dependency is
+`@orientimhq/swap` (`npx -y @orientimhq/swap@<version> <command>`, or `import` it; its one dependency is
 `@solana/kit` 8). It is published with npm's provenance from github.com/orientimhq/orientim-protected-swap.
 
 ```
@@ -164,12 +164,12 @@ today's block times (until `lastValidBlockHeight`; `blocksLeft` is what was left
 answered). Verify, sign and finalize promptly; with fewer than 30 blocks left, prepare again instead.
 
 Before signing, run the verifier: `verifyPrepared(prepared, limits, yourRpc)` from
-`@orientim/swap`, where `limits` is what you asked for and the most you accept (fee, network
+`@orientimhq/swap`, where `limits` is what you asked for and the most you accept (fee, network
 fee, optionally Orientim's treasury address) and your own minimum, which is required: a price you got
 yourself, never Orientim's (`ownMinimum` asks Jupiter for one, and refuses a price impact above
 `maxPriceImpactBps`, default 5%, as the full flow does). `verifyPrepared` checks the transaction, not
 the market: the protected flow in one call is `prepareChecked` (or `protectedSwap`) in
-`@orientim/swap`, which adds your floor's 20% limit, the price impact and a fee in SOL held to your
+`@orientimhq/swap`, which adds your floor's 20% limit, the price impact and a fee in SOL held to your
 own price. `verifyPrepared` holds `policy` to those limits, reads
 every account the message names from your RPC, runs the verifier's rules on the exact bytes, and
 simulates the transaction there: nothing may stay under the one-time key, in its own account or in
@@ -250,7 +250,7 @@ counted before it is fetched (24 in all); every ask of its key counted, retries 
 deadline for all the rounds; and Jupiter's `Retry-After` or `x-ratelimit-reset` waited out on a 429,
 or the swap stopped when that does not fit.
 
-`@orientim/swap` and its commands do this themselves whenever `JUPITER_API_KEY` is set
+`@orientimhq/swap` and its commands do this themselves whenever `JUPITER_API_KEY` is set
 (`ORIENTIM_OWN_ROUTES=0`, or `ownRoutes: false`, lets Orientim's key build them instead). One
 budget of 110 seconds and 48 asks of Jupiter covers the whole preparation, from the agent's own
 quote and every route to the fee-in-SOL check and the last check before signing (finalize and the
@@ -390,7 +390,7 @@ its ledger history or an archive, which can be pruned or missing; an archive tha
 record" too. So accept it only when the answering node's height (the finalized height plus the slots
 its `context.slot` is ahead of the finalized slot) is below the height you signed at plus 300, less a
 margin: in practice, the half-minute after the lifetime. Later, the outcome is unknown until you look
-the signature up in a full history. `@orientim/swap` does all of this (`protectedSwap`, `confirm`
+the signature up in a full history. `@orientimhq/swap` does all of this (`protectedSwap`, `confirm`
 with `earliestHeight`, `recoverPending`), and `orientim resolve` settles by hand a swap it can no
 longer prove.
 
@@ -436,7 +436,7 @@ The key endpoints answer, besides `400 bad-request`:
 | --- | --- | --- |
 | 400 | `bad-signature` | The signature does not match the message, or the challenge expired, was not Orientim's, or names another site. Ask for a new challenge. |
 | 403 | `wallet-empty` | The wallet holds less than the amount `message` names (0.01 SOL by default). Fund it, then ask again. |
-| 426 | `skill-outdated` | This copy of the skill is older than the key message needs (`minimum`). Update `@orientim/swap` (or the .mcpb) to at least `minimum`. |
+| 426 | `skill-outdated` | This copy of the skill is older than the key message needs (`minimum`). Update `@orientimhq/swap` (or the .mcpb) to at least `minimum`. |
 | 429 | `rate-limited` | Too many challenges or keys from this address, or keys for this wallet today. Wait `Retry-After` seconds. |
 | 503 | `unavailable` | The wallet's balance could not be read. Wait `Retry-After` seconds and retry. |
 

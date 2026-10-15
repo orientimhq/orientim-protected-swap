@@ -1,5 +1,5 @@
 /**
- * Builds the npm package @orientim/swap into dist/, from src/ and packages/:
+ * Builds the npm package @orientimhq/swap into dist/, from src/ and packages/:
  *
  *   dist/index.mjs                     the library (src/index.ts), with ./core, ./solana and ./verifier beside it
  *   dist/bin/orientim.mjs              the `orientim` command, and `orientim mcp`, the MCP server (src/bin.ts)
@@ -55,7 +55,7 @@ async function library(): Promise<void> {
 /** The MCP server as one file with nothing beside it, for the Claude Desktop extension. */
 async function standalone(): Promise<string> {
   const b = await rolldown({ input: 'src/bin.ts', platform: 'node', logLevel: 'warn' });
-  const { output } = await b.generate({ format: 'esm', banner: `${SHEBANG}\n// @orientim/swap ${pkg.version}, with @solana/kit inside. Do not edit.` });
+  const { output } = await b.generate({ format: 'esm', banner: `${SHEBANG}\n// @orientimhq/swap ${pkg.version}, with @solana/kit inside. Do not edit.` });
   await b.close();
   if (output.length !== 1) throw new Error('the standalone server must be one file');
   // The same bytes wherever node_modules is.
