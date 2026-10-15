@@ -3,7 +3,15 @@
 Versions of `@orientimhq/swap` (`package.json`); up to 1.12.3, versions of the skill folder
 (`skills/orientim-protected-swap/package.json`) and of the npm package `orientim-mcp`.
 
-## 2.0.0 (unreleased)
+## 2.0.1
+
+- `npx -y @orientimhq/swap mcp` starts the MCP server: `orientim` is the package's one command, so npx
+  runs it. 2.0.0 also installed `orientim-mcp` and `orientim-verify`, and with three commands npx
+  found none named `swap` and ran nothing.
+- The release stages the version on npm (`npm stage publish`): it is public once a maintainer
+  approves it with 2FA.
+
+## 2.0.0
 
 One npm package, `@orientimhq/swap`, in place of the skill's zip, its bundled files and `orientim-mcp`.
 
@@ -14,8 +22,7 @@ One npm package, `@orientimhq/swap`, in place of the skill's zip, its bundled fi
 - One command, `orientim`: `orientim mcp` is the MCP server (`npx -y @orientimhq/swap@2.0.0 mcp`),
   `orientim swap` the command line `node examples/swap.ts` was, and `orientim prepare`, `finalize`,
   `check`, `recover`, `resolve`, `key-challenge` and `key` the JSON commands `orientim-verify` ran, with
-  the same input, output and exit codes. `orientim-mcp` and `orientim-verify` are installed too, as the
-  same command under their old names.
+  the same input, output and exit codes.
 - `SKILL.md` is the short version; the rest is in `reference/GUIDE.md`.
 - Checked with `npm audit signatures` (npm's provenance) instead of `SHA256SUMS`; `orientim.mcpb` is
   still attached to each release, attested, and listed in `RELEASE-SHA256SUMS` with the package.

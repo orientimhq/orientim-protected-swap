@@ -90,7 +90,7 @@ the wallet for anyone else.
    # /usr/local/bin/orientim-swap, owned by root, mode 0755
    #!/bin/sh
    set -a; . /etc/orientim/env; set +a   # owned by orientim, mode 0600: ORIENTIM_API_KEY, SOLANA_RPC_URL...
-   exec /usr/bin/node /opt/orientim/node_modules/@orientimhq/swap/dist/bin/orientim.mjs "$@"   # npm install @orientimhq/swap@2.0.0 in /opt/orientim
+   exec /usr/bin/node /opt/orientim/node_modules/@orientimhq/swap/dist/bin/orientim.mjs "$@"   # npm install @orientimhq/swap@2.0.1 in /opt/orientim
 
    # /etc/sudoers.d/orientim (edit with visudo)
    agent ALL=(orientim) NOPASSWD: /usr/local/bin/orientim-swap
@@ -203,12 +203,12 @@ Orientim's verifier inside. Its one dependency is `@solana/kit` 8.3.0. Node 20.1
 version, in a project of its own with a lockfile:
 
 ```bash
-npm install --save-exact @orientimhq/swap@2.0.0
+npm install --save-exact @orientimhq/swap@2.0.1
 npx orientim --version
 npm audit signatures      # the package's provenance: built by this repository's release workflow
 ```
 
-Or, without installing, `npx -y @orientimhq/swap@2.0.0 <command>`. Check the package against GitHub, not
+Or, without installing, `npx -y @orientimhq/swap@2.0.1 <command>`. Check the package against GitHub, not
 against Orientim's site (it guards against a dishonest server, so the server cannot vouch for it):
 `npm audit signatures` checks npm's provenance, which names the repository, the workflow and the
 commit it was built from. Bots written in another language: see "Bots in other languages" below.
@@ -488,7 +488,7 @@ It comes three ways, the same server:
   GitHub release. Open it; Claude Desktop asks for your RPC, the wallet's keypair file and,
   optionally, your Jupiter key and your limits, and keeps the secrets itself. Claude Desktop brings
   its own Node.
-- **npm, one line:** `npx -y @orientimhq/swap@2.0.0 mcp`. Claude Desktop
+- **npm, one line:** `npx -y @orientimhq/swap@2.0.1 mcp`. Claude Desktop
   (`claude_desktop_config.json`), Cursor (`.cursor/mcp.json`) and most clients take this shape:
 
   ```json
@@ -496,7 +496,7 @@ It comes three ways, the same server:
     "mcpServers": {
       "orientim": {
         "command": "npx",
-        "args": ["-y", "@orientimhq/swap@2.0.0", "mcp"],
+        "args": ["-y", "@orientimhq/swap@2.0.1", "mcp"],
         "env": {
           "SOLANA_RPC_URL": "https://your-own-rpc.example/...",
           "ORIENTIM_WALLET_KEYPAIR": "/absolute/path/to/agent-wallet.json",
@@ -508,10 +508,10 @@ It comes three ways, the same server:
   ```
 
   Claude Code: `claude mcp add --transport stdio orientim --env SOLANA_RPC_URL=... --env
-  ORIENTIM_WALLET_KEYPAIR=... -- npx -y @orientimhq/swap@2.0.0 mcp`. Pin the version: the package
+  ORIENTIM_WALLET_KEYPAIR=... -- npx -y @orientimhq/swap@2.0.1 mcp`. Pin the version: the package
   is published with npm's provenance from the repository's release workflow.
 - **Installed:** `"command": "node"`, `"args": ["/absolute/path/to/node_modules/@orientimhq/swap/dist/bin/orientim.mjs", "mcp"]`,
-  after `npm install --save-exact @orientimhq/swap@2.0.0` (Node 20.18 or later).
+  after `npm install --save-exact @orientimhq/swap@2.0.1` (Node 20.18 or later).
 
 - `ORIENTIM_API_URL` defaults to `https://orientim.com`.
 - `ORIENTIM_API_KEY` is optional. Without it, the server gets the wallet's own key once (the wallet
@@ -539,7 +539,7 @@ wallet's key is, never on a server of Orientim's.
 can start a process: JSON in on stdin, JSON out on stdout, an exit code. The bot keeps its key and
 signs one message itself; the command does the rest with `protectedSwap`'s own code: the floor, the
 check on your RPC, the record kept before finalize, finalize, and the outcome read on the chain.
-Install the package in the bot's folder (`npm install --save-exact @orientimhq/swap@2.0.0`) and run
+Install the package in the bot's folder (`npm install --save-exact @orientimhq/swap@2.0.1`) and run
 `node node_modules/@orientimhq/swap/dist/bin/orientim.mjs <command>`. It reads `SOLANA_RPC_URL`,
 `ORIENTIM_API_URL`, `ORIENTIM_API_KEY`, `JUPITER_API_KEY`, `ORIENTIM_POLICY` (see Setup), `ORIENTIM_STATE_DIR` (default
 `./.orientim-state`) and, optionally, `ORIENTIM_ARCHIVE_RPC_URL` (an RPC with the full history, a second
@@ -585,7 +585,7 @@ key in `solders`:
 ```python
 import base64, json, subprocess
 
-ORIENTIM = "node_modules/@orientimhq/swap/dist/bin/orientim.mjs"  # npm install --save-exact @orientimhq/swap@2.0.0
+ORIENTIM = "node_modules/@orientimhq/swap/dist/bin/orientim.mjs"  # npm install --save-exact @orientimhq/swap@2.0.1
 
 def orientim(command, payload=None):
     # No short timeout: finalize waits for the chain. ORIENTIM_STATE_DIR is set in the bot's

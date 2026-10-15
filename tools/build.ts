@@ -3,8 +3,6 @@
  *
  *   dist/index.mjs                     the library (src/index.ts), with ./core, ./solana and ./verifier beside it
  *   dist/bin/orientim.mjs              the `orientim` command, and `orientim mcp`, the MCP server (src/bin.ts)
- *   dist/bin/orientim-mcp.mjs          the same command under the names it had before: the server,
- *   dist/bin/orientim-verify.mjs       and the JSON commands
  *   dist/types/                        the declarations, for TypeScript
  *
  * Only @solana/kit stays outside, a dependency pinned to one version. Also dist/orientim.mcpb, the MCP
@@ -61,13 +59,6 @@ async function standalone(): Promise<string> {
   // The same bytes wherever node_modules is.
   return output[0].code.replace(/^\/\/#region .*?node_modules\//gm, '//#region node_modules/');
 }
-
-/** The old names: each runs the command as it did, and the command is one file. */
-const ALIAS = (mode: string, what: string) => `${SHEBANG}
-// ${what}: \`orientim ${mode}\`, under the name it had before.
-process.argv.splice(2, 0, '${mode}');
-await import('./orientim.mjs');
-`;
 
 /**
  * The declarations, by the TypeScript compiler, with their imports as a published package resolves
@@ -243,8 +234,6 @@ const mcpb = async () => zip([
 
 rmSync('dist', { recursive: true, force: true });
 await library();
-writeFileSync('dist/bin/orientim-mcp.mjs', ALIAS('mcp', 'The MCP server'));
-writeFileSync('dist/bin/orientim-verify.mjs', ALIAS('--run-verify', 'The JSON commands'));
 declarations();
 writeFileSync('dist/orientim.mcpb', await mcpb());
 for (const f of ['bin/orientim.mjs', 'index.mjs', 'orientim.mcpb']) console.log(`dist/${f}: ${statSync(`dist/${f}`).size} bytes`);

@@ -1,6 +1,6 @@
 {
   "name": "@orientimhq/swap",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Protected swaps on Solana through Orientim, for agents and bots: the route can only touch the approved amount, verified on your own RPC before your wallet signs.",
   "license": "Apache-2.0",
   "type": "module",
@@ -20,9 +20,7 @@
     "wallet"
   ],
   "bin": {
-    "orientim": "./dist/bin/orientim.mjs",
-    "orientim-mcp": "./dist/bin/orientim-mcp.mjs",
-    "orientim-verify": "./dist/bin/orientim-verify.mjs"
+    "orientim": "./dist/bin/orientim.mjs"
   },
   "exports": {
     ".": {

@@ -23,7 +23,7 @@ import { createInterface } from 'node:readline';
 import { address, createKeyPairSignerFromBytes, createSolanaRpc, isAddress, signBytes, type KeyPairSigner } from '@solana/kit';
 
 /** The skill's version (package.json); a test holds them equal. */
-export const SERVER_VERSION = '2.0.0';
+export const SERVER_VERSION = '2.0.1';
 
 /** The MCP versions this server speaks, newest first. A client asking for another gets the newest. */
 export const PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'] as const;

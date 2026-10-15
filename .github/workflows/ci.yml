@@ -37,8 +37,10 @@ jobs:
           test "$status" -eq 2
           echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}' \
             | npx orientim mcp | grep -q '"protocolVersion":"2025-11-25"'
+          # As an MCP client starts it, npx -y @orientimhq/swap mcp: the package's one command.
+          cd "$(mktemp -d)"
           echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}' \
-            | npx orientim-mcp | grep -q '"protocolVersion":"2025-11-25"'
+            | npx -y "file:$(ls "$RUNNER_TEMP"/orientimhq-swap-*.tgz)" mcp | grep -q '"protocolVersion":"2025-11-25"'
 
   windows:
     # The package runs on Windows too: its policy path, its state directory and the command.

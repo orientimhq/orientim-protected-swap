@@ -6,8 +6,8 @@
  *   orientim <command> < input.json  prepare, finalize, check, recover, resolve, key-challenge, key:
  *                                    JSON in on stdin, JSON out on stdout (see ./cli.ts)
  *
- * The package also installs it under the names it had before: `orientim-mcp` is the server, and
- * `orientim-verify` the JSON commands.
+ * It is the package's one command, so `npx @orientimhq/swap <args>` runs it: npx picks a package's
+ * command by the package's name only when there are several.
  */
 import { fileURLToPath } from 'node:url';
 import { commandLine as swap } from './agent.ts';
