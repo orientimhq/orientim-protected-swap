@@ -29,7 +29,7 @@ jobs:
           npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP"
           mkdir "$RUNNER_TEMP/consumer" && cd "$RUNNER_TEMP/consumer"
           echo '{"name":"consumer","private":true,"type":"module"}' > package.json
-          npm install --ignore-scripts --no-audit --no-fund "$RUNNER_TEMP"/orientim-swap-*.tgz @types/node@26.6.1 typescript@7.0.2
+          npm install --ignore-scripts --no-audit --no-fund "$RUNNER_TEMP"/orientimhq-swap-*.tgz @types/node@26.6.1 typescript@7.0.2
           cp "$GITHUB_WORKSPACE/examples/swap.ts" .
           echo '{"compilerOptions":{"target":"ES2022","module":"nodenext","moduleResolution":"nodenext","strict":true,"noEmit":true,"types":["node"],"lib":["ES2022","DOM","ESNext.Disposable"],"allowImportingTsExtensions":true},"files":["swap.ts"]}' > tsconfig.json
           npx tsc -p tsconfig.json
