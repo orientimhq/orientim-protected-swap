@@ -22,7 +22,7 @@ import { confirm, isThisTransaction, LAG_BLOCKS, MIN_BLOCKS_TO_FINALIZE, signAsW
 import type { Outcome, WalletSigner } from './chain.ts';
 import { checkPolicy, PolicyError } from './policy.ts';
 import type { OwnerCeilings, OwnerPolicy, SpendLog } from './policy.ts';
-import { pendingFor, PendingSwapError, settleOrder, takeOrder } from './store.ts';
+import { movedNothing, pendingFor, PendingSwapError, settleOrder, takeOrder } from './store.ts';
 import type { OrderBook, OrderRecord, PendingStore, Signed } from './store.ts';
 import { BASE58, DIGITS, hex, sameBytes, wait } from './util.ts';
 import { DEFAULT_MAX_PRICE_IMPACT_BPS, feeLimitBps, inputTransferFee, isRpcFailure, isSlippageBps, MAX_BELOW_BPS, MAX_FEE_BPS, MAX_PRICE_IMPACT_BPS, MAX_SLIPPAGE_BPS, MIN_SLIPPAGE_BPS, noticesOf, ownQuote, ownSolFeeLimit, preparationBudget, timeLeftOf, tokenRisk, verifyPrepared } from './verify.ts';
@@ -829,6 +829,8 @@ export async function protectedSwap(args: {
   // never in its place.
   try {
     if (orders) await settleOrder(orders, id!, { signature: result.signature, state: result.outcome === 'unknown' ? 'pending' : result.outcome });
+    // The chain proves it moved nothing: its share of the day comes back.
+    if (movedNothing(result.outcome)) await args.spends?.forgetSpend?.(result.signature);
     if (args.pending && result.outcome !== 'unknown') await args.pending.remove(result.signature);
   } catch (e) {
     return { ...told, bookkeepingError: e instanceof Error ? e.message : String(e) };

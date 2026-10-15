@@ -15,7 +15,7 @@ import { ConfigError, dataOnly, OrientimApiError, safeCode, SKILL_VERSION, untru
 import { isApiKeyMessage } from '../src/keys.ts';
 import { acquireLock, LockBusyError, lockHeld, releaseHeldLocks } from '../src/lock.ts';
 import { ApprovalError, approvalFor, checkPolicy, forgetApproval, heldToApproval, keptApproval, loadPolicy, PolicyError, policyPathFor, recordApproval, stateDirFor } from '../src/policy.ts';
-import { createFileStore, PendingSwapError, recoverPending, settleOrder } from '../src/store.ts';
+import { createFileStore, movedNothing, PendingSwapError, recoverPending, resolvePending, settleOrder } from '../src/store.ts';
 import { fillAgainstQuote, IntentError, OrientimOrderError, preparedData, receivedFor } from '../src/swap.ts';
 import { runCli } from '../src/cli.ts';
 import {
@@ -562,6 +562,63 @@ describe('the Python example in SKILL.md', () => {
     });
     expect(run.stderr).toBe('');
     expect(JSON.parse(run.stdout)).toEqual({ code: 2, ok: false });
+  });
+});
+
+describe('the daily limit frees only what the chain proves never left the wallet', () => {
+  // An RPC that answers every read with `status` for the signature, past its lifetime by `height`.
+  const rpcSaying = (status: unknown, height = 5n) => ({
+    getSignatureStatuses: () => ({ send: async () => ({ context: { slot: 10n }, value: [status] }) }),
+    getBlockHeight: () => ({ send: async () => height }),
+    getEpochInfo: () => ({ send: async () => ({ absoluteSlot: 10n, blockHeight: height }) }),
+  }) as unknown as Rpc<SolanaRpcApi>;
+  const kept = (signature: string) => ({
+    signature, lastValidBlockHeight: 100n, ticket: 't', signedTransaction: 'AA==', messageSha256: 'x', signedAt: Date.now(), owner: W, signedHeight: 1n,
+  });
+  const spend = (signature: string) => ({ signature, owner: W, mint: USDC, amountIn: '5', at: Date.now() });
+
+  it('a swap that failed on the chain no longer counts; one that landed does', async () => {
+    const store = createFileStore(tmp());
+    await store.recordSpend(spend('failedSig'));
+    await store.recordSpend(spend('landedSig'));
+    await store.put(kept('failedSig'));
+    const failed = await recoverPending(store, rpcSaying({ confirmationStatus: 'finalized', err: { InstructionError: [2, { Custom: 6001 }] } }), { spends: store });
+    expect(failed.settled).toEqual([{ signature: 'failedSig', outcome: 'failed' }]);
+    expect(await store.spentSince(W, USDC, 0)).toBe(5n);
+    await store.put(kept('landedSig'));
+    await recoverPending(store, rpcSaying({ confirmationStatus: 'finalized', err: null }), { spends: store });
+    expect(await store.spentSince(W, USDC, 0)).toBe(5n);
+  });
+
+  it('without the spend log, settling changes nothing it counts', async () => {
+    const store = createFileStore(tmp());
+    await store.recordSpend(spend('failedSig'));
+    await store.put(kept('failedSig'));
+    await recoverPending(store, rpcSaying({ confirmationStatus: 'finalized', err: { InstructionError: [2, { Custom: 6001 }] } }));
+    expect(await store.spentSince(W, USDC, 0)).toBe(5n);
+  });
+
+  it('settled by hand, on the owner\'s word alone, a swap still counts for its day', async () => {
+    const store = createFileStore(tmp());
+    await store.recordSpend(spend('oldSig'));
+    await store.put(kept('oldSig'));
+    const resolved = await resolvePending(store, rpcSaying(null, 1_000n), 'oldSig', 'expired', { spends: store });
+    expect(resolved).toEqual({ signature: 'oldSig', outcome: 'expired', by: 'you' });
+    expect(await store.spentSince(W, USDC, 0)).toBe(5n);
+  });
+
+  it('a failure the chain still shows frees it when settled by hand too', async () => {
+    const store = createFileStore(tmp());
+    await store.recordSpend(spend('oldSig'));
+    await store.put(kept('oldSig'));
+    const resolved = await resolvePending(store, rpcSaying({ confirmationStatus: 'finalized', err: { InstructionError: [2, { Custom: 6001 }] } }, 1_000n), 'oldSig', 'confirmed', { spends: store });
+    expect(resolved.by).toBe('chain');
+    expect(await store.spentSince(W, USDC, 0)).toBe(0n);
+  });
+
+  it('failed, expired and refused-and-expired moved nothing; confirmed and unknown may have', () => {
+    expect(['failed', 'expired', 'rejected'].every(movedNothing)).toBe(true);
+    expect(['confirmed', 'unknown', 'pending'].some(movedNothing)).toBe(false);
   });
 });
 

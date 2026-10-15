@@ -546,9 +546,15 @@ export async function verifyPrepared(
       addressTableLookups?: { lookupTableAddress: Address; writableIndexes: number[]; readonlyIndexes: number[] }[];
     };
     const lookups = compiled.addressTableLookups ?? [];
-    const lookupTables: Record<string, readonly Address[]> = lookups.length
-      ? await fetchAddressesForLookupTables(lookups.map(l => l.lookupTableAddress), rpc as never, { abortSignal: AbortSignal.timeout(timeoutMs) })
-      : {};
+    // The tables, and at the same time the slot your RPC is at: every account below is read at least
+    // that recent, so the snapshot cannot hold state older than the moment the check began. (A table
+    // read from a node behind can only lack entries added since, and the check then refuses.)
+    const [lookupTables, floor] = lookups.length
+      ? await Promise.all([
+        fetchAddressesForLookupTables(lookups.map(l => l.lookupTableAddress), rpc as never, { abortSignal: AbortSignal.timeout(timeoutMs) }) as Promise<Record<string, readonly Address[]>>,
+        rpc.getSlot({ commitment: 'confirmed' }).send({ abortSignal: AbortSignal.timeout(timeoutMs) }),
+      ])
+      : [{} as Record<string, readonly Address[]>, undefined];
     const resolved = lookups.flatMap(l =>
       [...l.writableIndexes, ...l.readonlyIndexes].map(i => lookupTables[l.lookupTableAddress]?.[i]).filter((a): a is Address => !!a));
     const derived = Object.values(p.accounts).filter((a): a is Address => !!a);
@@ -556,7 +562,7 @@ export async function verifyPrepared(
       ...compiled.staticAccounts, ...resolved, ...derived, p.inputMint, p.outputMint, p.ephemeral,
       ...(p.treasury ? [p.treasury] : []), ...underKey,
     ];
-    const { accounts, slot } = await readAccounts(rpc as never, addresses, { timeoutMs });
+    const { accounts, slot } = await readAccounts(rpc as never, addresses, { timeoutMs, ...(floor !== undefined ? { minContextSlot: floor } : {}) });
     snapshot = { accounts, lookupTables, slot };
     snapshotAddresses = [...compiled.staticAccounts, ...resolved];
   } catch (e) {

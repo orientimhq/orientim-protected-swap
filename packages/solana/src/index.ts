@@ -103,6 +103,8 @@ async function notOlderThan<T>(read: () => Promise<T>, minContextSlot: bigint | 
 /**
  * The same read, keeping the slot the chain answered at. With `minContextSlot`, every batch is at
  * least that recent, so reads made in separate calls cannot mix state older than an earlier one.
+ * Without it, every batch after the first is held to the first one's slot: a load-balanced RPC
+ * cannot answer the rest of one snapshot from a node further behind.
  */
 export async function readAccounts(
   rpc: SolanaRpc,
@@ -112,15 +114,18 @@ export async function readAccounts(
   const unique = [...new Set(addresses)];
   const out = new Map<string, AccountState | null>();
   let slot = 0n;
+  let floor = opts.minContextSlot;
   for (let i = 0; i < unique.length; i += MAX_ACCOUNTS_PER_CALL) {
     const batch = unique.slice(i, i + MAX_ACCOUNTS_PER_CALL);
+    const atLeast = floor;
     const { context, value } = await notOlderThan(() => rpc.getMultipleAccounts(batch, {
-      encoding: 'base64', commitment: 'confirmed', ...(opts.minContextSlot !== undefined ? { minContextSlot: opts.minContextSlot } : {}),
-    }).send(opts.timeoutMs ? { abortSignal: AbortSignal.timeout(opts.timeoutMs) } : undefined), opts.minContextSlot);
+      encoding: 'base64', commitment: 'confirmed', ...(atLeast !== undefined ? { minContextSlot: atLeast } : {}),
+    }).send(opts.timeoutMs ? { abortSignal: AbortSignal.timeout(opts.timeoutMs) } : undefined), atLeast);
     // The oldest slot of the batches: the state is at least that recent. An RPC that omits the
     // context leaves the slot at zero, and a certificate then simply names no slot.
     const at = BigInt(context?.slot ?? 0);
     slot = slot === 0n || (at !== 0n && at < slot) ? at : slot;
+    if (floor === undefined && at > 0n) floor = at;
     value.forEach((acc, j) => {
       out.set(batch[j], acc ? { owner: acc.owner, lamports: acc.lamports, data: decodeBase64(acc.data[0]) } : null);
     });

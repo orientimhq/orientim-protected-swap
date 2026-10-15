@@ -305,15 +305,22 @@ export async function settleOrder(orders: OrderBook, id: string, record: OrderRe
 }
 
 /**
+ * The chain proves this swap moved nothing from the wallet: it failed, or it can no longer land
+ * (`rejected` is Orientim's refusal of a swap that can no longer land). Its spend no longer counts.
+ */
+export const movedNothing = (outcome: string) => outcome === 'failed' || outcome === 'expired' || outcome === 'rejected';
+
+/**
  * Settles the swaps a stopped run left in `store`, each by its own signature on your RPC, and removes
  * those whose outcome is final. Returns what is still unknown: while anything is, start no new swap
  * for the same intent. A swap that "no record" can no longer prove expired stays unknown
  * however long ago it was sent: look it up in a full history, then `resolvePending`.
  * An outcome whose record could not be updated is returned all the same, beside the error, and its
- * pending record stays for the next run.
+ * pending record stays for the next run. With `spends`, a swap that moved nothing frees its spend.
  */
 export async function recoverPending(
-  store: PendingStore, rpc: Rpc<SolanaRpcApi>, opts: { pollMs?: number; maxWaitMs?: number; orders?: OrderBook; archive?: Rpc<SolanaRpcApi> } = {},
+  store: PendingStore, rpc: Rpc<SolanaRpcApi>,
+  opts: { pollMs?: number; maxWaitMs?: number; orders?: OrderBook; archive?: Rpc<SolanaRpcApi>; spends?: Pick<SpendLog, 'forgetSpend'> } = {},
 ): Promise<{ settled: { signature: string; outcome: Outcome }[]; unknown: string[]; bookkeepingErrors: { signature: string; error: string }[] }> {
   const settled: { signature: string; outcome: Outcome }[] = [];
   const unknown: string[] = [];
@@ -330,6 +337,7 @@ export async function recoverPending(
     try {
       // The order learns its outcome before the record that says it was pending goes away.
       if (s.intentId && opts.orders) await settleOrder(opts.orders, s.intentId, { signature: s.signature, state: outcome });
+      if (movedNothing(outcome)) await opts.spends?.forgetSpend?.(s.signature);
       await store.remove(s.signature);
     } catch (e) {
       bookkeepingErrors.push({ signature: s.signature, error: e instanceof Error ? e.message : String(e) });
@@ -342,11 +350,12 @@ export async function recoverPending(
  * Settles by hand a kept swap whose outcome the chain can no longer prove (`unknown` long after it was
  * sent: see `confirm`), once you have looked its signature up in a full history, such as an explorer.
  * The chain's own answer comes first: a status your RPC still has is used instead of yours. Refused
- * while the transaction could still land, and while it is seen but not settled.
+ * while the transaction could still land, and while it is seen but not settled. With `spends`, a swap
+ * the chain shows failed frees its spend; one settled on your word alone still counts for its day.
  */
 export async function resolvePending(
   store: PendingStore, rpc: Rpc<SolanaRpcApi>, signature: string, outcome: 'confirmed' | 'failed' | 'expired',
-  opts: { orders?: OrderBook; requestTimeoutMs?: number } = {},
+  opts: { orders?: OrderBook; requestTimeoutMs?: number; spends?: Pick<SpendLog, 'forgetSpend'> } = {},
 ): Promise<{ signature: string; outcome: 'confirmed' | 'failed' | 'expired'; by: 'chain' | 'you' }> {
   const kept = (await store.list()).find(s => s.signature === signature);
   if (!kept) throw new Error(`No kept swap has the signature ${signature}. Nothing was changed.`);
@@ -363,6 +372,7 @@ export async function resolvePending(
   }
   const settledAs = onChain ?? outcome;
   if (kept.intentId && opts.orders) await settleOrder(opts.orders, kept.intentId, { signature, state: settledAs });
+  if (onChain === 'failed') await opts.spends?.forgetSpend?.(signature);
   await store.remove(signature);
   return { signature, outcome: settledAs, by: onChain ? 'chain' : 'you' };
 }

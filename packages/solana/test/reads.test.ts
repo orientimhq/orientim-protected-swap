@@ -35,6 +35,24 @@ describe('reads that must not be older than a slot', () => {
     const { rpc } = lagging(99);
     await expect(readAccounts(rpc, ['11111111111111111111111111111111' as never], { minContextSlot: 110n })).rejects.toThrow();
   });
+
+  it('without a slot, every batch after the first is held to the first one\'s', async () => {
+    const asked: unknown[] = [];
+    const slots = [130n, 125n, 140n];
+    const rpc = {
+      getMultipleAccounts: (addresses: string[], config: { minContextSlot?: bigint }) => ({
+        send: async () => {
+          asked.push(config.minContextSlot);
+          return { context: { slot: slots[asked.length - 1] }, value: addresses.map(() => null) };
+        },
+      }),
+    } as unknown as Parameters<typeof readAccounts>[0];
+    // 250 accounts: three batches of at most 100.
+    const many = Array.from({ length: 250 }, (_, i) => `${'1'.repeat(28)}${String(i).padStart(4, 'A')}` as never);
+    const { slot } = await readAccounts(rpc, many);
+    expect(asked).toEqual([undefined, 130n, 130n]);
+    expect(slot).toBe(125n);
+  });
 });
 
 describe('"no record" proves a swap never landed only while the cache still holds it', () => {

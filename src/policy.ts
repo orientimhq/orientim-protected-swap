@@ -21,8 +21,9 @@ export type OwnerPolicy = {
   maxAmountIn: Record<string, string>;
   /**
    * Per input mint: the most all swaps from one wallet signed in the last 24 hours may spend together.
-   * A swap counts once signed and kept, whether it lands or not: a failed or expired one frees its
-   * share only when its 24 hours pass.
+   * A swap counts once signed and kept, and keeps counting until the chain proves it moved nothing:
+   * one that failed, or that can no longer land (expired, or refused by Orientim and expired), frees
+   * its share then. One whose outcome is unknown, or settled by hand, counts for its 24 hours.
    */
   maxAmountInPerDay?: Record<string, string>;
   /**
@@ -299,8 +300,9 @@ export type SpendLog = {
   spentSince(owner: string, mint: string, since: number, except?: string): Promise<bigint>;
   recordSpend(entry: { signature: string; owner: string; mint: string; amountIn: string; at: number }): Promise<void>;
   /**
-   * Takes back a spend recorded for a swap that was then refused before it was kept (its order was
-   * taken by another run, or it could not be kept): it was never sent, so it does not count.
+   * Takes back a spend recorded for a swap that moved nothing: refused before it was kept (its order
+   * was taken by another run, or it could not be kept), so never sent; or one the chain proves failed
+   * or can no longer land.
    */
   forgetSpend?(signature: string): Promise<void>;
 };

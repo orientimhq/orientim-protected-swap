@@ -66,7 +66,7 @@ import { OrientimApiError, rpcSender } from './api.ts';
 import { apiKeyChallenge, isApiKeyMessage, redeemApiKey } from './keys.ts';
 import { acquireLock, LockBusyError, releaseHeldLocks } from './lock.ts';
 import { ApprovalError, checkPolicy, DEFAULT_STATE_DIR, forgetApproval, heldToApproval, keptApproval, loadPolicy, PolicyError, policyPathFor, stateDirFor } from './policy.ts';
-import { createFileStore, pendingFor, PendingSwapError, recoverPending, resolvePending, settleOrder, takeOrder } from './store.ts';
+import { createFileStore, movedNothing, pendingFor, PendingSwapError, recoverPending, resolvePending, settleOrder, takeOrder } from './store.ts';
 import { checkPrepared, finalizeSigned, FloorError, holdSolFee, IntentError, OrientimOrderError, ownFloor, prepareChecked, PriceImpactError, receivedFor, resumeSigned } from './swap.ts';
 import type { Intent, Prepared, SendTransaction } from './api.ts';
 import type { OwnerPolicy, SpendLog } from './policy.ts';
@@ -312,7 +312,7 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
       } catch (e) {
         return { code: 3, output: { ok: false, ...(e instanceof LockBusyError ? { busy: true } : {}), error: `${messageOf(e)} Nothing was settled; run recover again once it is done.` } };
       }
-      const { settled, unknown, bookkeepingErrors } = await recoverPending(store, deps.rpc, { pollMs: deps.pollMs, maxWaitMs: deps.maxWaitMs, orders: store, archive: deps.archive });
+      const { settled, unknown, bookkeepingErrors } = await recoverPending(store, deps.rpc, { pollMs: deps.pollMs, maxWaitMs: deps.maxWaitMs, orders: store, archive: deps.archive, spends: store });
       // What stays kept (an unknown outcome, or a record that could not be updated) is settled again next time.
       const open = unknown.length > 0 || bookkeepingErrors.length > 0;
       return {
@@ -353,7 +353,7 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
       return { code: 3, output: { ok: false, ...(e instanceof LockBusyError ? { busy: true } : {}), error: `${messageOf(e)} Nothing was changed; try again once it is done.` } };
     }
     try {
-      const resolved = await resolvePending(store, deps.rpc, signature, outcome, { orders: store, requestTimeoutMs: deps.requestTimeoutMs });
+      const resolved = await resolvePending(store, deps.rpc, signature, outcome, { orders: store, requestTimeoutMs: deps.requestTimeoutMs, spends: store });
       return { code: 0, output: { ok: true, ...resolved } };
     } catch (e) {
       return { code: 1, output: { ok: false, error: messageOf(e) } };
@@ -479,6 +479,8 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
       try {
         // Only this attempt's own order: a newer attempt that holds it is never written over.
         if (orderId) await settleOrder(store, orderId, { signature: result.signature, state: (result.outcome === 'unknown' ? 'pending' : result.outcome) as OrderRecord['state'] });
+        // The chain proves it moved nothing: its share of the day comes back.
+        if (movedNothing(result.outcome)) await store.forgetSpend?.(result.signature);
         if (result.outcome !== 'unknown') await store.remove(result.signature);
         // A swap that landed uses the user's approval up; one that failed or expired keeps it until it expires.
         if (result.outcome === 'confirmed') forgetApproval(deps.stateDir, approvalKeyOf({ ...intent, owner: prepared.wallet }), finalizeStarted);

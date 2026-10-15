@@ -161,7 +161,7 @@ async function main() {
   }
   try {
     // What a stopped run left is settled first; while any outcome is unknown, no new swap starts.
-    const { settled, unknown, bookkeepingErrors } = await recoverPending(store, rpc, { orders: store, archive });
+    const { settled, unknown, bookkeepingErrors } = await recoverPending(store, rpc, { orders: store, archive, spends: store });
     for (const s of settled) console.error(`An earlier swap, ${s.signature}, ended ${s.outcome}.`);
     for (const b of bookkeepingErrors) console.error(`Its record could not be updated (${b.error}); the next run settles ${b.signature} again.`);
     if (unknown.length || bookkeepingErrors.length) {
