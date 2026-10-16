@@ -119,4 +119,25 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm run build
-      - run: cd dist && find . -type f ! -name '*.tgz' | LC_ALL=C sort | xargs shasum -a 256
+      - run: |
+          cd dist && find . -type f ! -name '*.tgz' | LC_ALL=C sort | xargs shasum -a 256 > "$RUNNER_TEMP/sha256-${{ matrix.os }}.txt"
+          cat "$RUNNER_TEMP/sha256-${{ matrix.os }}.txt"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sha256-${{ matrix.os }}
+          path: ${{ runner.temp }}/sha256-${{ matrix.os }}.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  reproducible-compare:
+    # Both runners' lists, compared: any file whose bytes differ fails the build.
+    needs: reproducible
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: sha256-*
+          merge-multiple: true
+      - run: |
+          test -s sha256-ubuntu-latest.txt && test -s sha256-macos-latest.txt
+          diff -u sha256-ubuntu-latest.txt sha256-macos-latest.txt

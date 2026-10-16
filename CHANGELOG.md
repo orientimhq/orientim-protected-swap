@@ -51,6 +51,8 @@ From the 16 October 2026 final audit:
   one-time key's account for the output or that destination itself, never another account.
 - The MCP server keeps at most the newest 64 quote files, and removes one 10 minutes after its yes
   ended instead of a day after it was made.
+- CI compares the build's SHA-256 lists from Ubuntu and macOS and fails when they differ (it printed
+  them only). The build is made in `dist.partial/` and renamed to `dist/` once whole.
 
 ## 2.1.0
 

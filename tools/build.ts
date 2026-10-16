@@ -10,11 +10,13 @@
  * (tools/mcp/ holds its README and icon). It is a release asset, not part of the npm package.
  *
  * The output is the same bytes from every machine: no dates, no paths of the machine that built it.
+ * It is built in dist.partial/ and renamed to dist/ only once whole: a build that stops leaves no
+ * dist/ that looks finished.
  *
  *   node tools/build.ts
  */
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { crc32 } from 'node:zlib';
 import { rolldown } from 'rolldown';
@@ -23,6 +25,8 @@ const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as { version: strin
 const lf = (s: string) => s.replace(/\r\n/g, '\n');
 const json = (v: unknown) => `${JSON.stringify(v, null, 2)}\n`;
 const SHEBANG = '#!/usr/bin/env node';
+/** Where the build is made, beside dist/ so that it is renamed in place. */
+const OUT = 'dist.partial';
 
 /** The library and the command, sharing their code in chunks; @solana/kit stays a dependency. */
 const ENTRIES = {
@@ -41,7 +45,7 @@ async function library(): Promise<void> {
     logLevel: 'warn',
   });
   await b.write({
-    dir: 'dist',
+    dir: OUT,
     format: 'esm',
     entryFileNames: '[name].mjs',
     chunkFileNames: 'chunks/[name]-[hash].mjs',
@@ -66,9 +70,9 @@ async function standalone(): Promise<string> {
  * own names are not published.
  */
 function declarations(): void {
-  const run = spawnSync(process.execPath, ['node_modules/typescript/bin/tsc', '-p', 'tools/tsconfig.types.json'], { encoding: 'utf8' });
+  const root = `${OUT}/types`;
+  const run = spawnSync(process.execPath, ['node_modules/typescript/bin/tsc', '-p', 'tools/tsconfig.types.json', '--outDir', root], { encoding: 'utf8' });
   if (run.status !== 0) throw new Error(`declarations: ${run.stdout}${run.stderr}`);
-  const root = 'dist/types';
   const WORKSPACE: Record<string, string> = {
     '@orientim/core': 'packages/core/src/index.d.ts',
     '@orientim/core/constants': 'packages/core/src/constants.d.ts',
@@ -232,8 +236,10 @@ const mcpb = async () => zip([
   { name: 'LICENSE', data: Buffer.from(lf(readFileSync('LICENSE', 'utf8')), 'utf8'), mode: 0o100644 },
 ]);
 
-rmSync('dist', { recursive: true, force: true });
+rmSync(OUT, { recursive: true, force: true });
 await library();
 declarations();
-writeFileSync('dist/orientim.mcpb', await mcpb());
+writeFileSync(`${OUT}/orientim.mcpb`, await mcpb());
+rmSync('dist', { recursive: true, force: true });
+renameSync(OUT, 'dist');
 for (const f of ['bin/orientim.mjs', 'index.mjs', 'orientim.mcpb']) console.log(`dist/${f}: ${statSync(`dist/${f}`).size} bytes`);
