@@ -36,6 +36,9 @@ const KNOWN_DECIMALS: Readonly<Record<string, number>> = { [SOL]: 9, [USDC]: 6, 
 const TOKEN_PROGRAMS = ['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'];
 /** How long a quote is kept in this server; it is swapped only while the user's yes holds (10 minutes). */
 const QUOTE_KEPT_MS = 24 * 60 * 60_000;
+/** On disk, a quote is kept this long past its yes (to say it expired), and only the newest are. */
+const QUOTE_FILE_GRACE_MS = 10 * 60_000;
+const QUOTE_FILES_KEPT = 64;
 /**
  * The most tolerance and price impact the model may ask for, in bps: Jupiter's own "auto" range and
  * the default impact limit. The agent's floor sits this tolerance below the market, so only the owner
@@ -279,40 +282,48 @@ export function quoteDigest(id: string, q: Quote): string {
 /**
  * Quotes as files in `dir`, the owner's alone, one per quote, each written whole and renamed into
  * place. A file whose digest does not match what it says (cut short, or changed) is not a quote,
- * and is forgotten.
+ * and is forgotten; so is one whose yes expired more than `QUOTE_FILE_GRACE_MS` ago, and any past
+ * the newest `QUOTE_FILES_KEPT`, so that the folder never grows without end.
  */
-export function fileQuoteStore(dir: string): QuoteStore {
+export function fileQuoteStore(dir: string, now: () => number = Date.now): QuoteStore {
   const file = (id: string) => join(dir, `quote-${id}.json`);
   const QUOTE_ID = /^[0-9a-f-]{8,64}$/;
-  return {
-    all() {
-      let names: string[];
+  const all = (): [string, Quote][] => {
+    let names: string[];
+    try {
+      names = readdirSync(dir);
+    } catch {
+      return [];
+    }
+    const out: [string, Quote][] = [];
+    for (const name of names) {
+      const m = /^quote-([0-9a-f-]{8,64})\.json$/.exec(name);
+      if (!m) continue;
       try {
-        names = readdirSync(dir);
+        const kept = record(JSON.parse(readFileSync(join(dir, name), 'utf8')));
+        const q = kept.quote as Quote;
+        const whole = q && typeof q === 'object' && kept.digest === quoteDigest(m[1], q);
+        if (whole && Number(q.until) + QUOTE_FILE_GRACE_MS >= now()) out.push([m[1], q]);
+        else rmSync(join(dir, name), { force: true });
       } catch {
-        return [];
+        rmSync(join(dir, name), { force: true });
       }
-      const out: [string, Quote][] = [];
-      for (const name of names) {
-        const m = /^quote-([0-9a-f-]{8,64})\.json$/.exec(name);
-        if (!m) continue;
-        try {
-          const kept = record(JSON.parse(readFileSync(join(dir, name), 'utf8')));
-          const q = kept.quote as Quote;
-          if (q && typeof q === 'object' && kept.digest === quoteDigest(m[1], q)) out.push([m[1], q]);
-          else rmSync(join(dir, name), { force: true });
-        } catch {
-          rmSync(join(dir, name), { force: true });
-        }
-      }
-      return out;
-    },
+    }
+    // The newest first; the rest are no quote anyone can still say yes to.
+    out.sort(([, a], [, b]) => (Number(b.at) || 0) - (Number(a.at) || 0));
+    for (const [id] of out.splice(QUOTE_FILES_KEPT)) rmSync(file(id), { force: true });
+    return out;
+  };
+  return {
+    all,
     save(id, quote) {
       if (!QUOTE_ID.test(id)) return;
       mkdirSync(dir, { recursive: true, mode: 0o700 });
       const temporary = `${file(id)}.${randomUUID()}.tmp`;
       writeFileSync(temporary, JSON.stringify({ quote, digest: quoteDigest(id, quote) }), { mode: 0o600 });
       renameSync(temporary, file(id));
+      // Pruned as each one is kept.
+      all();
     },
     remove(id) {
       if (QUOTE_ID.test(id)) rmSync(file(id), { force: true });
@@ -390,7 +401,7 @@ export function createServer(deps: McpDeps) {
     try {
       deps.quoteStore?.remove(id);
     } catch {
-      // A file left behind is pruned once its day is over.
+      // A file left behind is pruned once its yes has ended, by the store itself.
     }
   }
   /** A quote another server of the same owner kept after this one started (two windows of one client). */
@@ -557,7 +568,7 @@ export function createServer(deps: McpDeps) {
     const quoteId = args.quoteId;
     if (typeof quoteId !== 'string' || !/^[0-9a-f-]{8,64}$/.test(quoteId)) throw new InputError('quoteId must be the id orientim_quote answered.');
     const q = quotes.get(quoteId) ?? keptElsewhere(quoteId);
-    if (!q) throw new InputError('No quote with this id here: a newer quote of the same swap replaced it, or it is more than a day old. Run orientim_quote again, show the user, and swap after their yes.');
+    if (!q) throw new InputError('No quote with this id here: a newer quote of the same swap replaced it, or its 10 minutes ended some time ago. Run orientim_quote again, show the user, and swap after their yes.');
     if (swapping.has(quoteId)) throw new InputError('This swap is already running: wait for its answer, then act on it.');
     const earlier = earlierAnswers();
     if (earlier) return earlier;

@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
-  commandEnv, createServer, fileQuoteStore, fromBaseUnits, InputError, MODEL_CEILINGS, mintDecimalsOf, ownerCeilings, PROTOCOL_VERSIONS, SERVER_VERSION, toBaseUnits, tokenAmountOf, TOOLS, withoutBlanks, withoutSecrets,
+  commandEnv, createServer, fileQuoteStore as quoteFiles, fromBaseUnits, InputError, MODEL_CEILINGS, mintDecimalsOf, ownerCeilings, PROTOCOL_VERSIONS, SERVER_VERSION, toBaseUnits, tokenAmountOf, TOOLS, withoutBlanks, withoutSecrets,
   type McpDeps, type Run, type RunOptions,
 } from '../src/mcp.ts';
 import { SKILL_VERSION } from '../src/api.ts';
@@ -752,6 +752,8 @@ describe('orientim mcp', () => {
 
 describe('a quote outlives the server (15 October 2026 review)', () => {
   const swapped = () => ok(JSON.stringify({ signature: SIG, outcome: 'confirmed', refusal: null, meaning: 'Swapped.', amounts: {}, received: '1497000' }));
+  /** The store reads the harness's own day, so that its quotes are not taken for long expired. */
+  const fileQuoteStore = (dir: string, now = () => Date.UTC(2026, 9, 11, 12, 0)) => quoteFiles(dir, now);
 
   it('a quote file written by someone else, with limits past the owner\'s, is not a quote', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'orientim-quotes-'));
@@ -798,6 +800,30 @@ describe('a quote outlives the server (15 October 2026 review)', () => {
     const after = harness([], { quoteStore: fileQuoteStore(dir) });
     expect((await after.tool('orientim_swap', { quoteId: q.quoteId })).answer.error.line).toMatch(/No quote with this id/);
     expect(existsSync(file)).toBe(false);
+  });
+
+  it('keeps the newest 64 quote files, and none whose yes ended more than 10 minutes ago', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orientim-quotes-'));
+    let clock = Date.UTC(2026, 9, 11, 12, 0);
+    const quoteStore = fileQuoteStore(dir, () => clock);
+    const quote = (at: number) => ({
+      wallet: W, inputMint: SOL, outputMint: USDC, amountIn: '10000000', inputDecimals: 9, outputDecimals: 6, minOut: '1490000',
+      flags: [], at, until: at + 10 * 60_000, tried: false, question: '',
+    });
+    const id = (i: number) => `${String(i).padStart(8, '0')}-aaaa-bbbb-cccc-dddddddddddd`;
+    for (let i = 0; i < 70; i++) quoteStore.save(id(i), quote(clock + i));
+    const kept = quoteStore.all().map(([k]) => k);
+    expect(kept).toHaveLength(64);
+    // The oldest go first.
+    expect(kept).not.toContain(id(5));
+    expect(kept).toContain(id(6));
+    expect(readdirSync(dir).filter(f => f.startsWith('quote-'))).toHaveLength(64);
+    // Past its own 10 minutes and 10 more, a quote is gone from disk, without waiting a day.
+    clock += 20 * 60_000 + 67;
+    expect(quoteStore.all().map(([k]) => k)).toEqual([id(69), id(68), id(67)]);
+    clock += 3;
+    expect(quoteStore.all()).toEqual([]);
+    expect(readdirSync(dir).filter(f => f.startsWith('quote-'))).toEqual([]);
   });
 
   it('a tried quote stays tried across a restart: the person is not asked twice for one yes', async () => {
