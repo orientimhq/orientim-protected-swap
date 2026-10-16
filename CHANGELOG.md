@@ -38,6 +38,9 @@ From the 16 October 2026 final audit:
   (`SYSTEM_POLICY_PATH`) wins, and a policy given in code that differs from it is refused, as the command
   refuses another `ORIENTIM_POLICY`. `ORIENTIM_STATE_DIR` is read, and the relative default state
   directory is said in the answer's `notices`.
+- The MCP server takes an error from a client that said it can ask the user (elicitation) as no yes:
+  that swap is refused with nothing signed, and the next try asks again. Before, the error switched
+  asking off for the rest of the process and the swap went on on the model's word.
 
 ## 2.1.0
 

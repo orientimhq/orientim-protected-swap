@@ -471,7 +471,9 @@ chain are the same code. Four tools:
   replaces it. After that, `orientim_recover` settles what an earlier attempt left.
   When the client can ask its user a question itself (MCP elicitation), the server asks the person
   to confirm the swap before the first try signs: the model's word that they said yes is not theirs.
-  A question left unanswered is withdrawn when the quote's 10 minutes end.
+  A question left unanswered is withdrawn when the quote's 10 minutes end. A client that said it can
+  ask and answers the question with an error has given no yes: nothing is signed, and the next try
+  asks again. Only a client that does not say it can ask is not asked, and the model's word stands.
 - No quote is made while an earlier swap from the wallet may still land or is being sent (exit
   code 3): a new yes then would read as a retry and become a second swap. A swap that finished after
   the client stopped waiting for it is reported with the next call, as `earlierSwaps`, before

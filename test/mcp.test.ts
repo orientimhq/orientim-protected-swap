@@ -534,7 +534,7 @@ describe('one request, one swap (14 October 2026 review)', () => {
     expect(h.server.busy()).toBe(false);
   });
 
-  it('asks only a client that can show a form, and takes an error as "cannot ask"', async () => {
+  it('asks only a client that can show a form, and takes its error as no yes, for that swap only', async () => {
     const urlOnly = harness([() => ok(dryRun()), () => ok(JSON.stringify({ signature: SIG, outcome: 'confirmed' }))]);
     await urlOnly.request('initialize', { protocolVersion: '2025-11-25', capabilities: { elicitation: { url: {} } }, clientInfo: { name: 't', version: '1' } });
     const { answer: q1 } = await urlOnly.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01' });
@@ -548,7 +548,18 @@ describe('one request, one swap (14 October 2026 review)', () => {
     await new Promise(r => setTimeout(r, 0));
     const asked = failing.sent.find(m => m.method === 'elicitation/create') as { id: string };
     await failing.server.receive(JSON.stringify({ jsonrpc: '2.0', id: asked.id, error: { code: -32601, message: 'Method not found' } }), failing.send);
-    expect((await call).answer.ok).toBe(true);
+    const refused = (await call).answer;
+    expect(refused.ok).toBe(false);
+    expect(refused.error.line).toMatch(/could not ask the user.*nothing was signed/);
+    expect(failing.calls).toHaveLength(1);
+    // Asked again on the next try, never switched off: an accept then is the yes.
+    const again = failing.tool('orientim_swap', { quoteId: q2.quoteId });
+    await new Promise(r => setTimeout(r, 0));
+    const second = failing.sent.filter(m => m.method === 'elicitation/create') as { id: string }[];
+    expect(second).toHaveLength(2);
+    await failing.server.receive(JSON.stringify({ jsonrpc: '2.0', id: second[1].id, result: { action: 'accept', content: { confirm: true } } }), failing.send);
+    expect((await again).answer.ok).toBe(true);
+    expect(failing.calls).toHaveLength(2);
   });
 
   it("holds \"auto\" and the defaults to an owner's lower ceilings", async () => {

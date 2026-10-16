@@ -326,9 +326,9 @@ type Context = {
   signal: AbortSignal;
   /**
    * Asks the person through the client (MCP elicitation) until `deadline` (ms); undefined when the
-   * client cannot. `unavailable`: the client answered the question with an error, so it cannot ask.
+   * client cannot. `failed`: the client answered this question with an error, so the person said nothing.
    */
-  ask?: (message: string, deadline: number) => Promise<'accept' | 'decline' | 'cancel' | 'timeout' | 'unavailable'>;
+  ask?: (message: string, deadline: number) => Promise<'accept' | 'decline' | 'cancel' | 'timeout' | 'failed'>;
 };
 
 const mintOf = (v: unknown, name: string) => {
@@ -586,7 +586,9 @@ export function createServer(deps: McpDeps) {
     if (!asked.has(quoteId) && context.ask && q.question) {
       const said = await context.ask(q.question, q.until);
       if (said === 'timeout') throw new InputError('The user did not answer the confirmation before this quote\'s 10 minutes ran out: nothing was signed. Quote again if they still want the swap.');
-      if (said !== 'accept' && said !== 'unavailable') throw new InputError('The user did not confirm this swap: nothing was signed. Ask them what they want before quoting again.');
+      // A client that said it can ask, and failed to, has no yes to give: this swap waits for one.
+      if (said === 'failed') throw new InputError('The client could not ask the user to confirm this swap (it answered the question with an error): nothing was signed. Call orientim_swap again with this quoteId while its 10 minutes hold, to ask again.');
+      if (said !== 'accept') throw new InputError('The user did not confirm this swap: nothing was signed. Ask them what they want before quoting again.');
       if (now() > q.until) throw new InputError('The user\'s yes to this quote held 10 minutes and has expired: run orientim_quote again, show the user, and swap after their new yes.');
     }
     asked.add(quoteId);
@@ -659,7 +661,7 @@ export function createServer(deps: McpDeps) {
     // taking the wait for silence.
     const heartbeat = setInterval(() => progress('Still working'), 15_000);
     try {
-      const ask = canAsk ? (message: string, deadline: number) => new Promise<'accept' | 'decline' | 'cancel' | 'timeout' | 'unavailable'>(resolve => {
+      const ask = canAsk ? (message: string, deadline: number) => new Promise<'accept' | 'decline' | 'cancel' | 'timeout' | 'failed'>(resolve => {
         const askId = `orientim-ask-${++askIds}`;
         // Unanswered by the deadline, the question is withdrawn: a client that never answers does not
         // hold the swap, or this server, forever.
@@ -671,11 +673,10 @@ export function createServer(deps: McpDeps) {
         timer.unref?.();
         const settle = (a: Record<string, unknown>) => {
           clearTimeout(timer);
-          // An error is the client saying it cannot ask (no form mode, say): from then on it is not
-          // asked, as a client without elicitation is not, and the yes is the model's word.
+          // An error from a client that said it can ask is no yes, for this swap only: the next one
+          // asks again. Only a client that never said it can ask takes the model's word.
           if ('error' in a) {
-            canAsk = false;
-            resolve('unavailable');
+            resolve('failed');
             return;
           }
           const content = record(record(a.result).content);
