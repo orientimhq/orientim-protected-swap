@@ -495,6 +495,33 @@ describe('the skill holds its own state and limits against what it is handed', (
     expect(() => loadPolicy(file)).toThrow('allowUnknownPriceImpact');
   });
 
+  it("a route is a curve route for the agent's own floor only as the verifier judges one: the program and its token's writable curve", async () => {
+    const { bondingCurveOf } = await import('@orientim/verifier');
+    const { PUMP_CURVE_PROGRAM: CURVE_PROGRAM } = await import('@orientim/core/constants');
+    const quoteWith = (accounts: { pubkey: string; isWritable: boolean }[]) => ownQuote({
+      inputMint: USDC, outputMint: BONK, amountIn: '1000000', taker: W,
+      fetchImpl: (async (url: string) => Response.json({
+        inputMint: USDC, outputMint: BONK, inAmount: new URL(url).searchParams.get('amount'), outAmount: '1000000', priceImpactPct: '0',
+        swapInstruction: { accounts },
+      })) as unknown as typeof fetch,
+    });
+    const bonk = await bondingCurveOf(BONK as never);
+    const other = await bondingCurveOf('So11111111111111111111111111111111111111112' as never);
+    // The program's address alone, read only or beside another token's curve: not a curve route, 2% floor.
+    for (const accounts of [
+      [{ pubkey: CURVE_PROGRAM, isWritable: false }],
+      [{ pubkey: CURVE_PROGRAM, isWritable: false }, { pubkey: bonk, isWritable: false }],
+      [{ pubkey: CURVE_PROGRAM, isWritable: false }, { pubkey: other, isWritable: true }],
+    ]) {
+      const own = await quoteWith(accounts);
+      expect(own.curve).toBe(false);
+      expect(own.minOut).toBe('980000');
+    }
+    const curve = await quoteWith([{ pubkey: CURVE_PROGRAM, isWritable: false }, { pubkey: bonk, isWritable: true }]);
+    expect(curve.curve).toBe(true);
+    expect(curve.minOut).toBe('950000');
+  });
+
   it("Orientim's fee counts as SOL whenever it is in SOL, from whichever side it is taken", () => {
     const SOL = 'So11111111111111111111111111111111111111112';
     expect(solFeeOf({ feeSide: 'input', inputMint: SOL, outputMint: USDC, fee: 5n })).toBe(5n);

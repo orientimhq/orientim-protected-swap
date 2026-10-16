@@ -27,7 +27,7 @@ import { findAssociatedTokenPda } from '@solana-program/token';
 import { JUPITER_PROGRAM, PUMP_AMM_PROGRAM, PUMP_CURVE_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, USDC_MINT, WSOL_MINT } from '@orientim/core/constants';
 import type { ChainSnapshot, Policy } from '@orientim/core/types';
 import { balancesAfterSimulation, notOlderThan, readAccounts } from '@orientim/solana';
-import { hasPermanentDelegate, hasTransferFee, hasTransferHookAuthority, jupiterRouteArgs, routeAccountFor, transferFeeOf, transferFeeOn, verify } from '@orientim/verifier';
+import { hasPermanentDelegate, hasTransferFee, hasTransferHookAuthority, isBondingCurveRoute, jupiterRouteArgs, routeAccountFor, transferFeeOf, transferFeeOn, verify } from '@orientim/verifier';
 import type { TransferFee } from '@orientim/verifier';
 
 /** When "no record" proves a transaction never landed; `confirm` uses them. */
@@ -870,12 +870,15 @@ export async function ownQuote(args: OwnQuoteArgs): Promise<{
   for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
   const r = (await askJupiter(url.toString(), 'your own price', args.apiKey, args.fetchImpl, args.budget)) as {
     inputMint?: string; outputMint?: string; inAmount?: string; outAmount?: string; otherAmountThreshold?: string; priceImpactPct?: string | number;
-    swapInstruction?: { accounts?: { pubkey: string }[] };
+    swapInstruction?: { accounts?: { pubkey: string; isWritable?: boolean }[] };
   };
   if (r.inputMint !== args.inputMint || r.outputMint !== args.outputMint || r.inAmount !== routed.toString() || !/^\d{1,20}$/.test(r.outAmount ?? '')) {
     throw new Error('Jupiter answered for another trade when asked for your own price');
   }
-  const curve = r.swapInstruction?.accounts?.some(a => a.pubkey === PUMP_CURVE_PROGRAM) ?? false;
+  // A curve route as the verifier judges one: the curve program, and the writable curve of one of
+  // the swap's own tokens. The program's address alone would widen the floor for nothing.
+  const accounts = Array.isArray(r.swapInstruction?.accounts) ? r.swapInstruction.accounts : [];
+  const curve = await isBondingCurveRoute(accounts.map(a => ({ address: a.pubkey, isWritable: a.isWritable === true })), args.inputMint, args.outputMint);
   // The tolerance: chosen, or estimated on "auto" (3% on a curve, as Orientim's default there), and
   // never above the owner's ceiling. Undefined leaves Orientim's default, which is within it.
   const ceiling = args.ceilings?.maxSlippageBps;

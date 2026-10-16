@@ -338,11 +338,6 @@ export function jupiterRouteArgs(data: ArrayLike<number>): JupiterRouteArgs | nu
   };
 }
 
-/**
- * The least a Jupiter route lets through: its quote less its tolerance, rounded down. Jupiter's
- * program checks what its instruction delivered to the destination against this, so it holds
- * whatever else arrives in that account.
- */
 /** The Pump.fun bonding curve of `mint`: the curve program's account `["bonding-curve", mint]`. */
 export async function bondingCurveOf(mint: Address): Promise<Address> {
   const [pda] = await getProgramDerivedAddress({
@@ -351,6 +346,27 @@ export async function bondingCurveOf(mint: Address): Promise<Address> {
   return pda;
 }
 
+/**
+ * Whether a route trades on a Pump.fun bonding curve: it names the curve program and writes the curve
+ * of the swap's own input or output token (`bondingCurveOf`). The program's address alone, which any
+ * builder can append for free, does not make a route a curve route. `ownedByCurve` is the chain's word
+ * that such an account is the program's (the verifier reads it in its snapshot); without it, the
+ * address is taken as derived. The verifier and the agent's own quote decide by this one predicate.
+ */
+export async function isBondingCurveRoute(
+  accounts: readonly { address: string; isWritable: boolean }[], inputMint: string, outputMint: string,
+  ownedByCurve: (account: string) => boolean = () => true,
+): Promise<boolean> {
+  if (!accounts.some(a => a.address === PUMP_CURVE_PROGRAM)) return false;
+  const curves: string[] = await Promise.all([inputMint, outputMint].map(m => bondingCurveOf(m as Address)));
+  return accounts.some(a => curves.includes(a.address) && a.isWritable && ownedByCurve(a.address));
+}
+
+/**
+ * The least a Jupiter route lets through: its quote less its tolerance, rounded down. Jupiter's
+ * program checks what its instruction delivered to the destination against this, so it holds
+ * whatever else arrives in that account.
+ */
 export function jupiterFloor(args: Pick<JupiterRouteArgs, 'quotedOutAmount' | 'slippageBps'>): bigint {
   return (args.quotedOutAmount * BigInt(10_000 - args.slippageBps)) / 10_000n;
 }
@@ -583,10 +599,10 @@ export async function verify(transaction: Transaction, policy: Policy, snapshot:
   // A route trades on a Pump.fun bonding curve when it writes the curve of the swap's own token, an
   // account the Pump.fun program owns: the program's address alone, which any builder can append for
   // free, does not make a route a curve route.
-  const curves = await Promise.all([p.inputMint, p.outputMint].map(bondingCurveOf));
-  const onCurve = (accounts: readonly Account[]) =>
-    accounts.some(a => a.address === PUMP_CURVE_PROGRAM)
-    && accounts.some(a => curves.includes(a.address) && isWritableRole(a.role) && snapshot.accounts.get(a.address)?.owner === PUMP_CURVE_PROGRAM);
+  const onCurve = (accounts: readonly Account[]) => isBondingCurveRoute(
+    accounts.map(a => ({ address: a.address, isWritable: isWritableRole(a.role) })), p.inputMint, p.outputMint,
+    a => snapshot.accounts.get(a as Address)?.owner === PUMP_CURVE_PROGRAM,
+  );
   for (const { x } of externals) {
     if (x.kind !== 'external' || x.program !== JUPITER_PROGRAM) continue;
     const args = jupiterRouteArgs(x.data);
@@ -594,7 +610,7 @@ export async function verify(transaction: Transaction, policy: Policy, snapshot:
       fail('R2', 'the Jupiter instruction is not a route Orientim can read (route_v2 or shared_accounts_route_v2)');
       continue;
     }
-    const curve = onCurve(x.accounts);
+    const curve = await onCurve(x.accounts);
     const chosen = opts.maxSlippageBps;
     const maxSlippage = chosen !== undefined && Number.isInteger(chosen) && chosen >= 0
       ? Math.min(chosen, MAX_CHOSEN_SLIPPAGE_BPS)

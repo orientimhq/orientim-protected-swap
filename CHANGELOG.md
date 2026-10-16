@@ -41,6 +41,10 @@ From the 16 October 2026 final audit:
 - The MCP server takes an error from a client that said it can ask the user (elicitation) as no yes:
   that swap is refused with nothing signed, and the next try asks again. Before, the error switched
   asking off for the rest of the process and the swap went on on the model's word.
+- The agent's own quote takes a route for a Pump.fun curve route (a 5% default floor) only as the
+  verifier does, by one predicate, `isBondingCurveRoute` in `@orientimhq/swap/verifier`: the curve
+  program and a writable bonding curve of the input or output token. The program's address alone in
+  Jupiter's answer no longer widens the floor.
 
 ## 2.1.0
 

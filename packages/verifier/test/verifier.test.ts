@@ -15,7 +15,7 @@ import {
 } from '@orientim/core';
 import type { AccountState, RuleId, TxVersion } from '@orientim/core';
 import { bondingCurveOf as coreBondingCurveOf } from '@orientim/core';
-import { bondingCurveOf, verify } from '../src/index.ts';
+import { bondingCurveOf, isBondingCurveRoute, verify } from '../src/index.ts';
 import { BONK, compileRaw, cuIxs, honest, JUP, LIFETIME, randomAddress, routeV2Data, scenario, USDC } from './fixtures.ts';
 import type { Scenario } from './fixtures.ts';
 
@@ -670,6 +670,20 @@ describe("Jupiter's own floor is read from its instruction", () => {
       expect(details(await check(s => routeV2Data(s.policy.swapAmount, s.policy.minOut * 2n, 300), { curve })).join(), curve).toContain('tolerates 300 bps, above 50');
     }
     expect(await bondingCurveOf(BONK)).toBe(await coreBondingCurveOf(BONK));
+  });
+
+  it('one predicate for a curve route, the one the agent\'s own quote uses: the program and a writable curve of the input or output', async () => {
+    const curve = await bondingCurveOf(BONK);
+    const other = await bondingCurveOf(await randomAddress());
+    const program = { address: PUMP_CURVE_PROGRAM, isWritable: false };
+    expect(await isBondingCurveRoute([program, { address: curve, isWritable: true }], USDC, BONK)).toBe(true);
+    expect(await isBondingCurveRoute([program, { address: curve, isWritable: true }], BONK, USDC)).toBe(true);
+    expect(await isBondingCurveRoute([program], USDC, BONK)).toBe(false);
+    expect(await isBondingCurveRoute([program, { address: curve, isWritable: false }], USDC, BONK)).toBe(false);
+    expect(await isBondingCurveRoute([program, { address: other, isWritable: true }], USDC, BONK)).toBe(false);
+    expect(await isBondingCurveRoute([{ address: curve, isWritable: true }], USDC, BONK)).toBe(false);
+    // The verifier also holds the curve to the chain's word that the program owns it.
+    expect(await isBondingCurveRoute([program, { address: curve, isWritable: true }], USDC, BONK, () => false)).toBe(false);
   });
 
   it('a tolerance the person chose on the page is the ceiling instead, on any route, and never above 15%', async () => {
