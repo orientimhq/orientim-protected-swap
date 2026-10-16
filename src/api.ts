@@ -23,7 +23,7 @@ export type Intent = {
    * with `slippageBps`, that tolerance and 1.5% more, 2% on a curve).
    */
   maxBelowBps?: number;
-  /** The highest Orientim fee you accept, in bps (Orientim's is 30: anything above is refused by default). */
+  /** The highest Orientim fee you accept, in bps: 25 by default (Orientim's fee, so a higher one is refused), up to 30, the ceiling. */
   maxFeeBps?: number;
   /** The highest network fee you accept, in lamports. */
   maxNetworkFeeLamports?: number;

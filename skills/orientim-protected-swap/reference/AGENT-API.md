@@ -407,7 +407,7 @@ signed and sent nothing. From finalize, once the ticket and message check out, t
 the transaction (`signature`, `lastValidBlockHeight`): an earlier finalize of the same ticket may
 have sent it, so check it before preparing again (see above). `price-moved` and `costs-more` carry
 `requiresApproval: true`: a worse price or a costlier route is the user's decision, not a retry.
-A bot that runs with no one to ask never accepts them by itself; the skill's SKILL.md ("A bot with no
+A bot that runs with no one to ask never accepts them by itself; the skill's GUIDE.md ("A bot with no
 one to ask") lists what to do with each code.
 
 | HTTP | `code` | What to do |

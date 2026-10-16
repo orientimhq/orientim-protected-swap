@@ -19,7 +19,8 @@ const RUNS = Number(process.env.ORIENTIM_FUZZ_RUNS ?? ((import.meta as { env?: {
 // About 22 ms per case on a laptop (20,000 cases took ~440 s per property): the time limit grows
 // with the number of cases, so `npm run test:fuzz` (100,000) is not cut off.
 const TIMEOUT = 60_000 + RUNS * 50;
-// A shard of the fuzz workflow runs its own cases: one seed per shard (.github/workflows/fuzz.yml).
+// The long fuzz runs are made separately from CI, in shards: one seed per shard (ORIENTIM_FUZZ_SEED),
+// with ORIENTIM_FUZZ_RUNS cases. `npm run test:fuzz` runs one locally.
 const SEED = process.env.ORIENTIM_FUZZ_SEED ? Number(process.env.ORIENTIM_FUZZ_SEED) : undefined;
 const PARAMS = { numRuns: RUNS, ...(SEED !== undefined ? { seed: SEED } : {}) };
 const PAIRS: [Address, Address][] = [[USDC, WSOL_MINT], [WSOL_MINT, USDC], [USDC, BONK]];

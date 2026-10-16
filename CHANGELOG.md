@@ -53,6 +53,10 @@ From the 16 October 2026 final audit:
   ended instead of a day after it was made.
 - CI compares the build's SHA-256 lists from Ubuntu and macOS and fails when they differ (it printed
   them only). The build is made in `dist.partial/` and renamed to `dist/` once whole.
+- Docs: `maxFeeBps` is 25 bps by default, Orientim's fee, and at most 30, its ceiling (the comments said
+  the fee is 30); AGENT-API points to GUIDE.md for a bot with no one to ask; `npm run test:fuzz` runs
+  100,000 to 200,000 cases per property; the tests no longer name a fuzz workflow this repository does
+  not have.
 
 ## 2.1.0
 

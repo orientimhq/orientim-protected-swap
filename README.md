@@ -66,7 +66,7 @@ npm ci
 npm run typecheck
 npm test               # unit and property tests
 npm run build          # dist/: the package, its declarations, and orientim.mcpb
-npm run test:fuzz      # the verifier's properties at 100,000 cases each (slow)
+npm run test:fuzz      # the verifier's properties at 100,000 to 200,000 cases each (slow)
 ```
 
 Only `@solana/kit` stays outside the bundle, a dependency pinned to one version; the workspace

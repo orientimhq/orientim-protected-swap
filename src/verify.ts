@@ -371,7 +371,7 @@ export type AgentLimits = {
    * got itself (`ownMinimum` asks Jupiter), never from Orientim's answer. Orientim's floor may be stricter.
    */
   minOut: string;
-  /** The highest Orientim fee accepted, in bps (Orientim's is 30: anything above is refused by default). */
+  /** The highest Orientim fee accepted, in bps: 25 by default (Orientim's fee, so a higher one is refused), up to 30, the ceiling. */
   maxFeeBps?: number;
   /** The most the transaction may cost in network fees, in lamports (default 0.001 SOL). */
   maxNetworkFeeLamports?: number;

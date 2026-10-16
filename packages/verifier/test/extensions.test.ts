@@ -11,10 +11,11 @@ import type { Address } from '@solana/kit';
 import { unsupportedExtension } from '../src/index.ts';
 
 const RUNS = Number(process.env.ORIENTIM_FUZZ_RUNS ?? ((import.meta as { env?: { MODE?: string } }).env?.MODE === 'fuzz' ? 200_000 : 3_000));
-// At full size a property takes 20 to 40 s on CI, far past vitest's default 5 s (the fuzz run of
-// 345a82d timed out on all four, without a single counterexample).
+// At full size a property takes 20 to 40 s on CI, far past vitest's default 5 s (an earlier fuzz
+// run timed out on all four, without a single counterexample).
 const TIMEOUT = 60_000 + RUNS;
-// A shard of the fuzz workflow runs its own cases: one seed per shard (.github/workflows/fuzz.yml).
+// The long fuzz runs are made separately from CI, in shards: one seed per shard (ORIENTIM_FUZZ_SEED),
+// with ORIENTIM_FUZZ_RUNS cases. `npm run test:fuzz` runs one locally.
 const SEED = process.env.ORIENTIM_FUZZ_SEED ? Number(process.env.ORIENTIM_FUZZ_SEED) : undefined;
 const PARAMS = { numRuns: RUNS, ...(SEED !== undefined ? { seed: SEED } : {}) };
 

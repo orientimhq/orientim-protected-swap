@@ -5,7 +5,7 @@
  * with a floor of Jupiter's own below the minimum Orientim enforces. Nothing else changes.
  *
  * `npm run test:fuzz` runs 200,000 cases; ORIENTIM_FUZZ_RUNS and ORIENTIM_FUZZ_SEED set the size and
- * the seed of a shard (.github/workflows/fuzz.yml).
+ * the seed of a shard. The long fuzz runs are made separately from CI.
  */
 import { beforeAll, describe, expect, it } from 'vitest';
 import fc from 'fast-check';
