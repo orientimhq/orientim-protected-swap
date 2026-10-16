@@ -40,7 +40,7 @@ export {
 // The owner's limits and the approvals a dry run keeps.
 export {
   APPROVAL_MS, ApprovalError, approvalFor, checkPolicy, DEFAULT_STATE_DIR, forgetApproval, heldToApproval,
-  keptApproval, loadPolicy, PolicyError, policyPathFor, recordApproval, stateDirFor, SYSTEM_POLICY_PATH,
+  keptApproval, loadPolicy, parsePolicy, PolicyError, policyPathFor, recordApproval, stateDirFor, SYSTEM_POLICY_PATH,
 } from './policy.ts';
 export type {
   Approval, OwnerCeilings, OwnerPolicy, SpendLog,

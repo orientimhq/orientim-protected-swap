@@ -42,6 +42,25 @@ jobs:
           echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}' \
             | npx -y "file:$(ls "$RUNNER_TEMP"/orientimhq-swap-*.tgz)" mcp | grep -q '"protocolVersion":"2025-11-25"'
 
+  solana-agent-kit:
+    # The plugin for Solana Agent Kit, against this source and against the real kit.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: integrations/solana-agent-kit
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+        working-directory: .
+      - run: npm ci --ignore-scripts --legacy-peer-deps
+      - run: npm install --no-save --ignore-scripts --legacy-peer-deps solana-agent-kit@2.0.10
+      - run: npm run typecheck
+      - run: npm test
+
   windows:
     # The package runs on Windows too: its policy path, its state directory and the command.
     runs-on: windows-latest

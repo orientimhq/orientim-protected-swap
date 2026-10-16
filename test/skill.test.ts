@@ -14,7 +14,7 @@ import { errorExitCode, errorLine, exitCodeOf } from '../src/agent.ts';
 import { ConfigError, dataOnly, OrientimApiError, safeCode, SKILL_VERSION, untrustedLine } from '../src/api.ts';
 import { isApiKeyMessage } from '../src/keys.ts';
 import { acquireLock, bootId, LockBusyError, lockHeld, pidNamespace, releaseHeldLocks } from '../src/lock.ts';
-import { ApprovalError, approvalFor, checkPolicy, forgetApproval, heldToApproval, keptApproval, loadPolicy, PolicyError, policyPathFor, recordApproval, stateDirFor } from '../src/policy.ts';
+import { ApprovalError, approvalFor, checkPolicy, forgetApproval, heldToApproval, keptApproval, loadPolicy, parsePolicy, PolicyError, policyPathFor, recordApproval, stateDirFor } from '../src/policy.ts';
 import { createFileStore, movedNothing, PendingSwapError, recoverPending, resolvePending, settleOrder } from '../src/store.ts';
 import { fillAgainstQuote, IntentError, OrientimOrderError, preparedData, receivedFor } from '../src/swap.ts';
 import { runCli, withRetryHints } from '../src/cli.ts';
@@ -134,6 +134,12 @@ describe("the owner's policy", () => {
     writeFileSync(path, JSON.stringify(policy));
     return path;
   };
+
+  it('given as an object is checked as strictly as a file, and names where it came from', () => {
+    expect(parsePolicy({ maxAmountIn: { [USDC]: '5000000' } }, 'in code')).toEqual({ maxAmountIn: { [USDC]: '5000000' } });
+    expect(() => parsePolicy({ maxAmountIn: { [USDC]: '5' }, maxAmount: {} }, 'given to the plugin')).toThrow(/given to the plugin.*does not know/);
+    expect(() => parsePolicy([], 'in code')).toThrow(/not a JSON object/);
+  });
 
   it('is read strictly: anything it does not understand is refused', () => {
     expect(loadPolicy(write({ maxAmountIn: { [USDC]: '5000000' } }))).toEqual({ maxAmountIn: { [USDC]: '5000000' } });

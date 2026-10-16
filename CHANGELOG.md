@@ -30,6 +30,9 @@ From the 16 October 2026 final audit:
   300): 150 blocks can span more slots when leaders skip theirs.
 - README and GUIDE: `npm audit signatures` checks signatures, not who built a version; the attested
   tarball is checked with `gh attestation verify`.
+- `parsePolicy(object, source)` checks a policy given in code as strictly as `loadPolicy` checks a file.
+- A plugin for Solana Agent Kit lives in `integrations/solana-agent-kit` (`@orientimhq/solana-agent-kit`,
+  not yet published): one action, `protectedSwap`, that makes the same swap with the kit's wallet and RPC.
 
 ## 2.1.0
 

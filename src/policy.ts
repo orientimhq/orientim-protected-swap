@@ -76,6 +76,15 @@ export function loadPolicy(path: string): OwnerPolicy {
   } catch (e) {
     throw new ConfigError(`The owner's policy ${path} cannot be read as JSON: ${e instanceof Error ? e.message : String(e)}. Nothing was prepared.`);
   }
+  return parsePolicy(raw, path);
+}
+
+/**
+ * Checks a policy given as an object, as a file would be read: anything not understood is refused.
+ * `source` names it in the errors (a path, or where in the code it was given).
+ */
+export function parsePolicy(raw: unknown, source: string): OwnerPolicy {
+  const path = source;
   const bad = (why: string) => new ConfigError(`The owner's policy ${path} ${why}. Nothing was prepared.`);
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw bad('is not a JSON object');
   const known = ['maxAmountIn', 'maxAmountInPerDay', 'stateDir', 'allowUnknownPriceImpact', 'maxSlippageBps', 'maxBelowBps', 'maxPriceImpactBps', 'allowedOutputMints'];
