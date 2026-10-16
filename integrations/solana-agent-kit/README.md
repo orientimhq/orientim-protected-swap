@@ -48,6 +48,12 @@ protected swap is sent within the call, once Orientim has signed last.
 The `policy` is required, and is the same as Orientim's policy file (`maxAmountIn` and, optionally,
 `allowedOutputMints`, `maxAmountInPerDay` with an absolute `stateDir`, `maxSlippageBps`, `maxBelowBps`,
 `maxPriceImpactBps`); or give the path of a policy file. A plugin without limits is refused when it is made.
+An administrator's policy file wins (see below).
+
+Swaps wait for their outcome in a state directory: the policy's `stateDir`, else the `stateDir` option,
+else `ORIENTIM_STATE_DIR`, else `.orientim-state` relative to where the app was started, which the
+answer's `notices` then say. Give an absolute path that outlives the process, the same for every run of
+the wallet.
 
 Each call is an order with an `orderId` (given back in the answer). Asked again with the same `orderId`
 after an unclear answer, an order is never swapped twice. A swap whose outcome is unknown blocks new
@@ -57,16 +63,25 @@ swaps from the wallet until it is settled: each call first looks up on the chain
 ## What this protects, and what it does not
 
 **It protects the swap.** A route (or Orientim's server) cannot take more than the approved amount, or
-leave the wallet below the minimum, even if the model is misled.
+leave the wallet below the minimum, even if the model is misled. The minimum is the plugin's own: the
+price this process asks Jupiter for, checked on your RPC, never the model's number or Orientim's. The
+model chooses the tokens and the amount, within the owner's limits, and how far below that price the
+minimum may sit: `slippageBps` at most 300 (3%), so the minimum is at most 4.5% below the price (5% on
+a Pump.fun bonding curve), unless the owner's `maxSlippageBps` allows more. A higher `slippageBps` is
+refused, not lowered. The price impact is held to 5%, or the owner's lower `maxPriceImpactBps`; the
+model has no say in it.
 
 **It does not make the agent safe.** The kit keeps the same hot key in the same process, and it has other
 tools (`transfer`, and more) that can move the whole wallet. A misled agent can call those instead.
 Expose the agent only to the tools it needs: build the tool list from this plugin's action, not from every
 action the kit has, and keep the wallet's balance to what the agent may lose.
 
-The policy given in code is as safe as the code that holds it: the model has no tool that edits it. For a
-policy the agent cannot reach even from a compromised process, use a policy file only an administrator
-writes (`/etc/orientim/policy.json`) and the `orientim` command or MCP server instead.
+The policy given in code is as safe as the code that holds it: the model has no tool that edits it. A
+policy file only an administrator writes (`/etc/orientim/policy.json`, or
+`C:\ProgramData\Orientim\policy.json` on Windows) wins when it exists, as it does for the `orientim`
+command and the MCP server: the plugin then refuses a policy given in code that is not that file or the
+same limits, and, unless it runs as root, a file the user it runs as can change. It is read again on
+every call. It binds this plugin, not the key: a compromised process still holds the kit's wallet.
 
 ## Tested with
 

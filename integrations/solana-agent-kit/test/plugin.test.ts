@@ -1,11 +1,12 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { getTransactionDecoder, getPublicKeyFromAddress, verifySignature } from '@solana/kit';
 import { Keypair, SystemProgram, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
 import { acquireLock, OrientimApiError } from '@orientimhq/swap';
-import { fromBaseUnits, orientimPlugin, protectedSwapSchema, runProtectedSwap, toBaseUnits, walletSigner } from '../src/index.ts';
+import { MODEL_CEILINGS } from '../../../src/mcp.ts';
+import { fromBaseUnits, MODEL_MAX_SLIPPAGE_BPS, orientimPlugin, protectedSwapSchema, runProtectedSwap, toBaseUnits, walletSigner } from '../src/index.ts';
 import type { Deps, KitAgent, KitWallet } from '../src/index.ts';
 
 const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -123,6 +124,30 @@ describe('the plugin', () => {
     expect(orientimPlugin({ apiKey: 'ori_x', policy: path }).actions[0].name).toBe('ORIENTIM_PROTECTED_SWAP');
   });
 
+  it("an administrator's policy file wins: a policy in code must be that file or the same limits", async () => {
+    const dir = stateDir();
+    const systemPolicy = join(dir, 'system-policy.json');
+    const limits = { maxAmountIn: { [USDC]: '1000000', [SOL]: '5000000' }, stateDir: dir };
+    writeFileSync(systemPolicy, JSON.stringify(limits));
+    const deps = { ...depsReturning([], landed), systemPolicy };
+    expect(() => orientimPlugin({ apiKey: 'k', policy: { maxAmountIn: { [USDC]: '25000000' }, stateDir: dir } }, deps)).toThrow('differs');
+    const other = join(dir, 'other.json');
+    writeFileSync(other, JSON.stringify({ ...limits, maxAmountIn: { [USDC]: '25000000' } }));
+    expect(() => orientimPlugin({ apiKey: 'k', policy: other }, deps)).toThrow(systemPolicy);
+    // The same limits, in another order, or the file itself.
+    expect(() => orientimPlugin({ apiKey: 'k', policy: { stateDir: dir, maxAmountIn: { [SOL]: '5000000', [USDC]: '1000000' } } }, deps)).not.toThrow();
+    expect(() => orientimPlugin({ apiKey: 'k', policy: systemPolicy }, deps)).not.toThrow();
+    // A file the administrator writes after the plugin was made holds from the next call.
+    const calls: Call[] = [];
+    const later = { ...depsReturning(calls, landed), systemPolicy: join(dir, 'later.json') };
+    const plugin = orientimPlugin({ apiKey: 'k', policy: limits }, later);
+    writeFileSync(later.systemPolicy, JSON.stringify({ ...limits, allowedOutputMints: [SOL] }));
+    const r = await plugin.methods.protectedSwap(agentOf(), { inputMint: USDC, outputMint: SOL, amount: '1' });
+    expect(r.status).toBe('error');
+    expect(r.message).toContain('differs');
+    expect(calls).toHaveLength(0);
+  });
+
   it('offers one action, and a method the kit calls with the agent first', () => {
     const plugin = orientimPlugin({ apiKey: 'ori_x', policy: policyFor(stateDir()) });
     expect(plugin.name).toBe('orientim');
@@ -149,6 +174,55 @@ describe('a swap', () => {
     expect(call.policy).toEqual(policy);
     expect(call.pending && call.orders && call.spends).toBeTruthy();
     expect(call.wallet.address).toBe(agent.keypair.publicKey.toBase58());
+  });
+
+  it("holds the model's tolerance to the MCP server's ceiling, unless the owner allows more", async () => {
+    expect(MODEL_MAX_SLIPPAGE_BPS).toBe(MODEL_CEILINGS.slippageBps);
+    const run = (slippageBps: number, policy: Record<string, unknown> = policyFor(stateDir())) => {
+      const calls: Call[] = [];
+      return runProtectedSwap(agentOf(), { inputMint: USDC, outputMint: SOL, amount: '1', slippageBps, orderId: 'o' }, { apiKey: 'k', policy }, depsReturning(calls, landed))
+        .then(r => ({ r, calls }));
+    };
+    for (const slippageBps of [MODEL_MAX_SLIPPAGE_BPS + 1, 1500]) {
+      const { r, calls } = await run(slippageBps);
+      expect(r).toMatchObject({ status: 'error', orderId: 'o' });
+      expect(r.message).toContain(`above the ${MODEL_MAX_SLIPPAGE_BPS} bps the owner allows`);
+      expect(r.message).toContain('Nothing was started');
+      // Refused, never lowered: no swap at another tolerance.
+      expect(calls).toHaveLength(0);
+    }
+    expect((await run(MODEL_MAX_SLIPPAGE_BPS)).calls[0].intent.slippageBps).toBe(MODEL_MAX_SLIPPAGE_BPS);
+    // The owner's own ceiling, higher or lower, is the one that holds.
+    expect((await run(800, { ...policyFor(stateDir()), maxSlippageBps: 1000 })).calls[0].intent.slippageBps).toBe(800);
+    expect((await run(1001, { ...policyFor(stateDir()), maxSlippageBps: 1000 })).r.message).toContain('above the 1000 bps');
+    expect((await run(150, { ...policyFor(stateDir()), maxSlippageBps: 100 })).r.message).toContain('above the 100 bps');
+  });
+
+  it('keeps its state where ORIENTIM_STATE_DIR says, and says when it is the relative default', async () => {
+    const dir = stateDir();
+    const agent = agentOf();
+    const release = acquireLock(dir, agent.keypair.publicKey.toBase58());
+    const before = process.env.ORIENTIM_STATE_DIR;
+    const cwd = process.cwd();
+    try {
+      process.env.ORIENTIM_STATE_DIR = dir;
+      const calls: Call[] = [];
+      const r = await runProtectedSwap(agent, { inputMint: USDC, outputMint: SOL, amount: '1', orderId: 'o' }, { apiKey: 'k', policy: { maxAmountIn: { [USDC]: '25000000' } } }, depsReturning(calls, landed));
+      // The lock held in that directory is the one the call met.
+      expect(r.message).toContain('Another swap');
+      expect(calls).toHaveLength(0);
+      delete process.env.ORIENTIM_STATE_DIR;
+      process.chdir(stateDir());
+      const relative = await runProtectedSwap(agentOf(), { inputMint: USDC, outputMint: SOL, amount: '1' }, { apiKey: 'k', policy: { maxAmountIn: { [USDC]: '25000000' } } }, depsReturning([], landed));
+      expect(relative.status).toBe('success');
+      expect(relative.notices?.join()).toContain('relative to where this was started');
+      expect(existsSync('.orientim-state')).toBe(true);
+    } finally {
+      process.chdir(cwd);
+      if (before === undefined) delete process.env.ORIENTIM_STATE_DIR;
+      else process.env.ORIENTIM_STATE_DIR = before;
+      release();
+    }
   });
 
   it('gets an order id of its own when the model gives none, null or empty, and says it', async () => {

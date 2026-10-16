@@ -33,6 +33,11 @@ From the 16 October 2026 final audit:
 - `parsePolicy(object, source)` checks a policy given in code as strictly as `loadPolicy` checks a file.
 - A plugin for Solana Agent Kit lives in `integrations/solana-agent-kit` (`@orientimhq/solana-agent-kit`,
   not yet published): one action, `protectedSwap`, that makes the same swap with the kit's wallet and RPC.
+  The model's `slippageBps` is held to 300 bps, the MCP server's ceiling, unless the policy's
+  `maxSlippageBps` allows more: a higher one is refused, not lowered. An administrator's policy file
+  (`SYSTEM_POLICY_PATH`) wins, and a policy given in code that differs from it is refused, as the command
+  refuses another `ORIENTIM_POLICY`. `ORIENTIM_STATE_DIR` is read, and the relative default state
+  directory is said in the answer's `notices`.
 
 ## 2.1.0
 

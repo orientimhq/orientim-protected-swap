@@ -13,8 +13,8 @@ import { createSolanaRpc } from '@solana/kit';
 import { VersionedTransaction } from '@solana/web3.js';
 import { z } from 'zod';
 import {
-  acquireLock, createFileStore, errorLine, loadPolicy, LockBusyError, outcomeMeaning, parsePolicy, protectedSwap,
-  recoverPending, signerFromSignTransaction, stateDirFor,
+  acquireLock, ConfigError, createFileStore, errorLine, loadPolicy, LockBusyError, outcomeMeaning, parsePolicy, policyPathFor,
+  protectedSwap, recoverPending, signerFromSignTransaction, stateDirFor,
 } from '@orientimhq/swap';
 import type { OwnerPolicy, WalletSigner } from '@orientimhq/swap';
 import { fetchMints } from '@orientimhq/swap/solana';
@@ -32,6 +32,14 @@ export const ACTION_NAME = 'ORIENTIM_PROTECTED_SWAP';
 // swap is sent within the call, so a kit set to sign only would see a swap it never sent.
 const SIGN_ONLY = 'This agent kit is set to signOnly, and a protected swap is sent as part of the call; the Orientim plugin does not run with signOnly.';
 
+/**
+ * The most tolerance the model may ask for, in bps: the MCP server's own ceiling (`MODEL_CEILINGS`).
+ * The floor sits this tolerance and 1.5% more (2% on a Pump.fun curve) below the market, so only the
+ * owner raises it (the policy's `maxSlippageBps`), never the model. The model has no price impact to
+ * choose: the default of 5%, or the owner's lower one, holds.
+ */
+export const MODEL_MAX_SLIPPAGE_BPS = 300;
+
 export type OrientimOptions = {
   /** The wallet's Orientim API key (`orientim key-challenge`, then `orientim key`). */
   apiKey: string;
@@ -42,9 +50,11 @@ export type OrientimOptions = {
    * The owner's limits, required: an object as the policy file has it (`maxAmountIn` per input mint in
    * base units, and optionally `allowedOutputMints`, `maxAmountInPerDay` with `stateDir`, `maxSlippageBps`...),
    * or the path of a policy file. A plugin without limits would let a misled agent spend the wallet.
+   * An administrator's policy file (`SYSTEM_POLICY_PATH`, `/etc/orientim/policy.json`) wins when it
+   * exists, as it does for the command: a policy given here must then be that file or the same limits.
    */
   policy: unknown;
-  /** Where signed swaps wait for their outcome; the policy's `stateDir` wins. */
+  /** Where signed swaps wait for their outcome, else `ORIENTIM_STATE_DIR`; the policy's `stateDir` wins. */
   stateDir?: string;
   /** An RPC with the full history, for a second proof that a swap expired. */
   archiveRpcUrl?: string;
@@ -57,7 +67,7 @@ export const protectedSwapSchema = z.object({
   inputMint: z.string().describe('Mint address of the token to sell'),
   outputMint: z.string().describe('Mint address of the token to buy'),
   amount: z.string().describe('Amount of the input token in whole tokens, as text, such as "0.5". Never a number.'),
-  slippageBps: z.number().int().describe('Tolerance in bps; null for the default').nullable(),
+  slippageBps: z.number().int().describe(`Tolerance in bps, at most ${MODEL_MAX_SLIPPAGE_BPS} unless the owner allows more; null for the default`).nullable(),
   orderId: z.string().describe('null for a new swap. Only to retry an order after an unclear answer: the orderId that answer gave. Never invent one.').nullable(),
 });
 // Code calling the method may leave them out.
@@ -113,7 +123,29 @@ type Rpc = Parameters<typeof protectedSwap>[0]['rpc'];
 export type Deps = {
   protectedSwap: typeof protectedSwap;
   decimalsOf: (rpc: Rpc, mint: string) => Promise<number>;
+  /** Where an administrator's policy is; `SYSTEM_POLICY_PATH` when not set. */
+  systemPolicy?: string;
 };
+
+/** A policy as one spelling: the same limits in another order are the same policy. */
+const canonical = (policy: OwnerPolicy) => JSON.stringify(policy, (_k, v: unknown) => (Array.isArray(v) ? [...v].sort()
+  : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : 1))) : v));
+
+/**
+ * The owner's policy, as the command reads it (`policyPathFor`): an administrator's file wins when it
+ * exists, and a policy given in code is then refused unless it is that file or the same limits.
+ * Read again on every call, so the owner's change holds from the next swap.
+ */
+function ownerPolicy(given: unknown, system?: string): OwnerPolicy {
+  const inCode = typeof given === 'string' ? loadPolicy(given) : parsePolicy(given, 'given to orientimPlugin');
+  const file = policyPathFor(undefined, system);
+  if (!file) return inCode;
+  const policy = loadPolicy(file);
+  if (canonical(policy) !== canonical(inCode)) {
+    throw new ConfigError(`The owner's policy is ${file}; the policy given to orientimPlugin differs from it, and is not used. Give that file's path, or the same limits. Nothing was started.`);
+  }
+  return policy;
+}
 
 const realDeps: Deps = {
   protectedSwap,
@@ -144,13 +176,18 @@ export async function runProtectedSwap(agent: KitAgent, input: ProtectedSwapInpu
 
   let release: (() => void) | undefined;
   try {
-    const policy: OwnerPolicy = typeof options.policy === 'string' ? loadPolicy(options.policy) : parsePolicy(options.policy, 'given to orientimPlugin');
+    const policy = ownerPolicy(options.policy, deps.systemPolicy);
+    // The model's tolerance is held to the MCP server's ceiling: refused, never lowered in silence.
+    const most = policy.maxSlippageBps ?? MODEL_MAX_SLIPPAGE_BPS;
+    if (slippageBps != null && slippageBps > most) {
+      return failure(`slippageBps ${slippageBps} is above the ${most} bps the owner allows: a wider tolerance lowers the least that arrives, so only the owner raises it (maxSlippageBps in the policy). Use null, or ${most} or less. Nothing was started.`, { orderId });
+    }
     const rpc = createSolanaRpc(agent.connection.rpcEndpoint) as unknown as Rpc;
     const archive = options.archiveRpcUrl ? createSolanaRpc(options.archiveRpcUrl) as unknown as Rpc : undefined;
     const wallet = walletSigner(agent.wallet);
     const [inputDecimals, outputDecimals] = await Promise.all([deps.decimalsOf(rpc, inputMint), deps.decimalsOf(rpc, outputMint)]);
     const amountIn = toBaseUnits(amount, inputDecimals).toString();
-    const { dir } = stateDirFor(policy, options.stateDir);
+    const { dir, warning } = stateDirFor(policy, options.stateDir ?? (process.env.ORIENTIM_STATE_DIR || undefined));
     const store = createFileStore(dir);
     try {
       release = acquireLock(dir, wallet.address);
@@ -183,7 +220,7 @@ export async function runProtectedSwap(agent: KitAgent, input: ProtectedSwapInpu
     return {
       status, message, orderId, signature: result.signature, outcome: result.outcome,
       ...(result.received ? { receivedAmount: fromBaseUnits(result.received, outputDecimals), received: result.received } : {}),
-      ...(result.notices.length ? { notices: result.notices } : {}),
+      ...(result.notices.length || warning ? { notices: [...result.notices, ...(warning ? [warning] : [])] } : {}),
     };
   } catch (e) {
     // The skill's own words for the model, never the server's.
@@ -200,8 +237,7 @@ export function orientimPlugin(options: OrientimOptions, deps?: Deps) {
   if (options.policy === undefined || options.policy === null) {
     throw new Error('orientimPlugin needs a policy: the most the agent may swap per input token, for example { maxAmountIn: { "<mint>": "<base units>" } }.');
   }
-  if (typeof options.policy === 'string') loadPolicy(options.policy);
-  else parsePolicy(options.policy, 'given to orientimPlugin');
+  ownerPolicy(options.policy, deps?.systemPolicy);
 
   const method = (agent: KitAgent, input: ProtectedSwapInput) => runProtectedSwap(agent, input, options, deps);
   return {
