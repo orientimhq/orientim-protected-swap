@@ -57,9 +57,18 @@ jobs:
       - run: npm ci --ignore-scripts
         working-directory: .
       - run: npm ci --ignore-scripts --legacy-peer-deps
-      - run: npm install --no-save --ignore-scripts --legacy-peer-deps solana-agent-kit@2.0.10
+      - run: npm install --no-save --ignore-scripts --legacy-peer-deps solana-agent-kit@2.0.10 @solana-agent-kit/adapter-mcp@2.0.7
       - run: npm run typecheck
       - run: npm test
+      - name: The plugin as npm ships it, in an app with the kit, on plain Node
+        run: |
+          (cd ../.. && npm run build && npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP")
+          npm run build
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP"
+          mkdir "$RUNNER_TEMP/app" && cp test/consumer.mjs "$RUNNER_TEMP/app/" && cd "$RUNNER_TEMP/app"
+          echo '{"name":"app","private":true,"type":"module"}' > package.json
+          npm install --ignore-scripts --no-audit --no-fund "$RUNNER_TEMP"/orientimhq-swap-*.tgz "$RUNNER_TEMP"/orientimhq-solana-agent-kit-*.tgz solana-agent-kit@2.0.10 @solana/web3.js@1.98.4 zod@3.25.76
+          node consumer.mjs
 
   windows:
     # The package runs on Windows too: its policy path, its state directory and the command.

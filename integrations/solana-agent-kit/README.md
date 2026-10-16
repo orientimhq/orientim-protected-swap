@@ -6,7 +6,7 @@ swaps through [Orientim](https://orientim.com). Everything else in the kit is le
 The route can only touch the amount the swap approves, and the exact transaction is checked on **your
 own RPC** (the kit's connection) before the agent's wallet signs it. The swap is the one `orientim swap`
 makes; this package only hands it the kit's wallet and RPC. Read
-[the guide](../../skills/orientim-protected-swap/reference/GUIDE.md) for what is checked and why.
+[the guide](https://github.com/orientimhq/orientim-protected-swap/blob/main/skills/orientim-protected-swap/reference/GUIDE.md) for what is checked and why.
 
 ## Use
 
@@ -26,8 +26,24 @@ const agent = new SolanaAgentKit(new KeypairWallet(keypair, RPC_URL), RPC_URL, {
 );
 ```
 
-The agent's tools then include `ORIENTIM_PROTECTED_SWAP` (`inputMint`, `outputMint`, `amount` in whole
-tokens as text). In code: `await agent.methods.protectedSwap(agent, { inputMint, outputMint, amount: '5' })`.
+The agent's actions then include `ORIENTIM_PROTECTED_SWAP`. Give the model the tools you choose, not
+every action the kit has (see below); each of the kit's adapters takes the list:
+
+```ts
+import { createVercelAITools } from 'solana-agent-kit';   // or createLangchainTools, createOpenAITools
+import { ACTION_NAME } from '@orientimhq/solana-agent-kit';
+
+const tools = createVercelAITools(agent, agent.actions.filter(a => a.name === ACTION_NAME));
+```
+
+The model's tool takes `inputMint`, `outputMint`, `amount` in whole tokens as text (`"0.5"`), and
+`slippageBps` and `orderId`, both null unless it means them: the kit's OpenAI and MCP adapters make
+every field required, so a field the model may leave unset is nullable rather than optional. The answer
+gives `receivedAmount` in whole tokens of the output, as `amount` is given (and `received` in base
+units). In code: `await agent.methods.protectedSwap(agent, { inputMint, outputMint, amount: '5' })`.
+
+A kit made with `signOnly` is refused: it hands signed transactions back for the app to send, and a
+protected swap is sent within the call, once Orientim has signed last.
 
 The `policy` is required, and is the same as Orientim's policy file (`maxAmountIn` and, optionally,
 `allowedOutputMints`, `maxAmountInPerDay` with an absolute `stateDir`, `maxSlippageBps`, `maxBelowBps`,
@@ -35,7 +51,8 @@ The `policy` is required, and is the same as Orientim's policy file (`maxAmountI
 
 Each call is an order with an `orderId` (given back in the answer). Asked again with the same `orderId`
 after an unclear answer, an order is never swapped twice. A swap whose outcome is unknown blocks new
-swaps from the wallet until it is settled (`orientim resolve`).
+swaps from the wallet until it is settled: each call first looks up on the chain what earlier ones left
+(`orientim resolve` does the same from the command line).
 
 ## What this protects, and what it does not
 
@@ -53,7 +70,9 @@ writes (`/etc/orientim/policy.json`) and the `orientim` command or MCP server in
 
 ## Tested with
 
-`solana-agent-kit` 2.0.10 and `@solana/web3.js` 1.98. Its tests run against the real kit when it is
-installed (`npm install --no-save solana-agent-kit@2.0.10`).
+`solana-agent-kit` 2.0.10, `@solana-agent-kit/adapter-mcp` 2.0.7, `@solana/web3.js` 1.98 and `zod` 3 (the
+kit's own: its adapters accept only a schema from the same zod). The tests run the action through
+`executeAction` and each adapter (AI SDK, LangChain, OpenAI Agents, MCP) when the kit is installed
+(`npm install --no-save --legacy-peer-deps solana-agent-kit@2.0.10 @solana-agent-kit/adapter-mcp@2.0.7`).
 
 Apache-2.0.

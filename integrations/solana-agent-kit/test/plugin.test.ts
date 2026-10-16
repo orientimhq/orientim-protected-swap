@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { getTransactionDecoder, getPublicKeyFromAddress, verifySignature } from '@solana/kit';
 import { Keypair, SystemProgram, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
 import { acquireLock, OrientimApiError } from '@orientimhq/swap';
-import { orientimPlugin, protectedSwapSchema, runProtectedSwap, toBaseUnits, walletSigner } from '../src/index.ts';
+import { fromBaseUnits, orientimPlugin, protectedSwapSchema, runProtectedSwap, toBaseUnits, walletSigner } from '../src/index.ts';
 import type { Deps, KitAgent, KitWallet } from '../src/index.ts';
 
 const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -23,14 +23,14 @@ const policyFor = (dir: string) => ({ maxAmountIn: { [USDC]: '25000000' }, state
 
 type Call = Parameters<Deps['protectedSwap']>[0];
 const depsReturning = (calls: Call[], result: unknown | (() => never)): Deps => ({
-  decimalsOf: async () => 6,
+  decimalsOf: async (_rpc, mint) => (mint === SOL ? 9 : 6),
   protectedSwap: (async (args: Call) => {
     calls.push(args);
     if (typeof result === 'function') return (result as () => never)();
     return result;
   }) as unknown as Deps['protectedSwap'],
 });
-const landed = { outcome: 'confirmed', signature: 'sig', notices: [], received: { amount: '33000000', mint: SOL } };
+const landed = { outcome: 'confirmed', signature: 'sig', notices: [], received: '33000000' };
 
 const agentOf = (keypair = Keypair.generate()): KitAgent & { keypair: Keypair } => ({
   keypair, wallet: keypairWallet(keypair), connection: { rpcEndpoint: 'http://127.0.0.1:1' },
@@ -47,9 +47,21 @@ describe('amounts', () => {
     expect(() => toBaseUnits('-1', 6)).toThrow('whole tokens');
   });
 
-  it('the action takes the amount as text only', () => {
-    expect(protectedSwapSchema.safeParse({ inputMint: USDC, outputMint: SOL, amount: '5' }).success).toBe(true);
-    expect(protectedSwapSchema.safeParse({ inputMint: USDC, outputMint: SOL, amount: 5 }).success).toBe(false);
+  it('base units back to whole tokens, exactly', () => {
+    expect(fromBaseUnits('33000000', 9)).toBe('0.033');
+    expect(fromBaseUnits('1500000', 6)).toBe('1.5');
+    expect(fromBaseUnits('5000000', 6)).toBe('5');
+    expect(fromBaseUnits('1', 9)).toBe('0.000000001');
+    expect(fromBaseUnits('42', 0)).toBe('42');
+    expect(fromBaseUnits('18446744073709551615', 9)).toBe('18446744073.709551615');
+  });
+
+  it("the model's tool takes the amount as text only, and null for what it leaves unset", () => {
+    const swap = { inputMint: USDC, outputMint: SOL, amount: '5', slippageBps: null, orderId: null };
+    expect(protectedSwapSchema.safeParse(swap).success).toBe(true);
+    expect(protectedSwapSchema.safeParse({ ...swap, amount: 5 }).success).toBe(false);
+    // Required, so no adapter turns it into a field the model must fill with an invented value.
+    expect(protectedSwapSchema.safeParse({ inputMint: USDC, outputMint: SOL, amount: '5' }).success).toBe(false);
   });
 });
 
@@ -127,7 +139,7 @@ describe('a swap', () => {
     const policy = policyFor(dir);
     const r = await runProtectedSwap(agent, { inputMint: USDC, outputMint: SOL, amount: '5', slippageBps: 100, orderId: 'order-1' },
       { apiKey: 'ori_x', policy, jupiterApiKey: 'jup' }, depsReturning(calls, landed));
-    expect(r).toMatchObject({ status: 'success', orderId: 'order-1', signature: 'sig', outcome: 'confirmed' });
+    expect(r).toMatchObject({ status: 'success', orderId: 'order-1', signature: 'sig', outcome: 'confirmed', receivedAmount: '0.033', received: '33000000' });
     expect(calls).toHaveLength(1);
     const call = calls[0];
     expect(call.intent).toEqual({ id: 'order-1', inputMint: USDC, outputMint: SOL, amountIn: '5000000', slippageBps: 100 });
@@ -139,11 +151,23 @@ describe('a swap', () => {
     expect(call.wallet.address).toBe(agent.keypair.publicKey.toBase58());
   });
 
-  it('gets an order id of its own when the model gives none, and says it', async () => {
+  it('gets an order id of its own when the model gives none, null or empty, and says it', async () => {
+    for (const orderId of [undefined, null, '']) {
+      const calls: Call[] = [];
+      const r = await runProtectedSwap(agentOf(), { inputMint: USDC, outputMint: SOL, amount: '1', orderId, slippageBps: null }, { apiKey: 'k', policy: policyFor(stateDir()) }, depsReturning(calls, landed));
+      expect(r.orderId).toMatch(/^kit-[0-9a-f-]{36}$/);
+      expect(calls[0].intent).toEqual({ id: r.orderId, inputMint: USDC, outputMint: SOL, amountIn: '1000000' });
+    }
+  });
+
+  it('does not run in a kit set to sign only', async () => {
     const calls: Call[] = [];
-    const r = await runProtectedSwap(agentOf(), { inputMint: USDC, outputMint: SOL, amount: '1' }, { apiKey: 'k', policy: policyFor(stateDir()) }, depsReturning(calls, landed));
-    expect(r.orderId).toMatch(/^kit-[0-9a-f-]{36}$/);
-    expect(calls[0].intent.id).toBe(r.orderId);
+    const plugin = orientimPlugin({ apiKey: 'k', policy: policyFor(stateDir()) }, depsReturning(calls, landed));
+    const agent = { ...agentOf(), config: { signOnly: true } };
+    expect(() => plugin.initialize(agent)).toThrow('signOnly');
+    expect(() => plugin.initialize(agentOf())).not.toThrow();
+    expect((await plugin.methods.protectedSwap(agent, { inputMint: USDC, outputMint: SOL, amount: '1' })).message).toContain('signOnly');
+    expect(calls).toHaveLength(0);
   });
 
   it('says what an outcome means, and that an unclear one must be settled', async () => {
@@ -153,7 +177,12 @@ describe('a swap', () => {
     const unknown = await run({ outcome: 'unknown', signature: 's', notices: [] });
     expect(unknown.status).toBe('unknown');
     expect(unknown.message).toContain('may still land');
-    expect(await run({ outcome: 'confirmed', signature: 's', notices: [], bookkeepingError: 'disk' })).toMatchObject({ status: 'unknown' });
+    expect(unknown.message).toContain('same orderId');
+    expect(unknown.message).not.toContain('orientim resolve');
+    // What the chain says stands; the record left to settle is said beside it.
+    const kept = await run({ outcome: 'confirmed', signature: 's', notices: [], bookkeepingError: 'disk' });
+    expect(kept).toMatchObject({ status: 'success' });
+    expect(kept.message).toContain('next call settles it');
   });
 
   it("shows the model the skill's words, never the server's", async () => {

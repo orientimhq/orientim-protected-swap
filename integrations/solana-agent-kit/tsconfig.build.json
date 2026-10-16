@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmit": false,
+    "declaration": true,
+    "allowImportingTsExtensions": false,
+    "rootDir": "src",
+    "outDir": "dist",
+    "paths": {
+      "@orientimhq/swap": ["../../dist/types/src/index.d.ts"],
+      "@orientimhq/swap/solana": ["../../dist/types/packages/solana/src/index.d.ts"]
+    }
+  },
+  "include": ["src"]
+}

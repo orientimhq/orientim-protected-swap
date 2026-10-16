@@ -9,12 +9,30 @@
     "url": "git+https://github.com/orientimhq/orientim-protected-swap.git",
     "directory": "integrations/solana-agent-kit"
   },
-  "keywords": ["solana", "solana-agent-kit", "swap", "jupiter", "agent", "wallet"],
-  "exports": {
-    ".": "./src/index.ts"
+  "keywords": [
+    "solana",
+    "solana-agent-kit",
+    "swap",
+    "jupiter",
+    "agent",
+    "wallet"
+  ],
+  "engines": {
+    "node": ">=20.18"
   },
-  "files": ["src/", "README.md"],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "NOTICE"
+  ],
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
