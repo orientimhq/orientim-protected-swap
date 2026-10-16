@@ -13,6 +13,24 @@ From the 15 October 2026 audit findings:
 - `tokenRisk` and the notices report a mint whose issuer can still turn on a transfer hook (an
   authority set, no program yet): no code runs today, but code set later would run on every transfer.
 
+From the 16 October 2026 final audit:
+
+- `orientim_swap` holds the swap to the quote's own minimum (`--min-out`), the one the user was shown:
+  a later dry run of the same swap replaces the approval on disk and can no longer lower it.
+- A server's words never reach the model: route requests in an error carry only a route request's
+  fields, and the command's error line shows neither them nor the server's message.
+- A quote read back from disk is held to what this server would have quoted (flags within the
+  owner's ceilings, a yes no longer than a dry run gives), and the user is asked again.
+- The verifier refuses a message whose bytes are not its canonical encoding (bytes after it), and
+  checks the swap program against Jupiter's address in `constants.ts`, not only the policy's.
+- A clock that jumps ahead no longer erases the spends a daily limit counts.
+- A wallet's lock names its pid namespace: a lock from another container on the same volume, with the
+  same host name and pid, is left until it goes stale instead of being taken.
+- A Token-2022 input's transfer fee is judged at both epochs from 450 slots before an epoch ends (was
+  300): 150 blocks can span more slots when leaders skip theirs.
+- README and GUIDE: `npm audit signatures` checks signatures, not who built a version; the attested
+  tarball is checked with `gh attestation verify`.
+
 ## 2.1.0
 
 From the 15 October 2026 review:

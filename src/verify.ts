@@ -976,8 +976,10 @@ export function noticesOf(risk: TokenRisk): string[] {
 /**
  * Slots before an epoch ends within which a swap checked now may land in the next one: a
  * transaction lives 150 blocks, and the swap is prepared, checked, signed and sent within that.
+ * Blocks are counted on filled slots only: with a third of the slots skipped, as under heavy load,
+ * 150 blocks span about 225 slots, after a blockhash that can already be up to 150 blocks old.
  */
-export const EPOCH_EDGE_SLOTS = 300n;
+export const EPOCH_EDGE_SLOTS = 450n;
 
 /**
  * The fee a transfer may be charged at either side of an epoch's end: the larger rate and the larger

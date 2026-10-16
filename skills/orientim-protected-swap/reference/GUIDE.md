@@ -205,13 +205,15 @@ version, in a project of its own with a lockfile:
 ```bash
 npm install --save-exact @orientimhq/swap@2.1.1
 npx orientim --version
-npm audit signatures      # the package's provenance: built by this repository's release workflow
+npm audit signatures      # valid signatures (not who built it: see below)
 ```
 
 Or, without installing, `npx -y @orientimhq/swap@2.1.1 <command>`. Check the package against GitHub, not
 against Orientim's site (it guards against a dishonest server, so the server cannot vouch for it):
-`npm audit signatures` checks npm's provenance, which names the repository, the workflow and the
-commit it was built from. Bots written in another language: see "Bots in other languages" below.
+`npm audit signatures` checks that npm's signatures are valid, and passes a version with no
+provenance. Who built it is checked on the tarball itself, attested by this repository's release
+workflow: `npm pack @orientimhq/swap@2.1.1`, then `gh attestation verify orientimhq-swap-2.1.1.tgz -R
+orientimhq/orientim-protected-swap --signer-workflow orientimhq/orientim-protected-swap/.github/workflows/release.yml`. Bots written in another language: see "Bots in other languages" below.
 
 ## The flow
 

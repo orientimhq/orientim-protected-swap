@@ -204,8 +204,30 @@ const ERROR_FIELDS: Readonly<Record<string, (v: unknown) => boolean>> = {
   // routes-needed: what Orientim asks the skill to fetch with the agent's own Jupiter key (fetchRoutes checks each).
   session: v => typeof v === 'string' && v.length <= 2_000 && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(v),
   taker: v => typeof v === 'string' && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(v),
-  requests: v => Array.isArray(v) && v.length <= 8 && v.every(r => !!r && typeof r === 'object' && !Array.isArray(r)),
+  requests: v => Array.isArray(v) && v.length <= 8 && v.every(isRouteRequestShape),
 };
+
+const ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+/**
+ * A route request, in the only shape one takes (routeRequestsFor checks it against the swap): no
+ * field beyond these, and none of them free text a server could write to a model through.
+ */
+function isRouteRequestShape(r: unknown): boolean {
+  if (!r || typeof r !== 'object' || Array.isArray(r)) return false;
+  const q = r as Record<string, unknown>;
+  const known: Readonly<Record<string, (v: unknown) => boolean>> = {
+    inputMint: v => typeof v === 'string' && ADDRESS.test(v),
+    outputMint: v => typeof v === 'string' && ADDRESS.test(v),
+    taker: v => typeof v === 'string' && ADDRESS.test(v),
+    destinationTokenAccount: v => typeof v === 'string' && ADDRESS.test(v),
+    amount: v => typeof v === 'string' && /^\d{1,20}$/.test(v),
+    slippageBps: v => Number.isInteger(v),
+    maxAccounts: v => Number.isInteger(v),
+    mode: v => v === 'fast',
+    excludeDexes: v => Array.isArray(v) && v.length <= 64 && v.every(d => typeof d === 'string' && /^[\w .()-]{1,64}$/.test(d)),
+  };
+  return Object.keys(q).every(k => Object.hasOwn(known, k) && known[k](q[k]));
+}
 
 /** An error's data fields, as ERROR_FIELDS allows them; nothing else. */
 export function errorDetails(body: Record<string, unknown>): Record<string, unknown> {

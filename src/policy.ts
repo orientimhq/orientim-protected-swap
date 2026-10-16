@@ -317,7 +317,7 @@ export async function checkPolicy(
   policy: OwnerPolicy, swap: { owner: string; inputMint: string; outputMint: string; amountIn: string }, spends?: SpendLog, except?: string,
 ): Promise<void> {
   const amount = BigInt(swap.amountIn);
-  const most = policy.maxAmountIn[swap.inputMint];
+  const most = Object.hasOwn(policy.maxAmountIn, swap.inputMint) ? policy.maxAmountIn[swap.inputMint] : undefined;
   if (most === undefined) throw new PolicyError('mint-not-allowed', `The owner's policy does not allow swapping from ${swap.inputMint}.`);
   if (policy.allowedOutputMints && !policy.allowedOutputMints.includes(swap.outputMint)) {
     throw new PolicyError('output-not-allowed', `The owner's policy does not allow buying ${swap.outputMint}.`);
@@ -325,7 +325,7 @@ export async function checkPolicy(
   if (amount > BigInt(most)) {
     throw new PolicyError('amount-over-limit', `${swap.amountIn} is above the owner's limit of ${most} per swap from ${swap.inputMint}.`, { limit: most });
   }
-  const daily = policy.maxAmountInPerDay?.[swap.inputMint];
+  const daily = policy.maxAmountInPerDay && Object.hasOwn(policy.maxAmountInPerDay, swap.inputMint) ? policy.maxAmountInPerDay[swap.inputMint] : undefined;
   if (daily === undefined) return;
   if (!spends) throw new PolicyError('daily-limit', 'The owner\'s policy sets a daily limit, and no record of earlier swaps is kept to count it against.', { limit: daily });
   const spent = await spends.spentSince(swap.owner, swap.inputMint, Date.now() - DAY_MS, except);

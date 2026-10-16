@@ -333,7 +333,7 @@ describe('orientim_swap', () => {
     const { answer: q } = await h.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01', slippageBps: 100 });
     const { answer, isError } = await h.tool('orientim_swap', { quoteId: q.quoteId });
     expect(isError).toBe(false);
-    expect(h.calls[1].args).toEqual(['--in', SOL, '--out', USDC, '--amount', '10000000', '--id', `mcp-${q.quoteId}`, '--slippage-bps', '100']);
+    expect(h.calls[1].args).toEqual(['--in', SOL, '--out', USDC, '--amount', '10000000', '--id', `mcp-${q.quoteId}`, '--min-out', '1490000', '--slippage-bps', '100']);
     // Never stopped by the client: what it signed is settled on the chain.
     expect(h.calls[1].options.signal).toBeUndefined();
     expect(answer).toMatchObject({
@@ -742,6 +742,19 @@ describe('orientim mcp', () => {
 describe('a quote outlives the server (15 October 2026 review)', () => {
   const swapped = () => ok(JSON.stringify({ signature: SIG, outcome: 'confirmed', refusal: null, meaning: 'Swapped.', amounts: {}, received: '1497000' }));
 
+  it('a quote file written by someone else, with limits past the owner\'s, is not a quote', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orientim-quotes-'));
+    const quoteStore = fileQuoteStore(dir);
+    const before = harness([() => ok(dryRun())], { quoteStore });
+    const { answer: q } = await before.tool('orientim_quote', { inputMint: SOL, outputMint: USDC, amount: '0.01', slippageBps: 100 });
+    const [[id, kept]] = quoteStore.all();
+    quoteStore.save(id, { ...kept, flags: ['--slippage-bps', '1500', '--max-below-bps', '10000'] });
+    const after = harness([swapped], { quoteStore });
+    const { isError } = await after.tool('orientim_swap', { quoteId: q.quoteId });
+    expect(isError).toBe(true);
+    expect(after.calls).toHaveLength(0);
+  });
+
   it('a client that restarts the server between the quote and the yes keeps the quote, and its order', async () => {
     const quoteStore = fileQuoteStore(mkdtempSync(join(tmpdir(), 'orientim-quotes-')));
     const before = harness([() => ok(dryRun())], { quoteStore });
@@ -750,7 +763,7 @@ describe('a quote outlives the server (15 October 2026 review)', () => {
     const after = harness([swapped], { quoteStore });
     const { answer } = await after.tool('orientim_swap', { quoteId: q.quoteId });
     expect(answer).toMatchObject({ ok: true, outcome: 'confirmed', quoteId: q.quoteId });
-    expect(after.calls[0].args).toEqual(['--in', SOL, '--out', USDC, '--amount', '10000000', '--id', `mcp-${q.quoteId}`, '--slippage-bps', '100']);
+    expect(after.calls[0].args).toEqual(['--in', SOL, '--out', USDC, '--amount', '10000000', '--id', `mcp-${q.quoteId}`, '--min-out', '1490000', '--slippage-bps', '100']);
   });
 
   it('a quote whose yes expired before the restart is still refused after it', async () => {

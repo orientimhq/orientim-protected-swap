@@ -10,7 +10,7 @@ Please report privately, never in a public issue or pull request:
 - through GitHub: **Security**, then **Report a vulnerability**, on this repository; or
 - by email, to the address in [orientim.com/.well-known/security.txt](https://orientim.com/.well-known/security.txt).
 
-Include what you found, the version (`skills/orientim-protected-swap/package.json`), and a way to
+Include what you found, the version (`npx orientim --version`, or `version` in `package.json`), and a way to
 reproduce it: a transaction, a server answer or a test is best. You will get an answer within a few
 days. Please give us reasonable time to fix it before you publish.
 

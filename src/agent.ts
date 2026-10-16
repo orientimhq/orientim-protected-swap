@@ -240,8 +240,11 @@ export function outcomeMeaning(outcome: Outcome | 'rejected', refusal?: string, 
  */
 export function errorLine(e: unknown): string {
   if (e instanceof OrientimApiError) {
-    const details = Object.keys(e.body).length ? ` ${JSON.stringify(e.body)}` : '';
-    return `${e.code}: ${e.message}${details}${e.serverMessage ? ` (Orientim's words, untrusted: "${e.serverMessage}")` : ''}`;
+    // The fields the next step needs; the route requests are the skill's own to fetch, and the
+    // server's words never reach the model (they stay on the error, for a person).
+    const { requests: _r, session: _s, taker: _t, ...shown } = e.body;
+    const details = Object.keys(shown).length ? ` ${JSON.stringify(shown)}` : '';
+    return `${e.code}: ${e.message}${details}`;
   }
   return e instanceof PriceImpactError ? `price-impact-high: ${e.message}` : e instanceof FloorError ? `floor-too-low: ${e.message}`
     : e instanceof PolicyError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e);

@@ -353,7 +353,28 @@ export function createServer(deps: McpDeps) {
       return [];
     }
   })();
-  const quotes = new Map<string, Quote>(kept.filter(([, q]) => now() - q.at <= QUOTE_KEPT_MS));
+  /**
+   * A quote read back from disk is held to what this server would have quoted: its digest proves
+   * only that the file is whole, not who wrote it. Flags past the owner's ceilings, or a yes that
+   * would hold longer than a dry run gives, are not a quote.
+   */
+  const sound = (q: Quote) => {
+    const digits = (v: unknown) => typeof v === 'string' && /^\d{1,20}$/.test(v);
+    const whole = (v: unknown, max: number) => typeof v === 'string' && /^\d{1,5}$/.test(v) && Number(v) <= max;
+    if (!q || typeof q !== 'object' || !isAddress(q.wallet) || !isAddress(q.inputMint) || !isAddress(q.outputMint)) return false;
+    if (!digits(q.amountIn) || !digits(q.minOut) || !Number.isFinite(q.at) || !Number.isFinite(q.until) || q.until > q.at + 11 * 60_000) return false;
+    if (!Array.isArray(q.flags) || q.flags.length % 2 !== 0 || q.flags.length > 8 || typeof q.question !== 'string') return false;
+    for (let i = 0; i < q.flags.length; i += 2) {
+      const [flag, value] = [q.flags[i], q.flags[i + 1]];
+      const ok = flag === '--slippage-bps' ? (value === 'auto' ? maxSlippageBps >= MODEL_CEILINGS.slippageBps : whole(value, maxSlippageBps))
+        : flag === '--max-price-impact-bps' ? whole(value, maxPriceImpactBps)
+          : flag === '--accept-cost-bps' ? whole(value, 10_000)
+            : false;
+      if (!ok) return false;
+    }
+    return true;
+  };
+  const quotes = new Map<string, Quote>(kept.filter(([, q]) => now() - q.at <= QUOTE_KEPT_MS && sound(q)));
   for (const [id] of kept) if (!quotes.has(id)) forget(id);
   /** Keeps a quote, on disk too: a disk that fails keeps it in memory, as before. */
   function keep(id: string, q: Quote): void {
@@ -375,7 +396,7 @@ export function createServer(deps: McpDeps) {
   /** A quote another server of the same owner kept after this one started (two windows of one client). */
   function keptElsewhere(id: string): Quote | undefined {
     try {
-      const found = deps.quoteStore?.all().find(([k, q]) => k === id && now() - q.at <= QUOTE_KEPT_MS)?.[1];
+      const found = deps.quoteStore?.all().find(([k, q]) => k === id && now() - q.at <= QUOTE_KEPT_MS && sound(q))?.[1];
       if (found) quotes.set(id, found);
       return found;
     } catch {
@@ -383,6 +404,8 @@ export function createServer(deps: McpDeps) {
     }
   }
   const swapping = new Set<string>();
+  /** Quotes this server asked the user about: one read back from disk is asked about again. */
+  const asked = new Set<string>();
   const running = new Map<string | number, AbortController>();
   /** Calls the client cancelled while they ran: they get no answer. */
   const cancelled = new Set<string | number>();
@@ -560,18 +583,21 @@ export function createServer(deps: McpDeps) {
     if (owner !== q.wallet) throw new InputError('The wallet changed since this quote: quote again and ask the user again.');
     // The model's word that the user said yes is not the user's: a client that can ask them, does,
     // until the quote's 10 minutes run out.
-    if (!q.tried && context.ask && q.question) {
+    if (!asked.has(quoteId) && context.ask && q.question) {
       const said = await context.ask(q.question, q.until);
       if (said === 'timeout') throw new InputError('The user did not answer the confirmation before this quote\'s 10 minutes ran out: nothing was signed. Quote again if they still want the swap.');
       if (said !== 'accept' && said !== 'unavailable') throw new InputError('The user did not confirm this swap: nothing was signed. Ask them what they want before quoting again.');
       if (now() > q.until) throw new InputError('The user\'s yes to this quote held 10 minutes and has expired: run orientim_quote again, show the user, and swap after their new yes.');
     }
+    asked.add(quoteId);
     q.tried = true;
     keep(quoteId, q);
     context.progress('Verifying the swap on your RPC, then signing and waiting for the chain');
     // The order's id is the quote's: every retry of this quote is the same order, and lands once.
     // Not stopped when the client gives up: what it signed is kept, and settled on the chain.
-    const run = await deps.run('swap', ['--in', q.inputMint, '--out', q.outputMint, '--amount', q.amountIn, '--id', `mcp-${quoteId}`, ...q.flags], {
+    // Held to this quote's minimum, the one the user was shown: a later dry run of the same swap
+    // replaces the approval on disk, and must not lower what this yes was given to.
+    const run = await deps.run('swap', ['--in', q.inputMint, '--out', q.outputMint, '--amount', q.amountIn, '--id', `mcp-${quoteId}`, '--min-out', q.minOut, ...q.flags], {
       onLine: line => context.progress(withoutSecrets(line).slice(0, 200)),
     });
     const answer = jsonOf(run.stdout);

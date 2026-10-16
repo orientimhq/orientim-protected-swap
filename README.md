@@ -75,19 +75,24 @@ packages are bundled in.
 ## Check your copy
 
 Check the package against GitHub, not against the site that told you about it: it exists to protect
-you from a dishonest server, so a server cannot vouch for it. Each version is published from this
-repository's release workflow with npm's provenance, which names the repository, the workflow and the
-commit:
+you from a dishonest server, so a server cannot vouch for it. Each version from 2.0.0 on is published
+from this repository's release workflow with npm's provenance, which names the repository, the
+workflow and the commit. `npm audit signatures` checks that the signatures are valid, not who made
+them, and passes a version with none. The tarball npm serves is the one the release workflow built
+and attested, so GitHub's signed statement checks who built it:
 
 ```bash
 npm install --save-exact @orientimhq/swap@<version> && npm audit signatures
+npm pack @orientimhq/swap@<version> && gh attestation verify orientimhq-swap-<version>.tgz -R orientimhq/orientim-protected-swap \
+  --signer-workflow orientimhq/orientim-protected-swap/.github/workflows/release.yml --source-ref refs/tags/v<version>
 ```
 
 `orientim.mcpb` on each GitHub release carries GitHub's signed statement that the same workflow built
 it from that tag, and `RELEASE-SHA256SUMS` lists its sha256:
 
 ```bash
-gh attestation verify orientim.mcpb -R orientimhq/orientim-protected-swap
+gh attestation verify orientim.mcpb -R orientimhq/orientim-protected-swap \
+  --signer-workflow orientimhq/orientim-protected-swap/.github/workflows/release.yml --source-ref refs/tags/v<version>
 ```
 
 The build is reproducible: `git checkout v<version> && npm ci --ignore-scripts && npm run build` gives

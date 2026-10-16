@@ -4,6 +4,7 @@ import {
   getAddressEncoder,
   getProgramDerivedAddress,
   getCompiledTransactionMessageDecoder,
+  getCompiledTransactionMessageEncoder,
   getTransactionMessageComputeUnitLimit,
   getTransactionMessageLoadedAccountsDataSizeLimit,
   getTransactionMessagePriorityFeeLamports,
@@ -227,9 +228,8 @@ export function unsupportedExtension(data: Uint8Array, options: { allowTransferF
   for (let at = TOKEN_ACCOUNT_SIZE + 1; ; ) {
     if (at === data.length) break; // the area ends exactly where the last extension does
     // Zeros to the end are padding, which the token program finds nothing in. Anything else after an
-    // empty type is refused: the token program does not stop there, it steps over it two bytes at a
-    // time and keeps reading, so an entry written after a gap would act on every transfer while this
-    // loop never saw it.
+    // empty type is refused, stricter than today's token program (it stops at the first empty type):
+    // a version that read on past the gap would find an entry this loop never saw.
     const padding = () => !nonZero(at, data.length);
     if (at + 4 > data.length) return padding() ? null : 'malformed extension area'; // a header cut in half
     const type = view.getUint16(at, true);
@@ -527,6 +527,15 @@ export async function verify(transaction: Transaction, policy: Policy, snapshot:
     fail('R1', 'an instruction names an account the message does not load');
     return { ok: false, violations };
   }
+  // The bytes the wallet signs are exactly the message checked: nothing after it, no other spelling.
+  let canonical = false;
+  try {
+    const again = getCompiledTransactionMessageEncoder().encode(compiled as never);
+    canonical = again.length === transaction.messageBytes.length && again.every((b, i) => b === transaction.messageBytes[i]);
+  } catch {
+    canonical = false;
+  }
+  if (!canonical) fail('R5', 'the message bytes are not the canonical encoding of the message (trailing or re-spelled bytes)');
   const version = compiled.version;
   if (version !== 0 && version !== 1) fail('R5', `unsupported transaction version ${String(version)}`);
 
@@ -563,7 +572,9 @@ export async function verify(transaction: Transaction, policy: Policy, snapshot:
   const externals = parsed.flatMap((x, i) => (x.kind === 'external' ? [{ x, i }] : []));
   if (externals.length !== 1) fail('R2', `expected 1 external instruction, found ${externals.length}`);
   for (const { x } of externals) {
-    if (x.program !== p.jupiterProgram) fail('R2', `external program ${x.program} is not Jupiter`);
+    // Checked against constants.ts as well as the policy: a policy naming another program would
+    // switch off every route check below.
+    if (x.program !== p.jupiterProgram || x.program !== JUPITER_PROGRAM) fail('R2', `external program ${x.program} is not Jupiter`);
   }
   const swapIndex = externals.length ? externals[0].i : -1;
 

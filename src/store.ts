@@ -246,10 +246,14 @@ export function createFileStore(dir: string): PendingStore & OrderBook & SpendLo
     },
     async spentSince(owner, mint, since, except) {
       let spent = 0n;
+      const spends = readdirSync(dir).filter(f => f.startsWith('spend-') && f.endsWith('.json'))
+        .map(f => [f, JSON.parse(readFileSync(join(dir, f), 'utf8')) as { signature: string; owner: string; mint: string; amountIn: string; at: number }] as const);
       // A spend older than two days counts for no daily limit: it is removed, so the log stays small.
-      const expired = Math.min(since, Date.now() - 2 * DAY_MS);
-      for (const f of readdirSync(dir).filter(f => f.startsWith('spend-') && f.endsWith('.json'))) {
-        const s = JSON.parse(readFileSync(join(dir, f), 'utf8')) as { signature: string; owner: string; mint: string; amountIn: string; at: number };
+      // Two days before the newest spend too: a clock that jumps ahead erases nothing it has not
+      // seen a later spend for, so a daily limit does not reset when the clock comes back.
+      const newest = spends.reduce((m, [, s]) => (Number.isFinite(s.at) && s.at > m ? s.at : m), -Infinity);
+      const expired = Math.min(since, Date.now() - 2 * DAY_MS, newest - 2 * DAY_MS);
+      for (const [f, s] of spends) {
         if (s.at < expired) {
           rmSync(join(dir, f), { force: true });
           continue;

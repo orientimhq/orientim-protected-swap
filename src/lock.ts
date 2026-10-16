@@ -3,7 +3,7 @@
  * is provably gone (its process ended on this host, or this host restarted since) or the lock is stale.
  */
 import { randomUUID } from 'node:crypto';
-import { closeSync, constants as fsConstants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, utimesSync, writeSync } from 'node:fs';
+import { closeSync, constants as fsConstants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, renameSync, rmSync, utimesSync, writeSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { ConfigError } from './api.ts';
@@ -29,6 +29,20 @@ const heldTokens = new Set<string>();
  * process that is gone, whatever process has its pid now.
  */
 let bootIdRead: string | null | undefined;
+let pidNsRead: string | null | undefined;
+/** This process's pid namespace (`pid:[4026531836]`): a container has its own; undefined off Linux. */
+export function pidNamespace(): string | undefined {
+  if (pidNsRead === undefined) {
+    try {
+      const ns = readlinkSync('/proc/self/ns/pid');
+      pidNsRead = /^pid:\[\d{1,20}\]$/.test(ns) ? ns : null;
+    } catch {
+      pidNsRead = null;
+    }
+  }
+  return pidNsRead ?? undefined;
+}
+
 export function bootId(): string | undefined {
   if (bootIdRead === undefined) {
     try {
@@ -50,7 +64,7 @@ export function releaseHeldLocks(): void {
   for (const release of [...heldLocks]) release();
 }
 
-type LockFile = { token?: unknown; pid?: unknown; host?: unknown; bootId?: unknown };
+type LockFile = { token?: unknown; pid?: unknown; host?: unknown; bootId?: unknown; pidNs?: unknown };
 
 /**
  * Is the process that wrote a lock on this machine gone? Only a process on this host can be asked. It
@@ -62,6 +76,9 @@ export function holderIsGone(lock: LockFile | null): boolean {
   if (!lock || lock.host !== hostname() || !Number.isInteger(lock.pid) || (lock.pid as number) <= 0) return false;
   const boot = bootId();
   if (boot && typeof lock.bootId === 'string' && lock.bootId !== boot) return true;
+  // Another container with the same host name shares the volume, or this one restarted: its pids are
+  // not this process's to judge, so its lock is left until it goes stale.
+  if (typeof lock.pidNs === 'string' && lock.pidNs !== pidNamespace()) return false;
   if (lock.pid === process.pid) return !(typeof lock.token === 'string' && heldTokens.has(lock.token));
   try {
     process.kill(lock.pid as number, 0);
@@ -135,7 +152,8 @@ export function acquireLock(dir: string, owner: string, staleMs = 10 * 60_000): 
     const fd = openSync(path, 'wx', FILE_MODE);
     try {
       const boot = bootId();
-      writeSync(fd, JSON.stringify({ pid: process.pid, host: hostname(), at: Date.now(), token, ...(boot ? { bootId: boot } : {}) }));
+      const ns = pidNamespace();
+      writeSync(fd, JSON.stringify({ pid: process.pid, host: hostname(), at: Date.now(), token, ...(boot ? { bootId: boot } : {}), ...(ns ? { pidNs: ns } : {}) }));
       fsyncSync(fd);
     } finally {
       closeSync(fd);
