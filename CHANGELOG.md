@@ -45,6 +45,10 @@ From the 16 October 2026 final audit:
   verifier does, by one predicate, `isBondingCurveRoute` in `@orientimhq/swap/verifier`: the curve
   program and a writable bonding curve of the input or output token. The program's address alone in
   Jupiter's answer no longer widens the floor.
+- R1 refuses a wallet's output account that requires a memo on every incoming transfer (Token-2022
+  MemoTransfer), as Orientim's server does, beside a frozen one and one with a close authority.
+- R2: a route_v2 that delivers to its optional destination names, as its user destination, the
+  one-time key's account for the output or that destination itself, never another account.
 
 ## 2.1.0
 

@@ -638,6 +638,13 @@ describe("Jupiter's own floor is read from its instruction", () => {
       return a;
     };
     expect((await rearranged(TOKEN_OUT, asUserDestination)).violations).toEqual([]);
+    // Beside its destination, route_v2 names E's own account for the output ([2]), or the destination
+    // itself; any other account there is refused.
+    const userElsewhere = async (a: Meta[]) => { a[2] = { address: await randomAddress(), role: AccountRole.WRITABLE }; return a; };
+    expect(details(await rearranged(TOKEN_OUT, userElsewhere)).join()).toContain('as its user destination');
+    const userIsDestination = (a: Meta[]) => { a[2] = a[7]; return a; };
+    expect((await rearranged(TOKEN_OUT, userIsDestination)).violations).toEqual([]);
+    expect((await rearranged({ ...TOKEN_OUT, outputProgram: TOKEN_2022_PROGRAM }, a => a)).violations).toEqual([]);
     const sharedElsewhere = async (a: Meta[], sc: Scenario) => { const x = sharedAccounts(a, sc); x[5] = { address: await randomAddress(), role: AccountRole.WRITABLE }; return x; };
     expect(details(await rearranged(TOKEN_OUT, sharedElsewhere, sharedData)).join()).toContain("not to the wallet's output account");
   });

@@ -136,6 +136,26 @@ describe('W_out authorities', () => {
     }
   }
 
+  it('a Token-2022 W_out that requires a memo on every incoming transfer is refused → R1', async () => {
+    const s = await scenario({ input: USDC, output: BONK, outputProgram: TOKEN_2022_PROGRAM });
+    const wOut = s.policy.accounts.wOut!;
+    const base = accounts(s).get(wOut)!;
+    const withMemo = (required: number) => {
+      const d = new Uint8Array(base.data.length + 1 + 4 + 1);
+      d.set(base.data);
+      d[165] = 2; // AccountType::Account
+      new DataView(d.buffer).setUint16(166, 8, true); // MemoTransfer
+      new DataView(d.buffer).setUint16(168, 1, true);
+      d[170] = required;
+      return d;
+    };
+    accounts(s).set(wOut, { ...base, data: withMemo(0) });
+    expect((await verify(compileHonest(s), s.policy, s.snapshot)).ok).toBe(true);
+    accounts(s).set(wOut, { ...base, data: withMemo(1) });
+    const v = await verify(compileHonest(s), s.policy, s.snapshot);
+    expect(v.violations).toContainEqual({ rule: 'R1', detail: "the wallet's output token account requires a memo on every incoming transfer, which a swap cannot provide" });
+  });
+
   it('W_out missing from the snapshot fails closed', async () => {
     const s = await scenario({ input: USDC, output: BONK });
     accounts(s).delete(s.policy.accounts.wOut!);

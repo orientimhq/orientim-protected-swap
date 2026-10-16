@@ -388,6 +388,16 @@ export function jupiterDestination(data: ArrayLike<number>, accounts: readonly A
   return null;
 }
 
+/**
+ * The user destination route_v2 still names ([2]) when it delivers to its optional destination ([7]):
+ * Jupiter passes the taker's own account for the output there. Null for any other shape.
+ */
+function routeV2UserDestination(data: ArrayLike<number>, accounts: readonly Address[]): Address | null {
+  const d = Uint8Array.from(data);
+  const routeV2 = d.length >= 8 && ROUTE_V2.every((b, i) => d[i] === b);
+  return routeV2 && accounts.length >= 10 && accounts[7] !== JUPITER_PROGRAM ? accounts[2] : null;
+}
+
 const V1_ALLOWED_CONFIG =
   TRANSACTION_CONFIG_PRIORITY_FEE_LAMPORTS_BIT_MASK |
   TRANSACTION_CONFIG_COMPUTE_UNIT_LIMIT_BIT_MASK |
@@ -637,6 +647,13 @@ export async function verify(transaction: Transaction, policy: Policy, snapshot:
     if (destination !== expected) {
       fail('R2', `the Jupiter route delivers to ${destination ?? 'an unreadable account'}, not to ${A ? 'the temporary output account' : "the wallet's output account"}`);
     }
+    // The user destination it names beside it is the taker's own account for the output (E's, under
+    // either token program), or the destination itself: never an account of anyone else.
+    const userDestination = routeV2UserDestination(x.data, x.accounts.map(a => a.address));
+    if (userDestination !== null && userDestination !== expected
+      && userDestination !== (await ata(E, p.outputMint, TOKEN_PROGRAM)) && userDestination !== (await ata(E, p.outputMint, TOKEN_2022_PROGRAM))) {
+      fail('R2', `the Jupiter route names ${userDestination} as its user destination, neither the one-time key's account for the output nor its destination`);
+    }
   }
 
   // Intermediate ATA(E, m) accounts: allowed only as matched create + close pairs.
@@ -842,6 +859,11 @@ export async function verify(transaction: Transaction, policy: Policy, snapshot:
   // chain. It is refused here, with the reason, instead of failing in the simulation.
   if (wIn && isFrozen(snapshot.accounts.get(wIn))) fail('R1', "the wallet's input token account is frozen");
   if (wOut && isFrozen(snapshot.accounts.get(wOut))) fail('R1', "the wallet's output token account is frozen");
+  // One that requires a memo on every incoming transfer cannot receive the route's output either.
+  const wOutState = wOut ? snapshot.accounts.get(wOut) : undefined;
+  if (wOutState && memoRequired(wOutState.data)) {
+    fail('R1', "the wallet's output token account requires a memo on every incoming transfer, which a swap cannot provide");
+  }
 
   // Orientim's own accounts are named in the message itself, never loaded from a lookup table: a table is read from the RPC, and an address that resolves differently on chain than in
   // the snapshot would redirect a trusted transfer. Jupiter's tables hold pools, never these.
