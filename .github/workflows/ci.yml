@@ -22,6 +22,8 @@ jobs:
       # No package runs code of its own at install.
       - run: npm ci --ignore-scripts
       - run: npm run typecheck
+      # Ultracite's rules as a check only: it reads the code and rewrites nothing (biome.jsonc).
+      - run: npm run lint
       - run: npm test
       - run: npm run build
       - name: The package installs on its own, and its types hold for a strict consumer

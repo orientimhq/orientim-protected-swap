@@ -1,0 +1,71 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  // Ultracite's rules, as a check only: the formatter and the assists are off, so nothing here
+  // rewrites a file. Every rule below is on except the ones listed under "off", which the code
+  // breaks today (the count is how many places). Turn them back on one at a time, each in its
+  // own change.
+  "extends": ["ultracite/biome/core","ultracite/biome/vitest"],
+  "formatter": { "enabled": false },
+  "assist": { "enabled": false },
+  "json": { "formatter": { "enabled": false } },
+  "css": { "formatter": { "enabled": false } },
+  "html": { "formatter": { "enabled": false } },
+  "overrides": [{ "includes": ["**/package.json", ".github/**/*.json"], "assist": { "enabled": false } }],
+  "linter": {
+    "rules": {
+      "nursery": {
+        "noFloatingPromises": "error",
+        "noMisusedPromises": "off" // 2
+      },
+      "complexity": {
+        "noCommaOperator": "off", // 2
+        "noExcessiveCognitiveComplexity": "off", // 33
+        "noUselessUndefined": "off", // 3
+        "noVoid": "off", // 4
+        "useOptionalChain": "off", // 2
+        "useSimplifiedLogicExpression": "off" // 22
+      },
+      "correctness": {
+        "noUndeclaredDependencies": "off", // 86
+        "noUnusedImports": "off" // 1
+      },
+      "performance": {
+        "noAwaitInLoops": "off", // 38
+        "noBarrelFile": "off", // 4
+        "noDelete": "off", // 5
+        "useTopLevelRegex": "off" // 144
+      },
+      "style": {
+        "noIncrementDecrement": "off", // 37
+        "noNegationElse": "off", // 43
+        "noNestedTernary": "off", // 44
+        "noNonNullAssertion": "off", // 135
+        "useAtIndex": "off", // 3
+        "useBlockStatements": "off", // 659
+        "useConsistentBuiltinInstantiation": "off", // 7
+        "useConsistentMethodSignatures": "off", // 17
+        "useConsistentTypeDefinitions": "off", // 68
+        "useConst": "off", // 2
+        "useDefaultSwitchClause": "off", // 2
+        "useDestructuring": "off", // 30
+        "useErrorCause": "off", // 9
+        "useImportType": "off", // 1
+        "useNumberNamespace": "off", // 6
+        "useNumericSeparators": "off", // 67
+        "useTemplate": "off" // 1
+      },
+      "suspicious": {
+        "noBitwiseOperators": "off", // 30
+        "noEmptyBlockStatements": "off", // 7
+        "noEqualsToNull": "off", // 3
+        "noEvolvingTypes": "off", // 1
+        "noImplicitAnyLet": "off", // 1
+        "noMisplacedAssertion": "off", // 15
+        "noShadow": "off", // 17
+        "noTemplateCurlyInString": "off", // 11
+        "noUnnecessaryConditions": "off", // 34
+        "useAwait": "off" // 34
+      }
+    }
+  }
+}
