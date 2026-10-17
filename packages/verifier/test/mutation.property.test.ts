@@ -171,7 +171,7 @@ describe('any change to an honest transaction', () => {
     await fc.assert(
       fc.asyncProperty(fc.nat(), fc.array(byteEdit, { minLength: 1, maxLength: 4 }), async (pick, edits) => {
         const w = worlds[pick % worlds.length];
-        let bytes = Array.from(w.tx.messageBytes);
+        const bytes = Array.from(w.tx.messageBytes);
         for (const e of edits) {
           const i = e.at % (bytes.length + (e.how === 'insert' ? 1 : 0));
           if (e.how === 'xor') bytes[i] ^= e.value || 1;
@@ -206,7 +206,7 @@ describe('any change to an honest transaction', () => {
         const p = sc.policy;
         const W = createNoopSigner(sc.W);
         const E = createNoopSigner(sc.E.address);
-        let ixs: Instruction[] = protectedInstructions({ policy: p, swapInstruction: sc.swapIx, intermediates: sc.intermediates });
+        const ixs: Instruction[] = protectedInstructions({ policy: p, swapInstruction: sc.swapIx, intermediates: sc.intermediates });
         const victims = [sc.W, sc.E.address, w.attacker, sc.wOther, p.accounts.eIn, ...(p.accounts.wIn ? [p.accounts.wIn] : []), ...(p.accounts.wOut ? [p.accounts.wOut] : [])];
         for (const e of edits) {
           const i = e.a % ixs.length;

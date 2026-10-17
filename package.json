@@ -57,12 +57,14 @@
     "test": "vitest run",
     "test:fuzz": "vitest run packages/verifier/test/property.test.ts packages/verifier/test/extensions.test.ts packages/verifier/test/slippage.property.test.ts packages/verifier/test/extremes.property.test.ts packages/verifier/test/mutation.property.test.ts --mode fuzz",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "ultracite check",
     "build": "node tools/build.ts"
   },
   "dependencies": {
     "@solana/kit": "8.3.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.15",
     "@solana-program/compute-budget": "0.18.1",
     "@solana-program/system": "0.14.1",
     "@solana-program/token": "0.16.1",
@@ -70,6 +72,7 @@
     "fast-check": "4.10.1",
     "rolldown": "1.2.9",
     "typescript": "7.0.2",
+    "ultracite": "8.0.1",
     "vitest": "4.1.11"
   },
   "engines": {
