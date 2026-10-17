@@ -1,20 +1,16 @@
 # Changelog
 
-Versions of `@orientimhq/swap` (`package.json`); up to 1.12.3, versions of the skill folder
-(`skills/orientim-protected-swap/package.json`) and of the npm package `orientim-mcp`.
+All notable changes to `@orientimhq/swap`. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions up to 1.12.3 were published as the
+skill archive (`orientim-protected-swap.zip`) and the npm package `orientim-mcp`.
 
-## 2.1.1
+## 2.1.1 (unreleased)
 
-From the 15 October 2026 audit findings:
+### Security
 
 - R7 refuses a Token-2022 mint whose permanent delegate is the wallet or the one-time key, whatever
   its curve: both sign the transaction, so a route handed the one-time key could move that token's
   balances with its signature.
-- `tokenRisk` and the notices report a mint whose issuer can still turn on a transfer hook (an
-  authority set, no program yet): no code runs today, but code set later would run on every transfer.
-
-From the 16 October 2026 final audit:
-
 - `orientim_swap` holds the swap to the quote's own minimum (`--min-out`), the one the user was shown:
   a later dry run of the same swap replaces the approval on disk and can no longer lower it.
 - A server's words never reach the model: route requests in an error carry only a route request's
@@ -23,23 +19,6 @@ From the 16 October 2026 final audit:
   owner's ceilings, a yes no longer than a dry run gives), and the user is asked again.
 - The verifier refuses a message whose bytes are not its canonical encoding (bytes after it), and
   checks the swap program against Jupiter's address in `constants.ts`, not only the policy's.
-- A clock that jumps ahead no longer erases the spends a daily limit counts.
-- A wallet's lock names its pid namespace: a lock from another container on the same volume, with the
-  same host name and pid, is left until it goes stale instead of being taken.
-- A Token-2022 input's transfer fee is judged at both epochs from 450 slots before an epoch ends (was
-  300): 150 blocks can span more slots when leaders skip theirs.
-- README and GUIDE: `npm audit signatures` checks signatures, not who built a version; the attested
-  tarball is checked with `gh attestation verify`.
-- `parsePolicy(object, source)` checks a policy given in code as strictly as `loadPolicy` checks a file.
-- AGENT-API and GUIDE say what Orientim's API keeps: no orders and nothing about funds or keys, only
-  short-lived holds (one message per one-time key, one swap per output account) and rate-limit counts.
-- A plugin for Solana Agent Kit lives in `integrations/solana-agent-kit` (`@orientimhq/solana-agent-kit`,
-  not yet published): one action, `protectedSwap`, that makes the same swap with the kit's wallet and RPC.
-  The model's `slippageBps` is held to 300 bps, the MCP server's ceiling, unless the policy's
-  `maxSlippageBps` allows more: a higher one is refused, not lowered. An administrator's policy file
-  (`SYSTEM_POLICY_PATH`) wins, and a policy given in code that differs from it is refused, as the command
-  refuses another `ORIENTIM_POLICY`. `ORIENTIM_STATE_DIR` is read, and the relative default state
-  directory is said in the answer's `notices`.
 - The MCP server takes an error from a client that said it can ask the user (elicitation) as no yes:
   that swap is refused with nothing signed, and the next try asks again. Before, the error switched
   asking off for the rest of the process and the swap went on on the model's word.
@@ -47,36 +26,59 @@ From the 16 October 2026 final audit:
   verifier does, by one predicate, `isBondingCurveRoute` in `@orientimhq/swap/verifier`: the curve
   program and a writable bonding curve of the input or output token. The program's address alone in
   Jupiter's answer no longer widens the floor.
-- R1 refuses a wallet's output account that requires a memo on every incoming transfer (Token-2022
-  MemoTransfer), as Orientim's server does, beside a frozen one and one with a close authority.
 - R2: a route_v2 that delivers to its optional destination names, as its user destination, the
   one-time key's account for the output or that destination itself, never another account.
+
+### Added
+
+- A plugin for Solana Agent Kit in `integrations/solana-agent-kit` (`@orientimhq/solana-agent-kit`,
+  not yet published to npm): one action, `protectedSwap`, that makes the same swap with the kit's
+  wallet and RPC. The model's `slippageBps` is held to 300 bps, the MCP server's ceiling, unless the
+  policy's `maxSlippageBps` allows more: a higher one is refused, not lowered. An administrator's
+  policy file (`SYSTEM_POLICY_PATH`) wins, and a policy given in code that differs from it is refused,
+  as the command refuses another `ORIENTIM_POLICY`. `ORIENTIM_STATE_DIR` is read, and the relative
+  default state directory is said in the answer's `notices`.
+- `tokenRisk` and the notices report a mint whose issuer can still turn on a transfer hook (an
+  authority set, no program yet): no code runs today, but code set later would run on every transfer.
+- `parsePolicy(object, source)` checks a policy given in code as strictly as `loadPolicy` checks a file.
+- R1 refuses a wallet's output account that requires a memo on every incoming transfer (Token-2022
+  MemoTransfer), beside a frozen one and one with a close authority.
+- `TOKEN_ACCOUNT_RENT_UPPER_BOUND_LAMPORTS` in `@orientimhq/swap/core`.
+
+### Fixed
+
+- A clock that jumps ahead no longer erases the spends a daily limit counts.
+- A wallet's lock names its pid namespace: a lock from another container on the same volume, with the
+  same host name and pid, is left until it goes stale instead of being taken.
+- A Token-2022 input's transfer fee is judged at both epochs from 450 slots before an epoch ends (was
+  300): 150 blocks can span more slots when leaders skip theirs.
 - The MCP server keeps at most the newest 64 quote files, and removes one 10 minutes after its yes
   ended instead of a day after it was made.
-- CI compares the build's SHA-256 lists from Ubuntu and macOS and fails when they differ (it printed
-  them only). The build is made in `dist.partial/` and renamed to `dist/` once whole.
-- Docs: `maxFeeBps` is 25 bps by default, Orientim's fee, and at most 30, its ceiling (the comments said
-  the fee is 30); AGENT-API points to GUIDE.md for a bot with no one to ask; `npm run test:fuzz` runs
-  100,000 to 200,000 cases per property; the tests no longer name a fuzz workflow this repository does
-  not have.
+- The MCP server's error for a failed command names `orientim`, the command it runs.
 
-## 2.1.0
+### Changed
 
-From the 15 October 2026 review:
+- CI compares the build's SHA-256 lists from Ubuntu and macOS and fails when they differ. The build is
+  made in `dist.partial/` and renamed to `dist/` once whole.
+- Docs: `npm audit signatures` checks signatures, not who built a version; the attested tarball is
+  checked with `gh attestation verify`. AGENT-API and GUIDE say what Orientim's API keeps: no orders
+  and nothing about funds or keys, only short-lived records (ten minutes at most) and rate-limit
+  counts. A transaction's lifetime is 150 blocks, about 60 to 90 seconds, everywhere. `maxFeeBps` is
+  25 bps by default, Orientim's fee, and at most 30, its ceiling. `npm run test:fuzz` runs 100,000 to
+  200,000 cases per property.
 
-- A wallet's lock left by a process that is gone is taken at once in two more cases: the machine
-  restarted since (the lock names the boot, `/proc/sys/kernel/random/boot_id`), and the lock carries
-  this process's own pid without being its own (a container restarted, and its process got the pid its
-  predecessor had). Before, such a lock answered `busy` until it went stale (10 minutes).
+### Deprecated
+
+- `TOKEN_ACCOUNT_RENT_UPPER_ORIENTIM_LAMPORTS`: use `TOKEN_ACCOUNT_RENT_UPPER_BOUND_LAMPORTS`, the same
+  value.
+
+## 2.1.0 (2026-10-15)
+
+### Added
+
 - The check reads your RPC no older than the slot Orientim built the swap at (`contextSlot` in the
   prepare answer): a node a few slots behind is waited for, up to 6 seconds, instead of judging the
   transaction on state older than it was built on. A node that does not catch up is read as before.
-- A Token-2022 input token's transfer fee, within 300 slots of an epoch's end, is the higher of this
-  epoch's and the next one's: the swap may land in the next epoch, and your floor is priced for the
-  less that may then arrive.
-- The network fee the prepare answer states (`costs.networkFeeLamports`) is held to the most the
-  transaction's bytes can pay. Every stated figure that differs from what the bytes are checked against
-  is refused as `certificate-mismatch: ...`.
 - The JSON commands say on every answer that is not a success whether it may be retried
   (`retryable`) and that no new order id is needed (`requiresNewOrderId`, always `false`).
 - The MCP server keeps its quotes on disk (`~/.orientim/quotes`, each read back against its SHA-256
@@ -86,17 +88,41 @@ From the 15 October 2026 review:
   an output account, until it lands or expires, since a second one's minimum would count the first's
   tokens. Its signature is `inFlight`.
 
-## 2.0.1
+### Security
+
+- A Token-2022 input token's transfer fee, within 300 slots of an epoch's end, is the higher of this
+  epoch's and the next one's: the swap may land in the next epoch, and your floor is priced for the
+  less that may then arrive.
+- The network fee the prepare answer states (`costs.networkFeeLamports`) is held to the most the
+  transaction's bytes can pay. Every stated figure that differs from what the bytes are checked against
+  is refused as `certificate-mismatch: ...`.
+
+### Fixed
+
+- A wallet's lock left by a process that is gone is taken at once in two more cases: the machine
+  restarted since (the lock names the boot, `/proc/sys/kernel/random/boot_id`), and the lock carries
+  this process's own pid without being its own (a container restarted, and its process got the pid its
+  predecessor had). Before, such a lock answered `busy` until it went stale (10 minutes).
+
+## 2.0.1 (2026-10-15)
+
+### Fixed
 
 - `npx -y @orientimhq/swap mcp` starts the MCP server: `orientim` is the package's one command, so npx
   runs it. 2.0.0 also installed `orientim-mcp` and `orientim-verify`, and with three commands npx
   found none named `swap` and ran nothing.
+
+### Changed
+
 - The release stages the version on npm (`npm stage publish`): it is public once a maintainer
   approves it with 2FA.
 
-## 2.0.0
+## 2.0.0 (2026-10-15)
 
 One npm package, `@orientimhq/swap`, in place of the skill's zip, its bundled files and `orientim-mcp`.
+1.12.4 was not released; its changes are part of this version.
+
+### Changed
 
 - The library: `import { protectedSwap, recoverPending, acquireLock, createFileStore, loadPolicy } from
   '@orientimhq/swap'`, with its types, and `@orientimhq/swap/verifier`, `/core` and `/solana`. The code of
@@ -112,36 +138,40 @@ One npm package, `@orientimhq/swap`, in place of the skill's zip, its bundled fi
 - A daily limit no longer counts a swap the chain proves moved nothing: one that failed, or that can no
   longer land, frees its share as soon as it is settled (by `protectedSwap`, `finalize` or `recover`).
   One settled by hand on the owner's word alone still counts for its 24 hours.
-- The check's reads are held together: with lookup tables, every account is read no older than the
-  slot the RPC was at when the tables were read, and every batch after the first no older than the
-  first.
+- The MCP server keeps one API key per wallet and Orientim address (`~/.orientim/api-key-<id>.json`):
+  two wallets on one machine no longer ask for a new key on every call.
 
-Also, from the 14 October 2026 review:
+### Security
 
 - One request, one swap: no quote is made while an earlier swap from the wallet may still land or is
   being sent (exit 3), and the MCP server gives a swap's answer the client stopped waiting for with
   the next call (`earlierSwaps`), before anything new. A second call for the same quote is told it
   runs from the first moment.
 - A swap that lands uses up only the approval it was held to, never a newer yes for the same swap.
-- A stale lock is judged by the lock it reads, so two runs can no longer hold one wallet's lock;
-  `orientim-verify finalize` reads the kept swaps again after keeping its own.
-- The MCP server keeps one API key per wallet and Orientim address (`~/.orientim/api-key-<id>.json`):
-  two wallets on one machine no longer ask for a new key on every call.
-- The confirmation question is withdrawn when the quote's 10 minutes end or the client goes away; a
-  2025-11-25 client that cannot show a form is not asked.
+- The check's reads are held together: with lookup tables, every account is read no older than the
+  slot the RPC was at when the tables were read, and every batch after the first no older than the
+  first.
 - An owner's lower `ORIENTIM_MAX_SLIPPAGE_BPS` / `ORIENTIM_MAX_PRICE_IMPACT_BPS` bind `"auto"` and the
   defaults; the `.mcpb` has fields for them.
 - The model sees the agent's own tolerance, none of a refused transaction's amounts, and no RPC or
   API key in any URL spelling.
-- The key message is checked field by field; `skill-outdated` says how to update an MCP client too;
-  the dry run applies the route's price-impact limit as the swap does.
-- `orientim-verify` reads JSON with a byte-order mark and refuses an `amountIn` that is not digits.
+- The key message is checked field by field; the dry run applies the route's price-impact limit as the
+  swap does.
 - A system policy is one path in any letter case on Windows; on Linux and macOS one the agent's user
   can write is refused.
 
+### Fixed
+
+- A stale lock is judged by the lock it reads, so two runs can no longer hold one wallet's lock;
+  `finalize` reads the kept swaps again after keeping its own.
+- The confirmation question is withdrawn when the quote's 10 minutes end or the client goes away; a
+  2025-11-25 client that cannot show a form is not asked.
+- `skill-outdated` says how to update an MCP client too.
+- The JSON commands read input with a byte-order mark and refuse an `amountIn` that is not digits.
+
 ## 1.12.3 (2026-10-13)
 
-Fixes from the October 2026 security review.
+### Security
 
 - The MCP server holds the model to the owner's ceilings (`ORIENTIM_MAX_SLIPPAGE_BPS`,
   `ORIENTIM_MAX_PRICE_IMPACT_BPS`), asks the person through the client (MCP elicitation) before the
@@ -154,11 +184,16 @@ Fixes from the October 2026 security review.
 - Releases attach `RELEASE-SHA256SUMS`, the whole zip's and `.mcpb`'s sha256, attested; the docs check
   a download against GitHub rather than against the site that served it.
 - The release builds in a job that cannot publish, and publishes only from a `v*` tag.
+
+### Changed
+
 - The API-key message the wallet signs also accepts Orientim's Terms of Use
   (https://orientim.com/terms); the skill signs only that message. Earlier versions refuse it, so
   getting a key needs 1.12.3.
 
 ## 1.12.2 (2026-10-12)
+
+### Fixed
 
 - The MCP server knows Token-2022 by its right address: 1.12.0 and 1.12.1 named it wrongly, so
   `orientim_wallet` and `orientim_quote` refused every Token-2022 token (PYUSD, and many newer tokens)
@@ -168,18 +203,29 @@ Fixes from the October 2026 security review.
 
 ## 1.12.1 (2026-10-12)
 
-- The MCP server needs nothing beside it: `bin/orientim-mcp.mjs` runs the example's command line and
+### Added
+
+- Two more ways to install the MCP server, the same server as one file with @solana/kit inside:
+  `orientim.mcpb`, a Claude Desktop extension that asks for the RPC, the keypair file and the optional
+  keys and limits (attached to the release, and served at orientim.com/skill/orientim.mcpb); and the
+  npm package `orientim-mcp`, for `npx -y orientim-mcp@1.12.1`, published by the release with npm's
+  provenance.
+
+### Changed
+
+- The MCP server needs nothing beside it: `bin/orientim-mcp.mjs` runs the swap command line and
   `orientim-verify` itself (`examples/swap.ts` exports `commandLine`), so no TypeScript runs and Node
   20.18 is enough.
-- Two more ways to install it, the same server as one file with @solana/kit inside: `orientim.mcpb`, a
-  Claude Desktop extension that asks for the RPC, the keypair file and the optional keys and limits
-  (attached to the release, and served at orientim.com/skill/orientim.mcpb); and the npm package
-  `orientim-mcp`, for `npx -y orientim-mcp@1.12.1`, published by the release with npm's provenance.
+
+### Fixed
+
 - The wallet's own API key: the key message is signed exactly as Orientim sent it (1.12.0 cut its URI
   line as it did every URL in an answer, and the key was refused).
 - A setting a client left empty, or passed as its own placeholder, is taken as not set.
 
 ## 1.12.0 (2026-10-11)
+
+### Added
 
 - `bin/orientim-mcp.mjs`: the skill as an MCP server over stdio, for Claude Desktop, Claude Code,
   Cursor and other MCP clients. Four tools: `orientim_wallet` (balances on your RPC), `orientim_quote`
@@ -194,13 +240,15 @@ Fixes from the October 2026 security review.
 
 Documentation only; the code is unchanged.
 
-- `reference/AGENT-API.md` keeps to what a client needs: the server's own settings and internals
-  (how a deployment turns features off, its timing header, how long it keeps its own price, how it
-  derives the one-time key) are no longer in it. Prepare options orientim.com does not take
+### Changed
+
+- `reference/AGENT-API.md` keeps to what a client needs. Prepare options orientim.com does not take
   (`routingMode: "fast"`, `version: 1`) are no longer listed.
 - `SKILL.md`: your own Jupiter key, said for what it does for you.
 
 ## 1.11.2 (2026-10-11)
+
+### Security
 
 - The fee the check accepts is Orientim's 0.25% (`DEFAULT_FEE_BPS`), no longer the 0.3% ceiling: a
   server that charged even 1 bps more is refused. An agent may allow up to 0.3% with `maxFeeBps`,
@@ -209,28 +257,38 @@ Documentation only; the code is unchanged.
   that name exists, so a link planted there is never followed. A directory this process owns is made
   its owner's alone; one another user owns and others may change is refused. Temporary files a crash
   left behind are removed.
+- CI runs the tests on Windows. Releases carry a GitHub build attestation
+  (`gh attestation verify orientim-protected-swap.zip -R orientimhq/orientim-protected-swap`), files
+  once attached are never replaced, and no package runs install scripts in CI.
+
+### Changed
+
 - `SKILL.md`, "Safe setup for an agent": the swap command as a user of its own (a `sudo` rule), for a
   daily limit that holds against an agent that runs commands of its own. The Python example fails
   clearly when the command gives no answer.
 - Faster: the confirmation is read every 0.5 s, its status and the block height together; the price
   is asked while the input's transfer fee is read.
-- CI runs the tests on Windows. Releases carry a GitHub build attestation
-  (`gh attestation verify orientim-protected-swap.zip -R orientimhq/orientim-protected-swap`), files
-  once attached are never replaced, and no package runs install scripts in CI.
 
 ## 1.11.1 (2026-10-10)
+
+### Added
 
 - The owner's policy at a system path: `/etc/orientim/policy.json` (`C:\ProgramData\Orientim\policy.json`
   on Windows), when it exists, is the policy for `examples/swap.ts` and `orientim-verify` whatever the
   environment says. An agent that runs the command with `ORIENTIM_POLICY` unset is held to it, and any
   other file `ORIENTIM_POLICY` names is refused. Written by an administrator and read-only to the
   agent's user, it is what "Safe setup for an agent" now asks for. Without that file, nothing changes.
+
+### Changed
+
 - `SKILL.md`: the first policy sample names its `stateDir` (a daily limit without one is refused
   since 1.10.8); the swap command after the dry run; the fee as 0.25% under the 0.3% ceiling.
 - `README.md`: an API key from a keypair file in a few lines.
 - The command's usage line no longer offers `--fast`, `--v1` (off on orientim.com) or `--state`.
 
 ## 1.11.0 (2026-10-10)
+
+### Added
 
 - The owner's policy takes `allowedOutputMints`, the tokens the wallet may buy. With it, a swap into
   a token not listed is refused (`output-not-allowed`) before anything is prepared, in the dry run,
@@ -242,6 +300,8 @@ Documentation only; the code is unchanged.
 
 ## 1.10.8 (2026-10-06)
 
+### Security
+
 - The verifier (R4) bounds the rent a route may keep: SOL sent to the one-time key for rent, less
   what closing the market's account returns in the same transaction, may be at most 0.001 SOL
   (`MAX_ROUTE_KEPT_LAMPORTS`). Before, the rules bounded the rent and the refund each on its own, and
@@ -250,6 +310,9 @@ Documentation only; the code is unchanged.
 - A policy with a daily limit (`maxAmountInPerDay`) must name its own `stateDir`. A directory the
   run chooses (`--state`, `ORIENTIM_STATE_DIR`) could be a fresh one with an empty record, and so a new
   day's allowance; such a policy is now refused before anything starts.
+
+### Changed
+
 - `maxFeeBps` out of range says 30 bps is the most Orientim's fee may ever be (the fee is 0.25%).
 - `reference/AGENT-API.md`: the key endpoints answer `503 paused` while swaps are paused; selling a
   token's whole balance below the minimum is for tokens, not SOL; the route-rent limit.
@@ -257,6 +320,8 @@ Documentation only; the code is unchanged.
 ## 1.10.7 (2026-10-04)
 
 Documentation only; the code is unchanged.
+
+### Changed
 
 - `reference/AGENT-API.md`: the sample answer shows the 0.25% fee; `routingMode: "fast"` and
   `version: 1` are said to be off on orientim.com (answered `400 bad-request`); key limits are per
@@ -269,6 +334,8 @@ Documentation only; the code is unchanged.
 
 ## 1.10.6 (2026-10-03)
 
+### Changed
+
 - The verifier refuses a swap from or to a token account of the wallet that its issuer has frozen,
   with the reason ("the wallet's output token account is frozen", or input), instead of letting it
   fail in the simulation. Such a swap could never land; nothing was ever at risk.
@@ -278,12 +345,15 @@ Documentation only; the code is unchanged.
 
 ## 1.10.5 (2026-10-03)
 
-- Jupiter's own service failing to find a token's program (a 400 wrapping its internal 500, "Missing
-  token program") is its index lagging behind a new token: the skill asks again, as for its other
-  transient failures, instead of refusing the token at once. Seen on mainnet: the same Pump.fun
-  token refused, then quoted a few seconds later. A plain "Missing token program" is still a refusal.
+### Fixed
+
+- Jupiter failing to find a new token's program (a 400 wrapping its internal 500, "Missing token
+  program") is its index lagging behind the token: the skill asks again, as for its other transient
+  failures, instead of refusing the token at once. A plain "Missing token program" is still a refusal.
 
 ## 1.10.4 (2026-10-03)
+
+### Fixed
 
 - A sender of your own (`sendTransaction` in code) is held to the same time as every read while
   the outcome is awaited. One that never answered could hold the wait, and the wallet's lock, past
@@ -293,15 +363,17 @@ Documentation only; the code is unchanged.
   prepare round run at the same time, and so do the check and the tokens' risk, so their times
   overlap. The steps are reported in order once the preparation ends, with `readyToSign`, the
   whole wait until a checked transaction is ready to sign. `apiPrepare` no longer reads 0 ms.
-- On Orientim's side, not the skill's: a fee in SOL from the wallet is now priced once per swap
-  while fresh, like the reference price for a fee on the output, instead of in every round.
 
 ## 1.10.3 (2026-10-03)
+
+### Changed
 
 - The API reference: with `"send": false`, Orientim's RPC sends nothing at finalize. The skill
   itself is unchanged.
 
 ## 1.10.2 (2026-10-03)
+
+### Changed
 
 - The API reference: Orientim does not use routes of yours that build a transaction its own
   verifier refuses (one delivering elsewhere, say); it builds the swap with its own key, as for
@@ -309,14 +381,18 @@ Documentation only; the code is unchanged.
 
 ## 1.10.1 (2026-10-03)
 
+### Fixed
+
 - A refusal of the agent's own (its owner's limits, the price impact, Jupiter finding no route)
   that came while the first round of prepare was still out was left as an unhandled rejection,
   which ends a Node process by default. It is now handled; the swap is refused as before, with the
-  agent's own reason. Found by the mainnet simulation matrix.
+  agent's own reason.
 
 ## 1.10.0 (2026-10-03)
 
-Faster swaps, the same checks:
+Faster swaps, the same checks.
+
+### Added
 
 - Send it your own way. With `sendTransaction` in code (`rpcSender(url)` makes one) or
   `ORIENTIM_SEND_RPC_URL` for `orientim-verify`, finalize asks Orientim to sign without sending
@@ -324,18 +400,24 @@ Faster swaps, the same checks:
   yours (a staked connection, a sender service, a bundle with a tip of its own), then again every
   few seconds until it lands or expires. The chain says the outcome; an error from your sender is
   never taken as "not sent".
+
+### Changed
+
 - With your own routes, the first round of prepare goes out while the agent asks Jupiter for its own
-  price: that round builds nothing and needs no minimum, and every later round carries it. An older
-  deployment that wants it in the first round is asked again with it. Not with `"auto"` tolerance,
-  whose number names the routes.
+  price: that round builds nothing and needs no minimum, and every later round carries it. Not with
+  `"auto"` tolerance, whose number names the routes.
 - The check on your RPC and the tokens' risk are read at the same time.
 
 ## 1.9.5 (2026-10-03)
+
+### Fixed
 
 - A prepare cut short by the time the preparation had left is always `BudgetSpentError`, never a
   bare timeout, however close to its end the timer fires.
 
 ## 1.9.4 (2026-10-03)
+
+### Fixed
 
 - The fall back to Orientim's own routes, after the route or round limit, runs within the time the
   preparation has left, never a call's full timeout: when that time is spent, the skill stops before
@@ -343,28 +425,32 @@ Faster swaps, the same checks:
   of asks of Jupiter too. `check` and `finalize` hold their own checks before sending to a budget of
   their own. `BudgetSpentError`, `preparationBudget`, `PREPARATION_MS` and `PREPARATION_ASKS` are
   exported for an agent that runs its own.
+
+### Changed
+
 - `reference/AGENT-API.md` states the integration contract plainly: who asks Jupiter and who reads
   the chain in one swap, that neither `sent` nor `unknown` is a final answer, that Orientim keeps no
-  order database, and what a direct client does on every start.
+  orders, and what a direct client does on every start.
 
 ## 1.9.3 (2026-10-03)
 
-From an external audit:
+### Security
 
 - One budget for the whole preparation: 110 seconds and 48 asks of Jupiter, from the agent's own
   quote, every route and its retries and pauses, to the fee-in-SOL check, the check on your RPC and
   the token-risk read before signing. Every ask is counted before it is sent, even one that fails;
   time is kept on a monotonic clock; spent, the swap stops unsigned. Finalize and the wait for an
   outcome are not part of it.
+
+### Changed
+
 - The fee on the output is documented exactly: 0.25% of the guaranteed minimum, which with your own
   routes is checked against an independent Orientim price within 1%. The earlier "never lowers
   Orientim's fee" said more than that.
-- On Orientim's side, its own price is kept in the session for the rounds that follow while fresh
-  (15 seconds) and asked for the same tolerance and fee, instead of being asked in every round.
 
 ## 1.9.2 (2026-10-02)
 
-Found by the mainnet simulation matrix with the agent's own routes (732 cases):
+### Fixed
 
 - A large swap that needs more routes or rounds than one prepare may fetch (24 routes, 10 rounds) is
   prepared with Orientim's key instead of stopping. Orientim also asks for every narrower route in
@@ -376,12 +462,13 @@ Found by the mainnet simulation matrix with the agent's own routes (732 cases):
 
 ## 1.9.1 (2026-10-02)
 
-- Routes from the agent's own key are held to more (found in an external audit). On Orientim's side:
-  a fee on the output (a sale into SOL, USDC or USDT) is a share of the minimum a route sets, so
-  Orientim now prices such a swap once with its own key and does not use a route whose minimum is
-  more than 1% below that price; an excluded DEX it cannot tell by its programs is not taken as
-  absent; in both cases Orientim builds the swap with its own key instead. A session now ends two
-  minutes after the first round. On the skill's side:
+### Security
+
+- Routes from the agent's own key are held to more. A fee on the output (a sale into SOL, USDC or
+  USDT) is a share of the minimum a route sets, so Orientim prices such a swap once with its own key
+  and does not use a route whose minimum is more than 1% below that price; an excluded DEX it cannot
+  tell by its programs is not taken as absent; in both cases Orientim builds the swap with its own key
+  instead. A routes session lasts two minutes from its first round. On the skill's side:
   - the one-time key of the first round must be the one of every round and of the prepared swap;
   - routes are counted before they are fetched (24 in all), each fetched once, one at a time;
   - one prepare spends at most 48 asks of the agent's Jupiter key, retries included, and 110
@@ -391,6 +478,8 @@ Found by the mainnet simulation matrix with the agent's own routes (732 cases):
 
 ## 1.9.0 (2026-10-02)
 
+### Added
+
 - Routes from the agent's own Jupiter key. With `JUPITER_API_KEY` set, the skill and
   `orientim-verify` prepare with `ownRoutes: true`: Orientim answers which Jupiter builds it needs
   (`409 routes-needed`, with a sealed session and the one-time key as taker), the skill fetches them
@@ -398,27 +487,32 @@ Found by the mainnet simulation matrix with the agent's own routes (732 cases):
   Orientim builds, checks and signs around these routes exactly as around its own, and prices its
   fee in SOL with its own key, never from an agent's route. The skill fetches only requests for the
   swap's own mints, the named one-time key and an amount no larger than the agent's.
-  `ORIENTIM_OWN_ROUTES=0` (or `ownRoutes: false`) lets Orientim's key build them as before; a
-  deployment that does not know `ownRoutes` builds them itself.
+  `ORIENTIM_OWN_ROUTES=0` (or `ownRoutes: false`) lets Orientim's key build them as before.
 
 ## 1.8.8 (2026-10-02)
 
+### Fixed
+
 - A retry marker left by a worker that stopped between creating it and recording its new attempt
-  no longer holds the order for good (found in an external audit). The file store's
-  `reclaimOrder` now finds such a marker abandoned, and sets it aside atomically for one worker,
-  only when all of these hold: it is older than a minute, the order still names the attempt it
-  retries, and no swap kept for that order is pending. A marker a worker may still be using is never
-  taken, so two workers still cannot both retry one order.
+  no longer holds the order for good. The file store's `reclaimOrder` now finds such a marker
+  abandoned, and sets it aside atomically for one worker, only when all of these hold: it is older
+  than a minute, the order still names the attempt it retries, and no swap kept for that order is
+  pending. A marker a worker may still be using is never taken, so two workers still cannot both
+  retry one order.
 
 ## 1.8.7 (2026-10-01)
 
+### Fixed
+
 - The owner's `maxSlippageBps` is read on v1 transactions too. A v1 message lists its instructions
   as headers and payloads, not as v0's instructions; the check read only the latter, so a v1 swap
-  under an owner's ceiling stopped with "Cannot read properties of undefined" before signing (found
-  by the mainnet simulation matrix run as v1). Nothing was signed; the swap could not be made. A v1
-  transaction that failed on chain is now explained with its program too.
+  under an owner's ceiling stopped with "Cannot read properties of undefined" before signing.
+  Nothing was signed; the swap could not be made. A v1 transaction that failed on chain is now
+  explained with its program too.
 
 ## 1.8.6 (2026-09-30)
+
+### Fixed
 
 - The owner's archive RPC (`ORIENTIM_ARCHIVE_RPC_URL`) proves expiry only when its history reaches
   back past every block the swap could have landed in: the skill asks it for its first available
@@ -428,24 +522,30 @@ Found by the mainnet simulation matrix with the agent's own routes (732 cases):
   so a slow build ends in its answer rather than in a second prepare.
 - The source of the shipped bundle matches it again: a read of a node behind an earlier read's slot
   is asked again for about four and a half seconds (0.3 to 1.5 s apart), as the bundle already did.
+
+### Changed
+
 - Docs: `acceptCostBps` also takes a route up to 0.5% past it, so a market that drifts a little does
   not ask again; `minOut` still holds.
 
 ## 1.8.5 (2026-09-30)
 
+### Fixed
+
 - A route that fails in the check's simulation is simulated once more, 1.2 seconds later, and only
-  a simulation that succeeds is read. On mainnet, routes of $50k to $100k through markets whose
-  maker sets the price each slot failed once and passed a moment later (found by the simulation
-  matrix). A route that fails twice is refused as before, now naming the program that failed and
-  its error code, from the simulation's logs; never a program's own words, which the route writes.
+  a simulation that succeeds is read: routes through markets whose maker sets the price each slot
+  can fail once and pass a moment later. A route that fails twice is refused as before, now naming
+  the program that failed and its error code, from the simulation's logs; never a program's own
+  words, which the route writes.
 
 ## 1.8.4 (2026-09-30)
 
+### Fixed
+
 - Jupiter's 400s that wrap a market whose price feed is behind for a moment ("Oracle price out of
   date", "Oracle is stale", "The price was expired", "Pair temporarily unavailable", or an upstream
-  `500:`) are asked again, as busy answers, not taken as refusals. Found on mainnet by the
-  simulation matrix, where they stopped about 7% of swaps. The agent's own price is now asked up to
-  four times (waits of 0.4, 0.8 and 1.6 seconds). Orientim's server does the same.
+  `500:`) are asked again, as busy answers, not taken as refusals. The agent's own price is now asked
+  up to four times (waits of 0.4, 0.8 and 1.6 seconds).
 - A refusal Jupiter gives without a code gets one: `NO_ROUTES_FOUND`, `TOKEN_NOT_TRADABLE` or
   `SAME_MINT`, asked once and never taken for busy.
 - The same token on both sides is refused by the skill itself (`IntentError`), before anything is
@@ -456,32 +556,35 @@ Found by the mainnet simulation matrix with the agent's own routes (732 cases):
 
 ## 1.8.3 (2026-09-30)
 
+### Fixed
+
 - The agent's own price is asked of Jupiter again, twice, a moment apart, when Jupiter answers 429,
-  a 5xx, or a 400 that wraps a failure upstream ("quote failed", "pool has not been updated"), as
-  Orientim's server already does. Before, such a 400 stopped the swap at once with no reason given;
-  on mainnet it hit swaps of $5k to $100k and sales of Pump.fun tokens (found by the mainnet
-  simulation matrix). Still busy after three asks, it is said as `Jupiter answered 400 (busy)`, and
-  `orientim-verify` answers `unavailable` (try again), not a refusal. Any other refusal is said at
-  once with Jupiter's own error code, such as `COULD_NOT_FIND_ANY_ROUTE`, and none of its prose.
+  a 5xx, or a 400 that wraps a failure upstream ("quote failed", "pool has not been updated").
+  Before, such a 400 stopped the swap at once with no reason given. Still busy after three asks, it
+  is said as `Jupiter answered 400 (busy)`, and `orientim-verify` answers `unavailable` (try again),
+  not a refusal. Any other refusal is said at once with Jupiter's own error code, such as
+  `COULD_NOT_FIND_ANY_ROUTE`, and none of its prose.
 
 ## 1.8.2 (2026-09-30)
+
+### Security
 
 - The owner's `maxSlippageBps` is held on the bytes the wallet signs, for every Jupiter route in
   them. Before, an agent whose own quote was an ordinary route (0.5% by default, within the
   ceiling) could be handed a route on a Pump.fun curve, which the check allowed at its own default
   (3%, tightened to about 2% by the agent's floor), above the owner's ceiling. Such a route is now
   refused before the wallet signs; ask for a `slippageBps` or `"auto"` within the ceiling to trade
-  a curve token. Found by an outside audit; the fuzz now draws the agent's quote and the final
-  route independently.
-- The transaction's lifetime is stated as about 40 seconds again: at today's block times (about
-  270 ms a slot, as the canary measures it) 150 blocks last about 41 seconds. 1.8.0 said a minute.
+  a curve token. The fuzz tests now draw the agent's quote and the final route independently.
 
 ## 1.8.1 (2026-09-30)
 
-- A dry run's approval is found for an amount written with leading zeros past 20 digits too (found
-  by the new fuzz of the owner's ceilings, "auto" tolerance and the archive's proof).
+### Fixed
+
+- A dry run's approval is found for an amount written with leading zeros past 20 digits too.
 
 ## 1.8.0 (2026-09-29)
+
+### Added
 
 - The owner's policy caps what an agent may choose: `maxSlippageBps` (the route's tolerance),
   `maxBelowBps` (how far below Jupiter's price the floor may sit) and `maxPriceImpactBps`. A choice
@@ -493,21 +596,32 @@ Found by the mainnet simulation matrix with the agent's own routes (732 cases):
 - `ORIENTIM_ARCHIVE_RPC_URL` (`archive` in code): an RPC with the full history, a second proof of
   expiry from the one-time key's own history when your RPC missed the moment the status cache could
   prove it. An outage near expiry no longer leaves the wallet at `unknown`.
+
+### Fixed
+
 - A lock held through a long wait (a signer asking a person) is kept fresh, so another worker never
   judges it left behind. A retry's marker file is removed once the order names the new attempt.
 - An approval from a dry run is found for the same amount however it is written (`05000000`).
-- The transaction's lifetime is stated as about a minute (150 blocks), not 40 seconds.
 
 ## 1.7.9 (2026-09-29)
 
+Documentation only; the code is unchanged.
+
+### Changed
+
 - Orientim's fee is 0.25%; the check still refuses a fee above 0.3%. The smallest swap is about
-  0.004 SOL, or $1 of USDC or USDT. Documentation only: the skill's code is unchanged.
+  0.004 SOL, or $1 of USDC or USDT.
 
 ## 1.7.8 (2026-09-29)
+
+### Added
 
 - A transaction that landed and failed on chain says why in `meaning`, read from the status your RPC
   gave and the transaction you signed: Jupiter's slippage error (6001) is "the price moved beyond
   your slippage"; other errors name the instruction, its program and the code.
+
+### Changed
+
 - `no-route` says when to stop: try a smaller amount or once more later, and stop if it is refused
   again.
 - SKILL.md: the smallest swap in numbers (about 0.0034 SOL, or $0.84 of USDC or USDT), tokens to
@@ -516,21 +630,30 @@ Found by the mainnet simulation matrix with the agent's own routes (732 cases):
 
 ## 1.7.7 (2026-09-29)
 
+### Added
+
 - When the network's own check refuses a transaction at send time, `meaning` names the reason it
   gave, read from the simulation's error and the transaction you signed: Jupiter's slippage error
   (6001) is "the price moved beyond your slippage"; other program errors name the instruction, its
   program and the code. The error is read only in the shapes a simulation gives.
+
+### Changed
+
 - Selling the whole balance of a token is allowed at any size, however little it is worth (Orientim
   refuses swaps below about $1 otherwise).
 
 ## 1.7.6 (2026-09-29)
 
-- The example's result and `orientim-verify finalize` carry `meaning`: the outcome and `refusal` in
-  words, with what to do next. A transaction the RPC's preflight refused (`rejected`, `refusal`
+### Added
+
+- The swap command's result and `orientim-verify finalize` carry `meaning`: the outcome and `refusal`
+  in words, with what to do next. A transaction the RPC's preflight refused (`rejected`, `refusal`
   `network`) says that the network's own check failed at send time, most often a price that moved,
   that nothing moved and no fee was paid, and that the order may be tried again with the same id.
 
 ## 1.7.5 (2026-09-29)
+
+### Fixed
 
 - An RPC that does not answer during the check is `error.code` `unavailable`, with `retryAfter`,
   instead of a refusal of the transaction; so is an RPC that answers 429 or 5xx. Other refusals are
@@ -549,20 +672,29 @@ Found by the mainnet simulation matrix with the agent's own routes (732 cases):
 
 ## 1.7.4 (2026-09-29)
 
-- Adds an opt-in Jupiter fast route-search request to the example, with the same owner floor,
-  independent verification, and exact-byte signing checks as standard routing.
-- Adds optional per-phase timing callbacks for quote, prepare, verification, signing and finalization.
-- Documents the existing v1 pilot as a separate opt-in requiring compatible RPCs and signers.
+### Added
+
+- An opt-in Jupiter fast route-search request, with the same owner floor, independent verification,
+  and exact-byte signing checks as standard routing.
+- Optional per-phase timing callbacks for quote, prepare, verification, signing and finalization.
+- Docs: v1 transactions as a separate opt-in requiring compatible RPCs and signers.
 
 ## 1.7.3 (2026-09-29)
+
+### Changed
 
 - Clarifies that direct API clients must verify the exact transaction before signing, maintain a
   durable order book across all workers, and enforce owner limits at a separate signer when the
   agent must not control the key.
 - Updates the API reference for the required positive `minOut` and the 30 bps production fee cap.
-- Removes references to the retired browser swap page from the skill instructions and source comments.
+
+### Removed
+
+- References to the retired browser swap page, from the skill instructions and source comments.
 
 ## 1.7.2 (2026-09-28)
+
+### Fixed
 
 - The check of what stays under the one-time key reads every balance after the swap from the
   simulation's `postBalances`, matched to the transaction's accounts in order and to its lookup
@@ -573,6 +705,8 @@ Found by the mainnet simulation matrix with the agent's own routes (732 cases):
 
 ## 1.7.1 (2026-09-28)
 
+### Security
+
 - `orientim-verify prepare` and `finalize` hold to the user's approval from a dry run kept in the same
   state directory: they refuse a lower minimum, or an approval that expired (exit 1, `error.code`
   `approval`).
@@ -581,14 +715,18 @@ Found by the mainnet simulation matrix with the agent's own routes (732 cases):
 
 ## 1.7.0 (2026-09-28)
 
-- The user's yes after a dry run now binds the real swap (A5). A dry run that finds no problem
-  answers `approval` (the least that arrives, and until when it holds, 10 minutes) and keeps it in the
-  state directory. The real swap of the same wallet, mints and amount enforces at least that minimum,
+### Security
+
+- The user's yes after a dry run now binds the real swap. A dry run that finds no problem answers
+  `approval` (the least that arrives, and until when it holds, 10 minutes) and keeps it in the state
+  directory. The real swap of the same wallet, mints and amount enforces at least that minimum,
   refuses a lower `--min-out`, and refuses once the approval expired; a swap that went out uses it up.
 
 ## 1.6.0 (2026-09-28)
 
-Fixes from a second external audit (A1 to A4, A6, A7):
+Security fixes from an independent review.
+
+### Security
 
 - `ownMinimum` refuses an amount whose price impact is above `maxPriceImpactBps` (default 5%, at most
   20%), so a bot built on `ownMinimum` and `verifyPrepared` keeps the check the full flow makes.
@@ -601,80 +739,106 @@ Fixes from a second external audit (A1 to A4, A6, A7):
   of an older attempt never writes over a newer one. `orientim-verify recover` holds each wallet's
   lock while it settles, and waits (exit 3, `busy`) for a run that holds it.
 - `amounts` and `costs` pass to the agent only as the fields the skill knows, the dry run's included.
-- One exit-code rule for the example and `orientim-verify`: a confirmed swap whose record could not be
-  updated exits 3 from both; every exit 3 carries `recoveryRequired: true`; the example exits 2 for a
-  policy, state directory or keypair file it cannot use (`ConfigError`).
+
+### Changed
+
+- One exit-code rule for the swap command and `orientim-verify`: a confirmed swap whose record could
+  not be updated exits 3 from both; every exit 3 carries `recoveryRequired: true`; the swap command
+  exits 2 for a policy, state directory or keypair file it cannot use (`ConfigError`).
 
 ## 1.5.1 (2026-09-28)
 
-Fixes from a live test with a real wallet:
+### Fixed
 
 - A daily limit counts every swap of the wallet in the last 24 hours, those made while no policy was
-  set included: the example and `orientim-verify finalize` record every swap in the state directory,
-  with a policy or without. Before, a swap counted only when a policy was active when it was made.
-- `price-moved` from the example prints the error's data as JSON after its code
+  set included: the swap command and `orientim-verify finalize` record every swap in the state
+  directory, with a policy or without. Before, a swap counted only when a policy was active when it
+  was made.
+- `price-moved` from the swap command prints the error's data as JSON after its code
   (`{"newMinOut":"476545",...}`), so the value to ask the user about is there.
-- The example exits 5 for an order that already swapped, or whose transaction may still land, as
-  `orientim-verify` does, and 3 while another swap from the wallet may still land. A `slippageBps`
+- The swap command exits 5 for an order that already swapped, or whose transaction may still land,
+  as `orientim-verify` does, and 3 while another swap from the wallet may still land. A `slippageBps`
   outside 10 to 1500, or a `maxPriceImpactBps`, `maxFeeBps` or `minOut` the skill cannot use, is a
-  usage error: exit 2 from the example and from `orientim-verify` (`IntentError`).
+  usage error: exit 2 from both (`IntentError`).
 - `wallet-empty` (an API key needs at least 0.01 SOL in the wallet) has the skill's own words.
+
+### Changed
+
 - `SKILL.md` says that `insufficient-sol` is an upper estimate that includes deposits returned in the
   same transaction, and that the network fee follows the network's load but never goes above the cap.
 
 ## 1.5.0 (2026-09-28)
 
-Fixes from an external audit:
+Security fixes from an independent review.
+
+### Security
 
 - `maxSolCostLamports` counts Orientim's fee whenever it is in SOL, whether taken from SOL sold, from
   SOL bought or from the wallet (`solFeeOf`). The API's `costs.keptSolLamports` states the same sum,
   and `costs.breakdown` each part apart.
 - A quote without a price impact is unknown, not zero: the skill refuses it unless the owner's policy
   says `allowUnknownPriceImpact: true`; the API answers `priceImpactPct: null`.
+
+### Added
+
 - `tokenRisk`: what each token's issuer can do, a permanent delegate included, or `unavailable` when
   the mints cannot be read; `tokenNotices` now names a permanent delegate and says when it could not read.
+
+### Changed
+
 - The JavaScript quickstart loads the owner's policy, passes `policy` and `spends`, holds the wallet's
   lock and recovers first.
 
 ## 1.4.0 (2026-09-27)
 
-Fixes from a review of the skill and of `orientim-verify`:
+Security fixes from an independent review.
+
+### Security
 
 - A fee paid in SOL is always held to the skill's own limit from Jupiter's price; `maxSolFeeLamports`
   can only lower it. `orientim-verify` never takes Orientim's treasury from its JSON (exit 2).
 - `finalize` checks `checked` again in full, Jupiter's floor and the fee in SOL included, and
   refuses a wallet that is not an address before it touches a file.
-- `finalize` that cannot read its state directory answers `outcome` `unknown` (exit 3), never "not
-  sent"; a second transaction for an order that already swapped exits 5, and its spend is not counted.
 - A transaction whose blockhash claims more than 150 blocks of life is refused.
-- A lock whose process is gone from this host is taken over at once; a stopped run gives up its locks.
-  "Another swap … is running" means wait and run again with the same `--id`.
 - The state directory is the owner's alone (0700, files 0600), written durably; spends older than two
   days are cleared. The policy may pin it (`stateDir`); a daily limit needs an absolute directory.
+- The policy's fields and error details from the server are checked for shape; the server's own
+  text reaches the agent only as one short line marked untrusted (`serverMessage`). An answer from
+  Jupiter without a price impact is refused.
+
+### Fixed
+
+- `finalize` that cannot read its state directory answers `outcome` `unknown` (exit 3), never "not
+  sent"; a second transaction for an order that already swapped exits 5, and its spend is not counted.
+- A lock whose process is gone from this host is taken over at once; a stopped run gives up its locks.
+  "Another swap … is running" means wait and run again with the same `--id`.
 - A swap of another wallet no longer holds this wallet's `prepare` back. An order recorded pending
   whose swap record is gone can be settled with `resolve`.
 - A service that does not answer is `error.code` `unavailable`, with `retryAfter`.
-- The policy's fields and error details from the server are checked for shape; the server's own
-  text reaches the agent only as one short line marked untrusted (`serverMessage`). An answer from Jupiter without a price impact is refused.
-- The example exits 0 only for a confirmed swap and 3 for what must be settled first; its dry run holds
-  the owner's policy, and a bad key file is never repeated in an error.
+- The swap command exits 0 only for a confirmed swap and 3 for what must be settled first; its dry
+  run holds the owner's policy, and a bad key file is never repeated in an error.
 
 ## 1.3.2 (2026-09-27)
 
 - First public release, under the Apache License 2.0.
-- Comments cleaned of references to internal documents. No change in behaviour.
 
 ## 1.3.1 (2026-09-27)
+
+### Changed
 
 - Harder property tests of the owner's limits, amounts and prices.
 
 ## 1.3.0 (2026-09-27)
+
+### Added
 
 - The owner's spending limits in a file (`ORIENTIM_POLICY`): the most per swap and per 24 hours for
   each input mint, and a mint not listed is refused.
 - Advice on keeping the wallet key away from the agent: a signing service or a signer of your own.
 
 ## 1.2.0 (2026-09-27)
+
+### Added
 
 - Hard limits in code: a minimum at most 20% below Jupiter's own price (`floor-too-low`), price
   impact at most 20%, Orientim's fee at most 0.3%.
@@ -684,7 +848,9 @@ Fixes from a review of the skill and of `orientim-verify`:
 
 ## 1.1.x (2026-09-26)
 
-- Recovery fixes after a stop, and the API reference without operator settings.
+### Fixed
+
+- Recovery after a stop.
 
 ## 1.0.0 (2026-09-26)
 
