@@ -1,5 +1,5 @@
 {
-  "name": "@orientim/solana",
+  "name": "@orientimhq/solana",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -7,6 +7,6 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@orientim/core": "*"
+    "@orientimhq/core": "*"
   }
 }

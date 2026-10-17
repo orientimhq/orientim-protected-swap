@@ -78,6 +78,6 @@ export { RETRYABLE_CODES, runCli, withRetryHints } from './cli.ts';
 export type { CliDeps, CliResult } from './cli.ts';
 
 // The seven rules (R1–R7) on the exact bytes the wallet signs, for a transaction built elsewhere.
-export { verify as verifyTransaction, parseInstruction } from '@orientim/verifier';
-export type { Parsed, VerifyOptions } from '@orientim/verifier';
-export type { AccountState, ChainSnapshot, Policy, RuleId, Verdict, Violation } from '@orientim/core/types';
+export { verify as verifyTransaction, parseInstruction } from '@orientimhq/verifier';
+export type { Parsed, VerifyOptions } from '@orientimhq/verifier';
+export type { AccountState, ChainSnapshot, Policy, RuleId, Verdict, Violation } from '@orientimhq/core/types';

@@ -7,8 +7,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import fc from 'fast-check';
-import { compileProtectedSwap, PUMP_AMM_PROGRAM, PUMP_CURVE_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, WSOL_MINT } from '@orientim/core';
-import type { TxVersion } from '@orientim/core';
+import { compileProtectedSwap, PUMP_AMM_PROGRAM, PUMP_CURVE_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, WSOL_MINT } from '@orientimhq/core';
+import type { TxVersion } from '@orientimhq/core';
 import type { Address } from '@solana/kit';
 import { verify } from '../src/index.ts';
 import { BONK, JUP, LIFETIME, scenario, USDC } from './fixtures.ts';

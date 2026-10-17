@@ -12,9 +12,9 @@ import { createNoopSigner } from '@solana/kit';
 import {
   compileProtectedSwap, JUPITER_PROGRAM, MAX_ROUTE_KEPT_LAMPORTS, MAX_TAKER_RENT_LAMPORTS, protectedInstructions, PUMP_AMM_PROGRAM, PUMP_CURVE_PROGRAM,
   routeAccountOf, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, withTakerRent, WSOL_MINT,
-} from '@orientim/core';
-import type { AccountState, RuleId, TxVersion } from '@orientim/core';
-import { bondingCurveOf as coreBondingCurveOf } from '@orientim/core';
+} from '@orientimhq/core';
+import type { AccountState, RuleId, TxVersion } from '@orientimhq/core';
+import { bondingCurveOf as coreBondingCurveOf } from '@orientimhq/core';
 import { bondingCurveOf, isBondingCurveRoute, verify } from '../src/index.ts';
 import { BONK, compileRaw, cuIxs, honest, JUP, LIFETIME, randomAddress, routeV2Data, scenario, USDC } from './fixtures.ts';
 import type { Scenario } from './fixtures.ts';

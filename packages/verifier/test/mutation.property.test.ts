@@ -24,8 +24,8 @@ import {
 import type { Address, Instruction, Transaction } from '@solana/kit';
 import { getApproveInstruction, getCloseAccountInstruction, getTransferCheckedInstruction } from '@solana-program/token';
 import { getTransferSolInstruction } from '@solana-program/system';
-import { COMPUTE_BUDGET_PROGRAM, compileProtectedSwap, JUPITER_PROGRAM, protectedInstructions, WSOL_MINT } from '@orientim/core';
-import type { TxVersion } from '@orientim/core';
+import { COMPUTE_BUDGET_PROGRAM, compileProtectedSwap, JUPITER_PROGRAM, protectedInstructions, WSOL_MINT } from '@orientimhq/core';
+import type { TxVersion } from '@orientimhq/core';
 import { jupiterDestination, jupiterFloor, jupiterRouteArgs, verify } from '../src/index.ts';
 import { BONK, compileRaw, cuIxs, LIFETIME, randomAddress, scenario, USDC, WIF } from './fixtures.ts';
 import type { Scenario } from './fixtures.ts';

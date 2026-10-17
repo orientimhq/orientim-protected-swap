@@ -8,8 +8,8 @@ import {
 import { getTransferSolInstruction } from '@solana-program/system';
 import {
   compileProtectedSwap, JUPITER_PROGRAM, protectedInstructions, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, WSOL_MINT,
-} from '@orientim/core';
-import type { TxVersion } from '@orientim/core';
+} from '@orientimhq/core';
+import type { TxVersion } from '@orientimhq/core';
 import { verify } from '../src/index.ts';
 import { BONK, compileRaw, cuIxs, LIFETIME, randomAddress, scenario, USDC, WIF } from './fixtures.ts';
 import type { Scenario } from './fixtures.ts';

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Address, Instruction } from '@solana/kit';
-import { JUPITER_PROGRAM } from '@orientim/core';
+import { JUPITER_PROGRAM } from '@orientimhq/core';
 import { verify } from '../src/index.ts';
 import { BONK, compileRaw, cuIxs, honest, randomAddress, scenario, USDC } from './fixtures.ts';
 

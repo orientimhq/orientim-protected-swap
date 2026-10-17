@@ -14,7 +14,7 @@ import {
   SOLANA_ERROR__RPC__TRANSPORT_HTTP_ERROR,
 } from '@solana/kit';
 import type { Address, KeyPairSigner, Rpc, SolanaRpcApi, Transaction } from '@solana/kit';
-import type { AccountState, ChainSnapshot } from '@orientim/core';
+import type { AccountState, ChainSnapshot } from '@orientimhq/core';
 
 export type SolanaRpc = Rpc<SolanaRpcApi>;
 

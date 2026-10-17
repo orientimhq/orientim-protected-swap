@@ -11,8 +11,8 @@ import { getCloseAccountInstruction, getCreateAssociatedTokenIdempotentInstructi
 import {
   ABSOLUTE_MAX_NETWORK_FEE_LAMPORTS, ataOf, buildPolicy, compileProtectedSwap, JUPITER_PROGRAM, MAX_FEE_BPS,
   TOKEN_2022_PROGRAM, TOKEN_PROGRAM, WSOL_MINT, withMinOut,
-} from '@orientim/core';
-import type { AccountState, RuleId, TxVersion } from '@orientim/core';
+} from '@orientimhq/core';
+import type { AccountState, RuleId, TxVersion } from '@orientimhq/core';
 import { memoRequired, verify } from '../src/index.ts';
 import { BONK, compileRaw, compileRawV1WithHeap, cuIxs, honest, JUP, LIFETIME, randomAddress, scenario, USDC } from './fixtures.ts';
 import type { Scenario } from './fixtures.ts';

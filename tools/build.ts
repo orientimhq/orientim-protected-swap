@@ -74,11 +74,11 @@ function declarations(): void {
   const run = spawnSync(process.execPath, ['node_modules/typescript/bin/tsc', '-p', 'tools/tsconfig.types.json', '--outDir', root], { encoding: 'utf8' });
   if (run.status !== 0) throw new Error(`declarations: ${run.stdout}${run.stderr}`);
   const WORKSPACE: Record<string, string> = {
-    '@orientim/core': 'packages/core/src/index.d.ts',
-    '@orientim/core/constants': 'packages/core/src/constants.d.ts',
-    '@orientim/core/types': 'packages/core/src/types.d.ts',
-    '@orientim/solana': 'packages/solana/src/index.d.ts',
-    '@orientim/verifier': 'packages/verifier/src/index.d.ts',
+    '@orientimhq/core': 'packages/core/src/index.d.ts',
+    '@orientimhq/core/constants': 'packages/core/src/constants.d.ts',
+    '@orientimhq/core/types': 'packages/core/src/types.d.ts',
+    '@orientimhq/solana': 'packages/solana/src/index.d.ts',
+    '@orientimhq/verifier': 'packages/verifier/src/index.d.ts',
   };
   const walk = (dir: string): string[] => readdirSync(dir).flatMap(f => {
     const p = join(dir, f);
@@ -89,7 +89,7 @@ function declarations(): void {
       if (spec.startsWith('.')) return `${lead}'${spec.replace(/\.ts$/, '.js')}'`;
       const target = WORKSPACE[spec];
       if (!target) {
-        if (spec.startsWith('@orientim/') || spec.startsWith('@solana-program/')) throw new Error(`${file}: ${spec} is not published`);
+        if (/^@orientimhq\/(core|solana|verifier)(\/|$)/.test(spec) || spec.startsWith('@solana-program/')) throw new Error(`${file}: ${spec} is not published`);
         return all;
       }
       let rel = relative(dirname(file), join(root, target)).replaceAll('\\', '/').replace(/\.d\.ts$/, '.js');

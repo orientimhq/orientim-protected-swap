@@ -20,8 +20,8 @@ import { getSetComputeUnitLimitInstruction, getSetComputeUnitPriceInstruction } 
 import {
   ataOf, buildPolicy, eventAuthorityOf, JUPITER_PROGRAM, protectedInstructions, routeAccountOf, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM,
   TOKEN_PROGRAM, withRouteRefund, withTakerRent, WSOL_MINT,
-} from '@orientim/core';
-import type { AccountState, ChainSnapshot, IntermediateAta, Policy, TxVersion } from '@orientim/core';
+} from '@orientimhq/core';
+import type { AccountState, ChainSnapshot, IntermediateAta, Policy, TxVersion } from '@orientimhq/core';
 
 export const USDC = address('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
 export const BONK = address('DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263');

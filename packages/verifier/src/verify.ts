@@ -22,8 +22,8 @@ import {
   MAX_CHOSEN_SLIPPAGE_BPS, MAX_COMPUTE_UNITS, MAX_CURVE_SLIPPAGE_BPS, MAX_ROUTE_KEPT_LAMPORTS, MAX_ROUTE_SLIPPAGE_BPS, MAX_TAKER_RENT_LAMPORTS, PUMP_AMM_PROGRAM, PUMP_CURVE_PROGRAM,
   FEE_TOKENS, MAX_FEE_BPS, MAX_INTERMEDIATE_ACCOUNTS, MAX_LOADED_ACCOUNTS_DATA_SIZE, MINT_SIZE, TOKEN_2022_PROGRAM, TOKEN_ACCOUNT_SIZE, TOKEN_PROGRAM, V1_MAX_ACCOUNTS,
   V1_SIZE_LIMIT, WSOL_MINT,
-} from '@orientim/core/constants';
-import type { AccountState, ChainSnapshot, Policy, RuleId, Verdict, Violation } from '@orientim/core/types';
+} from '@orientimhq/core/constants';
+import type { AccountState, ChainSnapshot, Policy, RuleId, Verdict, Violation } from '@orientimhq/core/types';
 import { parseInstruction } from './parse.ts';
 import type { Account, Parsed, RawInstruction } from './parse.ts';
 

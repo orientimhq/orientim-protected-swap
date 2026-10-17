@@ -13,8 +13,8 @@ import fc from 'fast-check';
 import type { Address } from '@solana/kit';
 import {
   compileProtectedSwap, feeFor, minimumForReceived, minimumReceived, outputFeeFor, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, WSOL_MINT,
-} from '@orientim/core';
-import type { TxVersion } from '@orientim/core';
+} from '@orientimhq/core';
+import type { TxVersion } from '@orientimhq/core';
 import { verify } from '../src/index.ts';
 import { BONK, LIFETIME, scenario, USDC } from './fixtures.ts';
 

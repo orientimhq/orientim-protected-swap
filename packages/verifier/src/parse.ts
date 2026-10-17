@@ -3,7 +3,7 @@ import type { AccountRole, Address } from '@solana/kit';
 import {
   ATA_PROGRAM, CLOSE_USER_VOLUME_ACCUMULATOR, COMPUTE_BUDGET_PROGRAM, PUMP_AMM_PROGRAM, PUMP_CURVE_PROGRAM, SYSTEM_PROGRAM,
   TOKEN_2022_PROGRAM, TOKEN_PROGRAM,
-} from '@orientim/core/constants';
+} from '@orientimhq/core/constants';
 
 export type Account = { address: Address; role: AccountRole };
 export type RawInstruction = {

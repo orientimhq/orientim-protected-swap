@@ -13,8 +13,8 @@ import { AccountRole } from '@solana/kit';
 import type { Address, Instruction } from '@solana/kit';
 import {
   JUPITER_PROGRAM, MAX_CHOSEN_SLIPPAGE_BPS, MAX_CURVE_SLIPPAGE_BPS, MAX_ROUTE_SLIPPAGE_BPS, PUMP_CURVE_PROGRAM, SYSTEM_PROGRAM,
-} from '@orientim/core';
-import type { AccountState } from '@orientim/core/types';
+} from '@orientimhq/core';
+import type { AccountState } from '@orientimhq/core/types';
 import { bondingCurveOf, verify } from '../src/index.ts';
 import { compileRaw, cuIxs, honest, routeV2Data, scenario } from './fixtures.ts';
 import type { Scenario } from './fixtures.ts';

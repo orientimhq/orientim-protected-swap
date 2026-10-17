@@ -496,8 +496,8 @@ describe('the skill holds its own state and limits against what it is handed', (
   });
 
   it("a route is a curve route for the agent's own floor only as the verifier judges one: the program and its token's writable curve", async () => {
-    const { bondingCurveOf } = await import('@orientim/verifier');
-    const { PUMP_CURVE_PROGRAM: CURVE_PROGRAM } = await import('@orientim/core/constants');
+    const { bondingCurveOf } = await import('@orientimhq/verifier');
+    const { PUMP_CURVE_PROGRAM: CURVE_PROGRAM } = await import('@orientimhq/core/constants');
     const quoteWith = (accounts: { pubkey: string; isWritable: boolean }[]) => ownQuote({
       inputMint: USDC, outputMint: BONK, amountIn: '1000000', taker: W,
       fetchImpl: (async (url: string) => Response.json({

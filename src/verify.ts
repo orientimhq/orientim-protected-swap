@@ -2,7 +2,7 @@
  * The agent's own check of a prepared swap, before its wallet signs.
  *
  * Orientim's server built the transaction; the agent must not take its word for what it does. This
- * runs Orientim's full verifier (`@orientim/verifier`, rules R1–R7) on the exact
+ * runs Orientim's full verifier (`@orientimhq/verifier`, rules R1–R7) on the exact
  * bytes, against chain state the agent reads from ITS OWN RPC, and against a policy the agent holds
  * to its own intent and limits. A compromised server, relay, DNS or impostor URL can then refuse or
  * delay a swap, never make the agent sign one that moves anything but the approved amount.
@@ -15,7 +15,7 @@
  * derives the key could collect them. Rent a route keeps is a cost
  * that does not come back, accepted only up to the agent's own limit (0.001 SOL by default).
  *
- * Part of @orientimhq/swap, with @orientim/verifier bundled in (tools/build.ts): only @solana/kit is a
+ * Part of @orientimhq/swap, with @orientimhq/verifier bundled in (tools/build.ts): only @solana/kit is a
  * dependency.
  */
 import {
@@ -24,14 +24,14 @@ import {
 } from '@solana/kit';
 import type { Address, Rpc, SolanaRpcApi, Transaction } from '@solana/kit';
 import { findAssociatedTokenPda } from '@solana-program/token';
-import { JUPITER_PROGRAM, PUMP_AMM_PROGRAM, PUMP_CURVE_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, USDC_MINT, WSOL_MINT } from '@orientim/core/constants';
-import type { ChainSnapshot, Policy } from '@orientim/core/types';
-import { balancesAfterSimulation, notOlderThan, readAccounts } from '@orientim/solana';
-import { hasPermanentDelegate, hasTransferFee, hasTransferHookAuthority, isBondingCurveRoute, jupiterRouteArgs, routeAccountFor, transferFeeOf, transferFeeOn, verify } from '@orientim/verifier';
-import type { TransferFee } from '@orientim/verifier';
+import { JUPITER_PROGRAM, PUMP_AMM_PROGRAM, PUMP_CURVE_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, USDC_MINT, WSOL_MINT } from '@orientimhq/core/constants';
+import type { ChainSnapshot, Policy } from '@orientimhq/core/types';
+import { balancesAfterSimulation, notOlderThan, readAccounts } from '@orientimhq/solana';
+import { hasPermanentDelegate, hasTransferFee, hasTransferHookAuthority, isBondingCurveRoute, jupiterRouteArgs, routeAccountFor, transferFeeOf, transferFeeOn, verify } from '@orientimhq/verifier';
+import type { TransferFee } from '@orientimhq/verifier';
 
 /** When "no record" proves a transaction never landed; `confirm` uses them. */
-export { pastProof, provesNeverLanded, STATUS_CACHE_BLOCKS } from '@orientim/solana';
+export { pastProof, provesNeverLanded, STATUS_CACHE_BLOCKS } from '@orientimhq/solana';
 
 /**
  * Orientim's treasury wallet, pinned like the fee: unless the agent names another, Orientim's fee may go
