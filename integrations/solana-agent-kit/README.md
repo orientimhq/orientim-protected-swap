@@ -8,6 +8,24 @@ own RPC** (the kit's connection) before the agent's wallet signs it. The swap is
 makes; this package only hands it the kit's wallet and RPC. Read
 [the guide](https://github.com/orientimhq/orientim-protected-swap/blob/main/skills/orientim-protected-swap/reference/GUIDE.md) for what is checked and why.
 
+> **Status:** not yet published to npm. Until it is, build it from this repository, as below.
+
+## Install from source
+
+The plugin needs `@orientimhq/swap` 2.1.1, its peer dependency, beside it. Build both from a clone and install the
+two tarballs in your app:
+
+```bash
+git clone https://github.com/orientimhq/orientim-protected-swap.git && cd orientim-protected-swap
+npm ci --ignore-scripts && npm run build && npm pack --pack-destination /tmp
+cd integrations/solana-agent-kit
+npm ci --ignore-scripts --legacy-peer-deps && npm run build && npm pack --pack-destination /tmp
+
+cd /path/to/your/app
+npm install /tmp/orientimhq-swap-*.tgz /tmp/orientimhq-solana-agent-kit-*.tgz \
+  solana-agent-kit@2.0.10 @solana/web3.js@1.98.4 zod@3.25.76
+```
+
 ## Use
 
 ```ts

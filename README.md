@@ -41,6 +41,22 @@ server, relay or DNS can refuse or delay a swap; it cannot make your wallet sign
 anything else. Orientim's server is not open source and is not in this repository: the check is
 built so that you do not have to trust it.
 
+## What it does not protect
+
+- **The key.** A key file the swap command can read, the agent can read too. Keep the key in a signer
+  the agent does not run ("Safe setup for an agent" in the guide).
+- **Other tools.** The check covers the swaps made through this package. An agent with a transfer
+  tool, another wallet tool or direct access to the signer can move funds without it; the Solana
+  Agent Kit plugin protects its own action, not the kit's other tools.
+- **Your RPC.** Chain state is read from the RPC you give it, and that RPC is trusted for it. Use one
+  you control or chose.
+- **The tokens.** `tokenRisk` shows what a token's issuer can still do (a permanent delegate, a freeze
+  or mint authority); it does not remove that power.
+- **The price within your tolerance,** and refusals or delays: Orientim's server can refuse or delay a
+  swap, and sees the addresses and amounts of the swaps you ask for.
+- **Code that skips the check.** A client that calls the API without running the verifier is trusting
+  Orientim's server with the whole wallet.
+
 ## Repository layout
 
 ```
@@ -54,7 +70,9 @@ skills/orientim-protected-swap/   the skill: SKILL.md, its guide and the API ref
 examples/swap.ts                  one protected swap from TypeScript
 tools/build.ts                    builds dist/ (the package) and dist/orientim.mcpb
 tools/mcp/                        the README and icon of orientim.mcpb, and a smoke test of the server
+integrations/solana-agent-kit/    a Solana Agent Kit plugin with one action, protectedSwap
 test/                             tests of the client, the commands and the MCP server
+.github/                          CI, the release workflow, and issue and pull request templates
 ```
 
 ## Build and test
@@ -103,6 +121,10 @@ the same `dist/` from any machine.
 You need an API key from Orientim (`ORIENTIM_API_KEY`, issued at once to a wallet that signs one
 message: see the skill's guide) and an RPC of your own (`SOLANA_RPC_URL`). Use of the Orientim service is
 governed by its [Terms of Use](https://orientim.com/terms).
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). This project follows a [code of conduct](CODE_OF_CONDUCT.md).
 
 ## Security
 
