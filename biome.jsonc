@@ -26,8 +26,7 @@
         "useSimplifiedLogicExpression": "off" // 22
       },
       "correctness": {
-        "noUndeclaredDependencies": "off", // 86
-        "noUnusedImports": "off" // 1
+        "noUndeclaredDependencies": "off" // 86
       },
       "performance": {
         "noAwaitInLoops": "off", // 38
@@ -45,7 +44,6 @@
         "useConsistentBuiltinInstantiation": "off", // 7
         "useConsistentMethodSignatures": "off", // 17
         "useConsistentTypeDefinitions": "off", // 68
-        "useConst": "off", // 2
         "useDefaultSwitchClause": "off", // 2
         "useDestructuring": "off", // 30
         "useErrorCause": "off", // 9
