@@ -285,7 +285,7 @@ same time overlap) and `readyToSign`, the whole wait, without changing the signi
    transaction's id is now known: it is the wallet's signature (`getSignatureFromTransaction`).
    **Keep it before finalize** (`protectedSwap`'s `onSigned`); it is how you learn what happened if an
    answer is lost or the process stops.
-5. **Finalize** promptly: the transaction lives 150 blocks, about 40 seconds at today's block times.
+5. **Finalize** promptly: the transaction lives 150 blocks, about 60 to 90 seconds depending on block times.
    With fewer than 30 blocks left (`lastValidBlockHeight` minus your RPC's block height) prepare
    again instead; `protectedSwap` does. `POST /api/v1/finalize` with `{ ticket, signedTransaction }`.
    Orientim looks the transaction up first (a repeated finalize answers for the same transaction and
@@ -429,7 +429,9 @@ their own copy, knowingly; everything else is still checked.
   signed bytes may always be asked again: they land at most once. `orientim finalize` asked again
   for a swap it kept answers with that swap's signature and outcome, never "not sent"; in code,
   `resumeSigned` does the same for a kept record.
-- **Orientim's API keeps no orders** (no database; only short-lived holds and rate-limit counts): it
+- **Orientim's API keeps no orders** and nothing about your funds or keys (only short-lived records, ten
+  minutes at most: the message each one-time key signed and the swap in flight into each output
+  account; and rate-limit counts): it
   cannot tell two transactions for the same order apart. Your order book is what does, so every worker that may take an order must share it.
 - **The chain's answer is the answer.** A record that cannot be written or removed after a swap was
   sent is reported beside its outcome (`bookkeepingError`), with the signature, never as "not sent".

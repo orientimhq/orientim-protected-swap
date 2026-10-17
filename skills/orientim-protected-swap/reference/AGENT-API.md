@@ -160,8 +160,8 @@ A prepare answers within 45 seconds in all; one that takes longer, because Jupit
 }
 ```
 
-All amounts are strings in base units. The transaction lives 150 blocks, about 40 seconds at
-today's block times (until `lastValidBlockHeight`; `blocksLeft` is what was left when prepare
+All amounts are strings in base units. The transaction lives 150 blocks, about 60 to 90 seconds
+depending on block times (until `lastValidBlockHeight`; `blocksLeft` is what was left when prepare
 answered). Verify, sign and finalize promptly; with fewer than 30 blocks left, prepare again instead.
 `contextSlot` is the slot Orientim built and verified the transaction at: the check waits a few
 seconds for your RPC to reach it, so a node a few slots behind does not refuse a swap built on state
@@ -432,7 +432,7 @@ one to ask") lists what to do with each code.
 | 426 | `skill-outdated` | This copy of the skill is older than Orientim serves (`minimum`). Download the current one; a swap already signed still finalizes. |
 | 429 | `rate-limited` | Too many requests for this key (per wallet for a self-serve key). Wait `Retry-After` seconds. |
 | 500 | `internal` | Something unexpected failed; nothing was signed by Orientim or sent. Retry later. |
-| 503 | `busy`, `unavailable` | Jupiter or Orientim's Solana RPC is rate limited, overloaded or silent (from finalize: Orientim could not read whether the transaction was already sent, or could not reach the state its instances share). Wait `Retry-After` seconds and retry. |
+| 503 | `busy`, `unavailable` | Jupiter or Orientim's Solana RPC is rate limited, overloaded or silent (from finalize: Orientim could not read whether the transaction was already sent). Wait `Retry-After` seconds and retry. |
 | 503 | `fee-unavailable` | Orientim cannot collect its fee on this swap right now, so it built nothing. Wait `Retry-After` (60) seconds and retry. |
 | 503 | `paused` | Orientim has paused protected swaps, and issues no API keys meanwhile. Your funds are not affected. A transaction already on chain is still reported by finalize. |
 | 503 | `route-format` | Jupiter changed its swap instruction and Orientim refuses what it cannot read. Nothing builds until Orientim is updated: wait `Retry-After` (300) seconds, not less. |
@@ -450,7 +450,7 @@ The key endpoints answer, besides `400 bad-request`:
 ## Direct API integration contract
 
 The API key grants access, not proof that your bot checked the transaction. The optional skill-version
-header is a compatibility hint, not attestation. Orientim keeps no order database: it does not know
+header is a compatibility hint, not attestation. Orientim keeps no orders: it does not know
 your order ids, does not deduplicate your orders and cannot tell you later what became of a ticket;
 the chain and your own store are the record. A bot using `prepare` and `finalize` directly must:
 
@@ -491,10 +491,10 @@ Keep an agent wallet funded only for the work it is allowed to do.
   collect what stayed under it: that is why nothing may, and why the skill's check simulates the
   transaction on your RPC and refuses one that leaves anything under the key or any account the
   route opened, and rent that does not come back beyond your limit.
-- It keeps no database and nothing about your funds or keys. What it keeps is short-lived, in Redis:
-  the one message each one-time key signed and the swap in flight into each output account (ten
-  minutes at most), the rate limits' counts, and notes on its RPC's health. Two prepares for the same
+- It keeps no orders and nothing about your funds or keys. What it keeps is short-lived: the one
+  message each one-time key signed and the one swap in flight into each output account, for ten
+  minutes at most, and rate-limit counts. Two prepares for the same
   order are two different transactions to it. One swap per order is kept by your order book, not by
   Orientim.
-- It can refuse or delay: a signed transaction it holds back simply expires, in about 40 seconds.
+- It can refuse or delay: a signed transaction it holds back simply expires, within 150 blocks (about 60 to 90 seconds).
 - It sees the addresses and amounts of the swaps you ask for, as any swap API does.
