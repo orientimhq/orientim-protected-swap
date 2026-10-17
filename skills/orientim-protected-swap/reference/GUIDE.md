@@ -429,8 +429,8 @@ their own copy, knowingly; everything else is still checked.
   signed bytes may always be asked again: they land at most once. `orientim finalize` asked again
   for a swap it kept answers with that swap's signature and outcome, never "not sent"; in code,
   `resumeSigned` does the same for a kept record.
-- **Orientim's API keeps no state** (no database): it cannot tell two transactions for the same order
-  apart. Your order book is what does, so every worker that may take an order must share it.
+- **Orientim's API keeps no orders** (no database; only short-lived holds and rate-limit counts): it
+  cannot tell two transactions for the same order apart. Your order book is what does, so every worker that may take an order must share it.
 - **The chain's answer is the answer.** A record that cannot be written or removed after a swap was
   sent is reported beside its outcome (`bookkeepingError`), with the signature, never as "not sent".
 - **Give every order an id** (`intent.id`, `orientim swap --id`), the same on every retry of that

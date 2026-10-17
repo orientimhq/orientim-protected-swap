@@ -31,6 +31,8 @@ From the 16 October 2026 final audit:
 - README and GUIDE: `npm audit signatures` checks signatures, not who built a version; the attested
   tarball is checked with `gh attestation verify`.
 - `parsePolicy(object, source)` checks a policy given in code as strictly as `loadPolicy` checks a file.
+- AGENT-API and GUIDE say what Orientim's API keeps: no orders and nothing about funds or keys, only
+  short-lived holds (one message per one-time key, one swap per output account) and rate-limit counts.
 - A plugin for Solana Agent Kit lives in `integrations/solana-agent-kit` (`@orientimhq/solana-agent-kit`,
   not yet published): one action, `protectedSwap`, that makes the same swap with the kit's wallet and RPC.
   The model's `slippageBps` is held to 300 bps, the MCP server's ceiling, unless the policy's

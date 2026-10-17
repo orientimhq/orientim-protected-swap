@@ -491,7 +491,10 @@ Keep an agent wallet funded only for the work it is allowed to do.
   collect what stayed under it: that is why nothing may, and why the skill's check simulates the
   transaction on your RPC and refuses one that leaves anything under the key or any account the
   route opened, and rent that does not come back beyond your limit.
-- It keeps no state (no database): two prepares for the same order are two different transactions
-  to it. One swap per order is kept by your order book, not by Orientim.
+- It keeps no database and nothing about your funds or keys. What it keeps is short-lived, in Redis:
+  the one message each one-time key signed and the swap in flight into each output account (ten
+  minutes at most), the rate limits' counts, and notes on its RPC's health. Two prepares for the same
+  order are two different transactions to it. One swap per order is kept by your order book, not by
+  Orientim.
 - It can refuse or delay: a signed transaction it holds back simply expires, in about 40 seconds.
 - It sees the addresses and amounts of the swaps you ask for, as any swap API does.
