@@ -137,7 +137,11 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: sha256-*
-          merge-multiple: true
+          path: ${{ runner.temp }}/lists
       - run: |
-          test -s sha256-ubuntu-latest.txt && test -s sha256-macos-latest.txt
-          diff -u sha256-ubuntu-latest.txt sha256-macos-latest.txt
+          cd "$RUNNER_TEMP/lists"
+          find . -type f | LC_ALL=C sort
+          ubuntu=$(find . -type f -name 'sha256-ubuntu-latest.txt' | head -1)
+          macos=$(find . -type f -name 'sha256-macos-latest.txt' | head -1)
+          test -s "$ubuntu" && test -s "$macos"
+          diff -u "$ubuntu" "$macos"
