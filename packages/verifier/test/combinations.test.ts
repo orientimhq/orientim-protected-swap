@@ -39,8 +39,7 @@ describe('every combination the compiler builds passes the verifier', () => {
     await fc.assert(
       fc.asyncProperty(combination, async c => {
         const [input, output] = c.pair;
-        // The fixture's hops are JUP then BONK; a route never hops through its own input token (the
-        // pipeline leaves E_in out of the hops it recreates).
+        // The fixture's hops are JUP then BONK; a route never hops through its own input token.
         fc.pre(!([JUP, BONK] as Address[]).slice(0, c.intermediates).includes(input));
         const taxing = c.taxingInput && input !== WSOL_MINT;
         const sc = await scenario({

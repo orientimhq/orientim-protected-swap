@@ -1,7 +1,7 @@
 /**
  * The MCP server (src/mcp.ts, `orientim mcp`): the protocol, the four tools, whole
  * tokens to base units and back, a swap tied to the quote the user saw, and answers that never carry
- * an RPC's key. The swap itself is the example's command line, tested in skill.test.ts; here it is a
+ * an RPC's key. The swap itself is `orientim swap`, tested in skill.test.ts; here it is a
  * fake that answers as the command does.
  */
 import { spawn, spawnSync } from 'node:child_process';
@@ -470,7 +470,7 @@ describe('orientim_swap', () => {
   });
 });
 
-describe('one request, one swap (14 October 2026 review)', () => {
+describe('one request, one swap', () => {
   it("gives a swap's answer the client stopped waiting for with the next call, before anything new", async () => {
     let finish: (r: Run) => void = () => {};
     const h = harness([() => ok(dryRun()), () => new Promise<Run>(r => { finish = r; })]);
@@ -750,7 +750,7 @@ describe('orientim mcp', () => {
   }, 30_000);
 });
 
-describe('a quote outlives the server (15 October 2026 review)', () => {
+describe('a quote outlives the server', () => {
   const swapped = () => ok(JSON.stringify({ signature: SIG, outcome: 'confirmed', refusal: null, meaning: 'Swapped.', amounts: {}, received: '1497000' }));
   /** The store reads the harness's own day, so that its quotes are not taken for long expired. */
   const fileQuoteStore = (dir: string, now = () => Date.UTC(2026, 9, 11, 12, 0)) => quoteFiles(dir, now);

@@ -75,7 +75,7 @@ const harvestWithheld = (mint: Address, account: Address): Instruction => ({
 
 /**
  * The full instruction list in execution order: trusted setup, the one untrusted swap, trusted
- * cleanup (plan, section 5). W signs only the trusted instructions; E is the swap authority.
+ * cleanup. W signs only the trusted instructions; E is the swap authority.
  */
 export function protectedInstructions(
   input: Pick<CompileInput, 'policy' | 'swapInstruction' | 'intermediates' | 'outputBalanceBefore'>,

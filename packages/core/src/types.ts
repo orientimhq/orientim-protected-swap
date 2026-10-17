@@ -2,7 +2,7 @@ import type { Address } from '@solana/kit';
 
 export type TxVersion = 0 | 1;
 
-/** A: SPL -> SOL, B: SOL -> SPL, C: SPL -> SPL (plan, section 5). */
+/** A: SPL -> SOL, B: SOL -> SPL, C: SPL -> SPL. */
 export type Variant = 'A' | 'B' | 'C';
 
 /** Which side of the swap the Orientim fee is taken from, or `sol` from the wallet; see `Policy.feeSide`. */

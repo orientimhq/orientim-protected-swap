@@ -7,7 +7,7 @@
  * Orientim's full verifier on the exact bytes, against chain state from its own RPC, with the policy
  * held to its own intent and limits. A compromised server, relay or impostor URL can then refuse or
  * delay a swap, never make the wallet sign one that moves more than the approved amount. The price
- * is held to a floor of the agent's own: `--min-out`, or one this script asks Jupiter for itself.
+ * is held to a floor of the agent's own: `--min-out`, or one this module asks Jupiter for itself.
  *
  * After signing, the chain is the only witness. The transaction's id is the wallet's own signature,
  * known before finalize; the outcome is read for that id on your RPC, whatever finalize answers or

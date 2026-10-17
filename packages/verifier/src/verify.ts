@@ -27,7 +27,7 @@ import type { AccountState, ChainSnapshot, Policy, RuleId, Verdict, Violation } 
 import { parseInstruction } from './parse.ts';
 import type { Account, Parsed, RawInstruction } from './parse.ts';
 
-// NOTE: this module must not import the compiler or the policy builder (plan, section 10):
+// NOTE: this module must not import the compiler or the policy builder (architecture.test.ts):
 // it re-derives every expectation itself so that a compiler bug cannot hide from it. Economic
 // limits (fee, F_max) are checked against constants.ts, never only against the policy.
 //
@@ -36,7 +36,7 @@ import type { Account, Parsed, RawInstruction } from './parse.ts';
 // there: every asset whose movement needs W's signature (SPL transfers, SOL, stake, closes,
 // authorities) is out of reach even if its account were passed. R1's address filter only has to
 // cover what moves WITHOUT W's signature: token accounts with a pre-existing delegate, and W_out,
-// which is made safe by a trusted Revoke. Relaxing R1 or R6 requires re-reading this note.
+// which is made safe by a trusted Revoke. Changing R1 or R6 must preserve this argument.
 
 const ata = async (owner: Address, mint: Address, tokenProgram: Address = TOKEN_PROGRAM) =>
   (await findAssociatedTokenPda({ owner, mint, tokenProgram }))[0];
@@ -274,9 +274,8 @@ export function unsupportedExtension(data: Uint8Array, options: { allowTransferF
 
 /**
  * Does this token account require a memo before every incoming transfer (extension 8)? Such an
- * account would make the swap's own transfer fail, so the pipeline refuses it up front rather than
- * letting four route repairs discover it. Account extensions sit after the account-type byte, as
- * on a mint, but with AccountType::Account.
+ * account would make the swap's own transfer fail, so the verifier refuses it up front (R1).
+ * Account extensions sit after the account-type byte, as on a mint, but with AccountType::Account.
  */
 export function memoRequired(data: Uint8Array): boolean {
   if (data.length <= TOKEN_ACCOUNT_SIZE || data[TOKEN_ACCOUNT_SIZE] !== 2) return false;

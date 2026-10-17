@@ -313,7 +313,7 @@ describe('the skill holds its own state and limits against what it is handed', (
     expect(() => loadPolicy(file)).toThrow('absolute path');
   });
 
-  it('the example exits 0 only for a confirmed swap, and 3 for what must be settled first', () => {
+  it('orientim swap exits 0 only for a confirmed swap, and 3 for what must be settled first', () => {
     expect(exitCodeOf({ outcome: 'confirmed' })).toBe(0);
     for (const outcome of ['failed', 'rejected', 'expired'] as const) expect(exitCodeOf({ outcome })).toBe(1);
     expect(exitCodeOf({ outcome: 'unknown' })).toBe(3);
@@ -675,7 +675,7 @@ describe('the daily limit frees only what the chain proves never left the wallet
   });
 });
 
-describe('a yes and a lock that stay their own (14 October 2026 review)', () => {
+describe('a yes and a lock that stay their own', () => {
   it('a swap that lands uses up only the yes it was held to, never a newer one', () => {
     const dir = tmp();
     const key = { owner: W, inputMint: USDC, outputMint: BONK, amountIn: '1000000' };
@@ -704,7 +704,7 @@ describe('a yes and a lock that stay their own (14 October 2026 review)', () => 
   });
 });
 
-describe('the 15 October 2026 review', () => {
+describe('locks after a restart, transfer fees and retryable answers', () => {
   it.runIf(!!bootId())('a lock written before this machine restarted is taken at once, whatever process has its pid now', () => {
     const dir = tmp();
     // The parent process lives: only the boot id says its lock is from before the restart.

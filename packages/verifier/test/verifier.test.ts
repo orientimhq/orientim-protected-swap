@@ -63,7 +63,7 @@ describe('honest protected swaps are accepted', () => {
   }
 });
 
-describe('T2: mutation catalogue (plan, section 9)', () => {
+describe('mutation catalogue', () => {
   it('M1: W in the swap instruction → R1', async () => {
     const s = await scenario();
     const v = await verify(mutated(s, withSwapAccounts(s, [{ address: s.W, role: AccountRole.WRITABLE }])), s.policy, s.snapshot);

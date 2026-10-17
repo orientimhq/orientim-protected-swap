@@ -9,7 +9,7 @@ import { sameBytes, wait, withinTime } from './util.ts';
 import { pastProof, provesNeverLanded } from './verify.ts';
 
 /**
- * The transaction lives 150 blocks, about a minute (60 s at 400 ms a block, more when slots are skipped). Finalize only with this many
+ * The transaction lives 150 blocks, about 60 to 90 seconds (60 s at 400 ms a block, more when slots are skipped). Finalize only with this many
  * left, so that it can still land; otherwise prepare again.
  */
 export const MIN_BLOCKS_TO_FINALIZE = 30n;

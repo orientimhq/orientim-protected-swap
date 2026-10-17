@@ -79,7 +79,7 @@ export type Prepared = {
   wallet: string;
   temporaryAuthority: string;
   lastValidBlockHeight: string;
-  /** Blocks left in the transaction's life when prepare answered (150 at most, about a minute). */
+  /** Blocks left in the transaction's life when prepare answered (150 at most, about 60 to 90 seconds). */
   blocksLeft?: string;
   /** The slot Orientim read the chain at to build it: the check reads your RPC at least that recent. */
   contextSlot?: string;

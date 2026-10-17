@@ -15,8 +15,7 @@ export function isApiKeyMessage(message: unknown, apiUrl: string, address: strin
   if (typeof message !== 'string' || message.length > 1_000 || !/^[\x20-\x7e\n]+$/.test(message)) return false;
   const host = new URL(apiUrl).host;
   const lines = message.split('\n');
-  // Every field, in the order Orientim's server writes them, as the site checks it
-  // (apps/web/lib/client/keyMessage.ts): the same rule on both sides.
+  // Every field, in the order Orientim's server writes them; the server applies the same rule.
   const field = (i: number, name: string, value: RegExp) => {
     const m = new RegExp(`^${name}: (.+)$`).exec(lines[i] ?? '');
     return m !== null && value.test(m[1]) ? m[1] : null;

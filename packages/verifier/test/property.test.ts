@@ -25,7 +25,7 @@ const SEED = process.env.ORIENTIM_FUZZ_SEED ? Number(process.env.ORIENTIM_FUZZ_S
 const PARAMS = { numRuns: RUNS, ...(SEED !== undefined ? { seed: SEED } : {}) };
 const PAIRS: [Address, Address][] = [[USDC, WSOL_MINT], [WSOL_MINT, USDC], [USDC, BONK]];
 
-// Token-2022 extension sets a protected swap can live with, and ones it must refuse (section 0f).
+// Token-2022 extension sets a protected swap can live with, and ones it must refuse.
 const ALLOWED_EXTENSIONS: [number, number][][] = [
   [], [[18, 64]], [[18, 64], [19, 120]], [[14, 64]], [[3, 32], [18, 64]], [[4, 97]], [[20, 64], [21, 80]],
   // An empty permanent-delegate slot names nobody; a confidential-transfer fee never touches a public transfer.
@@ -69,7 +69,7 @@ const build = (s: Shape) =>
 const compile = (sc: Scenario, ixs: Instruction[], version: TxVersion, cu = cuIxs()) =>
   compileRaw(sc.W, version === 0 ? [...cu, ...ixs] : ixs, version, version === 0 ? sc.lookupTables : undefined);
 
-describe('T3: property tests', () => {
+describe('property tests', () => {
   it('a Token-2022 mint with an extension we refuse never passes', async () => {
     await fc.assert(
       fc.asyncProperty(shape, fc.constantFrom(...REFUSED_EXTENSIONS), fc.boolean(), async (s, refused, onInput) => {

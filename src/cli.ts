@@ -199,7 +199,7 @@ function feePayerOf(signedTransaction: string): string | null {
   }
 }
 
-/** How long after it was recorded pending an order's transaction can surely no longer land: its blockhash lives about a minute. */
+/** How long after it was recorded pending an order's transaction can surely no longer land: its blockhash lives 150 blocks, about 60 to 90 seconds. */
 const ORDER_SETTLED_AFTER_MS = 10 * 60_000;
 
 /**
@@ -529,7 +529,7 @@ async function runCommand(command: string, input: unknown, deps: CliDeps): Promi
         ? await receivedFor(deps.rpc, result.signature, prepared, { requestTimeoutMs: deps.requestTimeoutMs, pollMs: deps.pollMs })
         : null;
       return {
-        // The example's own rule: a confirmed swap whose record could not be updated is 3, settle first.
+        // orientim swap's rule: a confirmed swap whose record could not be updated is 3, settle first.
         code: exitCodeOf({ outcome: result.outcome as Parameters<typeof exitCodeOf>[0]['outcome'], bookkeepingError }),
         output: {
           ok: result.outcome === 'confirmed', signature: result.signature, outcome: result.outcome,

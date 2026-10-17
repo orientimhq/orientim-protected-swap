@@ -26,7 +26,7 @@ export const V1_MAX_ACCOUNTS = 64;
 export const MAX_COMPUTE_UNITS = 1_400_000;
 /**
  * Base fee per signature. A cluster parameter, not a constant of nature: if it ever changes, R4
- * would understate the fee. The pipeline also cross-checks with the RPC's getFeeForMessage.
+ * would understate the fee.
  */
 export const LAMPORTS_PER_SIGNATURE = 5000n;
 export const TOKEN_ACCOUNT_SIZE = 165;
@@ -40,10 +40,9 @@ export const MINT_SIZE = 82;
 export const MAX_INTERMEDIATE_ACCOUNTS = 4;
 export const BPS_DENOMINATOR = 10_000n;
 
-// Ceilings the verifier enforces whatever the configuration says. The fee and
-// F_max reach the browser from the deployment; these limits do not, so a compromised backend or a
-// config bug cannot push past them.
-export const MAX_FEE_BPS = 30n; // 0.3% ceiling, the same as the server's and the skill's; the product fee is 0.25%
+// Ceilings the verifier enforces whatever the policy says, so that a compromised server or a
+// configuration error cannot push past them.
+export const MAX_FEE_BPS = 30n; // 0.3% ceiling; Orientim's fee is 0.25%
 export const ABSOLUTE_MAX_NETWORK_FEE_LAMPORTS = 1_000_000n; // 0.001 SOL
 /**
  * The most W may send E for rent of an account the route opens in E's name. Both of Pump.fun's
@@ -79,7 +78,7 @@ export const PUMP_CURVE_PROGRAM = address('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5u
 export const PUMP_AMM_PROGRAM = address('pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA');
 /**
  * close_user_volume_accumulator, the same Anchor discriminator in both Pump programs' IDLs: closes
- * the account a Pump market opens for every buyer and returns its lamports to the buyer, who in a
+ * the account a Pump market opens for every buyer and returns its lamports to the buyer, who in an
  * Orientim swap is E. Accounts: [user (signer), account, event authority, program].
  */
 export const CLOSE_USER_VOLUME_ACCUMULATOR = [249, 69, 164, 218, 150, 103, 84, 138] as const;
@@ -90,4 +89,6 @@ export const MAX_LOADED_ACCOUNTS_DATA_SIZE = 64 * 1024 * 1024;
  * Only an upper bound for display when the RPC cannot answer: the live value comes from
  * getMinimumBalanceForRentExemption.
  */
-export const TOKEN_ACCOUNT_RENT_UPPER_ORIENTIM_LAMPORTS = 2_039_280n;
+export const TOKEN_ACCOUNT_RENT_UPPER_BOUND_LAMPORTS = 2_039_280n;
+/** @deprecated Use TOKEN_ACCOUNT_RENT_UPPER_BOUND_LAMPORTS. */
+export const TOKEN_ACCOUNT_RENT_UPPER_ORIENTIM_LAMPORTS = TOKEN_ACCOUNT_RENT_UPPER_BOUND_LAMPORTS;

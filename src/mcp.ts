@@ -965,7 +965,7 @@ async function issueKey(signer: KeyPairSigner): Promise<string> {
     const out = rawJsonOf(run.stdout);
     return out?.ok === true ? out : new Error(typeof out?.error === 'string'
       ? `${typeof out.code === 'string' ? out.code : 'api-key'}: ${withoutSecrets(out.error)}`
-      : `api-key: ${logOf(run.stderr).at(-1) ?? `orientim-verify exited ${run.code}`}`);
+      : `api-key: ${logOf(run.stderr).at(-1) ?? `orientim exited ${run.code}`}`);
   };
   const challenge = said(await runCommand('verify', ['key-challenge'], { input: JSON.stringify({ wallet: signer.address }) }));
   if (challenge instanceof Error) throw challenge;
@@ -990,7 +990,7 @@ async function walletKey(): Promise<{ key: string; wallet: string }> {
   return { key: await issuing, wallet: signer.address };
 }
 
-/** The example's command line with the wallet's API key: the owner's, or the one this server keeps. */
+/** `orientim` with the wallet's API key: the owner's, or the one this server keeps. */
 async function runWithKey(command: 'swap' | 'verify', args: string[], options: RunOptions): Promise<Run> {
   if (command !== 'swap' || process.env.ORIENTIM_API_KEY) return runCommand(command, args, options);
   let key: string;

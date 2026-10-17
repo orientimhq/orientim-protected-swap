@@ -4,7 +4,7 @@ import { JUPITER_PROGRAM } from '@orientim/core';
 import { verify } from '../src/index.ts';
 import { BONK, compileRaw, cuIxs, honest, randomAddress, scenario, USDC } from './fixtures.ts';
 
-describe('the 16 October 2026 review: what the verifier takes from the policy and the bytes', () => {
+describe('what the verifier takes from the policy and the bytes', () => {
   it('a policy naming another program as Jupiter does not switch off the route checks (R2)', async () => {
     const s = await scenario({ input: USDC, output: BONK });
     const other = await randomAddress();

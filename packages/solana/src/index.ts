@@ -297,7 +297,7 @@ const base64Size = (s: string | undefined) =>
   s ? (s.length * 3) / 4 - (s.endsWith('==') ? 2 : s.endsWith('=') ? 1 : 0) : 0;
 
 /**
- * Simulation answers "will it execute?" — never "is it safe?" (plan, section 15). With
+ * Simulation answers "will it execute?" — never "is it safe?". With
  * `minContextSlot`, it runs on state at least that recent: a load-balanced provider cannot answer
  * from a node behind the snapshot the verifier read.
  */

@@ -19,7 +19,7 @@ export function tokenAmountOf(data: Uint8Array | null | undefined): bigint {
  * A Token-2022 one adds an account-type byte, the ImmutableOwner marker the ATA program always
  * sets, and one account-side extension for each mint extension that needs one: a transfer fee
  * withholds into the account (8 bytes), a transfer hook marks it (1), a non-transferable or
- * pausable mint flags it (0). Checked against mainnet in T12: PYUSD and USDG 187, CASH 175.
+ * pausable mint flags it (0). Checked against mainnet (September 2026): PYUSD and USDG 187, CASH 175.
  */
 export function tokenAccountSizeFor(program: Address, mintData: Uint8Array | null | undefined): number {
   if (program !== TOKEN_2022_PROGRAM) return TOKEN_ACCOUNT_SIZE;
@@ -147,7 +147,7 @@ export function withRouteRefund(policy: Policy, refund: RouteRefund | null): Pol
   };
 }
 
-/** Turns an intent into the exact policy the compiler builds and the verifier enforces (plan, section 1). */
+/** Turns an intent into the exact policy the compiler builds and the verifier enforces. */
 export async function buildPolicy(args: {
   intent: Intent;
   ephemeral: Address;
