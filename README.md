@@ -1,5 +1,8 @@
 # Orientim protected swap
 
+[![CI](https://github.com/orientimhq/orientim-protected-swap/actions/workflows/ci.yml/badge.svg)](https://github.com/orientimhq/orientim-protected-swap/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/@orientimhq/swap)](https://www.npmjs.com/package/@orientimhq/swap)
+
 Swap Solana tokens from a wallet an AI agent or a bot controls, so that the swap's route can only
 touch the amount you approve. [Orientim](https://orientim.com) builds the transaction through
 Jupiter; `@orientimhq/swap` checks it on **your own RPC**, with the verifier in this repository, before
@@ -13,6 +16,9 @@ npx -y @orientimhq/swap@<version> mcp                     # the MCP server, for 
 npx -y @orientimhq/swap@<version> swap --in ... --dry-run  # one swap from the command line
 npm install --save-exact @orientimhq/swap@<version>       # import { protectedSwap } from '@orientimhq/swap'
 ```
+
+`<version>` is a released version, such as the latest on npm; pin the one you checked ("Check your
+copy" below).
 
 | You are | Start with |
 | --- | --- |
