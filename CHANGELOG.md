@@ -1,8 +1,7 @@
 # Changelog
 
 Notable changes to `@orientimhq/swap`, in the format of
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Earlier versions are tagged in this
-repository.
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Earlier versions are on npm.
 
 ## 3.0.0 (2026-10-21)
 
@@ -30,6 +29,9 @@ repository.
 - `tokenRisk` reports a mint whose issuer can still turn on a transfer hook.
 - `parsePolicy(object, source)` checks a policy given in code.
 - `server.json` and `mcpName` for the MCP Registry.
+- When Jupiter gives no quote for a token still on its Pump.fun bonding curve (a token in its first
+  seconds, not listed yet), your own price is read from the curve on your RPC: `curvePrice`, used by
+  `ownQuote` when given `rpc` and by every swap.
 
 ### Fixed
 

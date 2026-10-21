@@ -205,6 +205,7 @@ export async function ownFloor(
     ceilings: { maxSlippageBps: owner.maxSlippageBps, maxBelowBps: owner.maxBelowBps },
     inputTax,
     allowUnknownImpact: owner.allowUnknownPriceImpact === true,
+    rpc: deps.rpc,
   });
   // Quote in parallel with the transfer-fee read; requote only if the input token charges a fee.
   const [tax, untaxed] = await Promise.allSettled([inputTransferFee(deps.rpc, intent.inputMint, deps.requestTimeoutMs), quoteFor(null)]);

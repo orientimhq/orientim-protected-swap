@@ -67,6 +67,7 @@ export {
 
 // Client-side checks run before signing.
 export * from './verify.ts';
+export { curvePrice } from './curve-price.ts';
 
 // In-process JSON command interface.
 export { RETRYABLE_CODES, runCli, withRetryHints } from './cli.ts';

@@ -19,6 +19,7 @@ import type { ChainSnapshot, Policy } from '@orientimhq/core/types';
 import { balancesAfterSimulation, notOlderThan, readAccounts } from '@orientimhq/solana';
 import { hasPermanentDelegate, hasTransferFee, hasTransferHookAuthority, isBondingCurveRoute, jupiterRouteArgs, routeAccountFor, transferFeeOf, transferFeeOn, verify } from '@orientimhq/verifier';
 import type { TransferFee } from '@orientimhq/verifier';
+import { curvePrice } from './curve-price.ts';
 
 /** Expiry proofs used by `confirm`. */
 export { pastProof, provesNeverLanded, STATUS_CACHE_BLOCKS } from '@orientimhq/solana';
@@ -665,6 +666,11 @@ export type OwnQuoteArgs = {
   inputTax?: TransferFee | null;
   /** Accept a quote without a price impact (`OwnerPolicy.allowUnknownPriceImpact`); otherwise it is refused. */
   allowUnknownImpact?: boolean;
+  /**
+   * Your RPC. When Jupiter gives no quote and the token is still on a Pump.fun bonding curve quoted in
+   * SOL, the price is read from the curve there instead (`curvePrice`).
+   */
+  rpc?: Rpc<SolanaRpcApi>;
 };
 
 /** Returns the agent's own `minOut` (via `ownQuote`), throwing if price impact exceeds `maxPriceImpactBps` (default 5%). */
@@ -698,26 +704,45 @@ export async function ownQuote(args: OwnQuoteArgs): Promise<{
     slippageBps: args.autoSlippage ? 'rtse' : '50', maxAccounts: '64',
   };
   for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
-  const r = (await askJupiter(url.toString(), 'your own price', args.apiKey, args.fetchImpl, args.budget)) as {
+  // Chosen or estimated slippage, clamped to the owner's ceiling, and the floor below the quote.
+  const tolerance = (curve: boolean, estimate: () => number) => {
+    const ceiling = args.ceilings?.maxSlippageBps;
+    let slippage = args.slippageBps ?? (args.autoSlippage ? (curve ? CURVE_SLIPPAGE_BPS : estimate()) : undefined);
+    if (ceiling !== undefined) {
+      const effective = slippage ?? (curve ? CURVE_SLIPPAGE_BPS : DEFAULT_SLIPPAGE_BPS);
+      if (effective > ceiling) slippage = ceiling;
+    }
+    const defaultBelow = slippage !== undefined ? slippage + (curve ? 200 : 150) : (curve ? 500 : 200);
+    const belowCeiling = args.ceilings?.maxBelowBps;
+    const below = BigInt(args.maxBelowBps ?? (belowCeiling !== undefined && defaultBelow > belowCeiling ? belowCeiling : Math.min(defaultBelow, MAX_BELOW_BPS)));
+    return { below, ...(slippage !== undefined ? { slippageBps: slippage } : {}) };
+  };
+  let r: {
     inputMint?: string; outputMint?: string; inAmount?: string; outAmount?: string; otherAmountThreshold?: string; priceImpactPct?: string | number;
     swapInstruction?: { accounts?: { pubkey: string; isWritable?: boolean }[] };
   };
+  try {
+    r = (await askJupiter(url.toString(), 'your own price', args.apiKey, args.fetchImpl, args.budget)) as typeof r;
+  } catch (e) {
+    // A token in its first seconds on its curve, not listed by Jupiter yet: priced from the curve.
+    const own = args.rpc ? await curvePrice(args.rpc, args.inputMint, args.outputMint, routed).catch(() => null) : null;
+    if (!own) throw e;
+    const { below, ...chosen } = tolerance(true, () => CURVE_SLIPPAGE_BPS);
+    return {
+      minOut: ((own.outAmount * (10_000n - below)) / 10_000n).toString(),
+      outAmount: own.outAmount.toString(),
+      priceImpactBps: own.priceImpactBps,
+      curve: true,
+      ...chosen,
+    };
+  }
   if (r.inputMint !== args.inputMint || r.outputMint !== args.outputMint || r.inAmount !== routed.toString() || !/^\d{1,20}$/.test(r.outAmount ?? '')) {
     throw new Error('Jupiter answered for another trade when asked for your own price');
   }
   // Same curve detection as the verifier, so the floor is only widened for real curve routes.
   const accounts = Array.isArray(r.swapInstruction?.accounts) ? r.swapInstruction.accounts : [];
   const curve = await isBondingCurveRoute(accounts.map(a => ({ address: a.pubkey, isWritable: a.isWritable === true })), args.inputMint, args.outputMint);
-  // Chosen or estimated slippage, clamped to the owner's ceiling.
-  const ceiling = args.ceilings?.maxSlippageBps;
-  let slippage = args.slippageBps ?? (args.autoSlippage ? (curve ? CURVE_SLIPPAGE_BPS : autoSlippageBps(r)) : undefined);
-  if (ceiling !== undefined) {
-    const effective = slippage ?? (curve ? CURVE_SLIPPAGE_BPS : DEFAULT_SLIPPAGE_BPS);
-    if (effective > ceiling) slippage = ceiling;
-  }
-  const defaultBelow = slippage !== undefined ? slippage + (curve ? 200 : 150) : (curve ? 500 : 200);
-  const belowCeiling = args.ceilings?.maxBelowBps;
-  const below = BigInt(args.maxBelowBps ?? (belowCeiling !== undefined && defaultBelow > belowCeiling ? belowCeiling : Math.min(defaultBelow, MAX_BELOW_BPS)));
+  const { below, ...chosen } = tolerance(curve, () => autoSlippageBps(r));
   // A missing price impact is refused, never read as zero, unless the owner allows it.
   const impact = typeof r.priceImpactPct === 'number' || (typeof r.priceImpactPct === 'string' && r.priceImpactPct.trim() !== '')
     ? Number(r.priceImpactPct) : NaN;
@@ -729,7 +754,7 @@ export async function ownQuote(args: OwnQuoteArgs): Promise<{
     outAmount: r.outAmount!,
     priceImpactBps: !Number.isFinite(impact) ? null : impact > 0 ? Math.round(impact * 10_000) : 0,
     curve,
-    ...(slippage !== undefined ? { slippageBps: slippage } : {}),
+    ...chosen,
   };
 }
 
