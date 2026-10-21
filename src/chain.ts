@@ -5,7 +5,7 @@ import type { SendTransaction } from './api.ts';
 import { sameBytes, wait, withinTime } from './util.ts';
 import { pastProof, provesNeverLanded } from './verify.ts';
 
-/** Minimum blocks of lifetime (of 150, roughly 60–90 s) left to finalize; otherwise prepare again. */
+/** Minimum blocks of lifetime (of 150, about 30 s at 200 ms blocks) left to finalize; otherwise prepare again. */
 export const MIN_BLOCKS_TO_FINALIZE = 30n;
 
 /** Blocks your RPC may trail the server's RPC; applied so the expiry bound never relies on the server alone. */

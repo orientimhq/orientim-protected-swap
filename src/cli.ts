@@ -152,7 +152,7 @@ function feePayerOf(signedTransaction: string): string | null {
   }
 }
 
-/** Age after which a pending order's transaction cannot land (blockhashes live about 60 to 90 seconds). */
+/** Age after which a pending order's transaction cannot land (blockhashes live 150 blocks, about 30 seconds at 200 ms blocks). */
 const ORDER_SETTLED_AFTER_MS = 10 * 60_000;
 
 /**

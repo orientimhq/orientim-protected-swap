@@ -319,7 +319,7 @@ same time overlap) and `readyToSign`, the whole wait, without changing the signi
    transaction's id is now known: it is the wallet's signature (`getSignatureFromTransaction`).
    **Keep it before finalize** (`protectedSwap`'s `onSigned`); it is how you learn what happened if an
    answer is lost or the process stops.
-5. **Finalize** promptly: the transaction lives 150 blocks, about 60 to 90 seconds depending on block times.
+5. **Finalize** promptly: the transaction lives 150 blocks, about 30 seconds at Solana's 200 ms blocks (longer when slots are skipped).
    With fewer than 30 blocks left (`lastValidBlockHeight` minus your RPC's block height) prepare
    again instead; `protectedSwap` does. `POST /api/v1/finalize` with `{ ticket, signedTransaction }`.
    Orientim looks the transaction up first (a repeated finalize answers for the same transaction and
@@ -351,7 +351,7 @@ same time overlap) and `readyToSign`, the whole wait, without changing the signi
    it at send time, and `meaning` names why when the network said, such as a price that moved beyond your
    slippage; nothing moved and no fee was paid). For `failed`, `meaning` also names why the transaction
    failed on chain when your RPC's status says it, such as a price that moved beyond your slippage.
-   Proving that a `rejected` transaction can no longer land takes about a minute after it was sent:
+   Proving that a `rejected` transaction can no longer land takes about 30 seconds after it was sent:
    the wait is what keeps the same order from being swapped twice.
 
 ## Handling errors

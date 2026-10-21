@@ -3,6 +3,13 @@
 Notable changes to `@orientimhq/swap`, in the format of
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Earlier versions are on npm.
 
+## Unreleased
+
+### Changed
+
+- The documents give a transaction's life as about 30 seconds: 150 blocks at Solana's 200 ms
+  blocks, since 2026-10-09. The verifier counts blocks, not seconds, so its checks are unchanged.
+
 ## 3.0.0 (2026-10-21)
 
 ### Breaking
