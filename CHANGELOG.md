@@ -4,7 +4,7 @@ Notable changes to `@orientimhq/swap`, in the format of
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Earlier versions are tagged in this
 repository.
 
-## 3.0.0 (unreleased)
+## 3.0.0 (2026-10-21)
 
 ### Breaking
 
