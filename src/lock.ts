@@ -78,6 +78,26 @@ export function holderIsGone(lock: LockFile | null): boolean {
   }
 }
 
+/**
+ * How soon a lock from another pid namespace on this same boot goes stale. Its holder cannot be checked
+ * from here (another container, or this one before a restart), but shares this clock and refreshes the
+ * lock every few seconds while it lives, so a container killed and restarted waits only this long.
+ */
+export const OTHER_NAMESPACE_STALE_MS = 30_000;
+
+/** Whether the lock was written on this boot from a pid namespace that cannot be checked from here. */
+function fromOtherNamespace(lock: LockFile | null): boolean {
+  const boot = bootId();
+  const ns = pidNamespace();
+  return !!lock && lock.host === hostname() && !!boot && lock.bootId === boot
+    && !!ns && typeof lock.pidNs === 'string' && lock.pidNs !== ns;
+}
+
+/** Whether a lock this old no longer protects anything. */
+function isStale(lock: LockFile | null, ageMs: number, staleMs: number): boolean {
+  return ageMs >= (fromOtherNamespace(lock) ? Math.min(staleMs, OTHER_NAMESPACE_STALE_MS) : staleMs);
+}
+
 /** Returns true when a fresh lock for `owner` exists in `dir` and its holder is not known to be gone. Read-only. */
 export function lockHeld(dir: string, owner: string, staleMs = 10 * 60_000): boolean {
   if (typeof owner !== 'string' || !BASE58.test(owner)) return false;
@@ -85,9 +105,11 @@ export function lockHeld(dir: string, owner: string, staleMs = 10 * 60_000): boo
   try {
     const info = lstatSync(path);
     if (!info.isFile()) return true;
-    if (Date.now() - info.mtimeMs >= staleMs) return false;
-    const lock = JSON.parse(readFileSync(path, 'utf8')) as LockFile | null;
-    return !holderIsGone(lock && typeof lock === 'object' ? lock : null);
+    const age = Date.now() - info.mtimeMs;
+    if (age >= staleMs) return false;
+    const json = JSON.parse(readFileSync(path, 'utf8')) as LockFile | null;
+    const lock = json && typeof json === 'object' ? json : null;
+    return !isStale(lock, age, staleMs) && !holderIsGone(lock);
   } catch (e) {
     // An unreadable lock counts as held.
     return (e as NodeJS.ErrnoException).code !== 'ENOENT';
@@ -160,7 +182,7 @@ export function acquireLock(dir: string, owner: string, staleMs = 10 * 60_000): 
       } finally {
         closeSync(fd);
       }
-      if (Date.now() - info.mtimeMs < staleMs && !holderIsGone(lock)) throw busy();
+      if (!isStale(lock, Date.now() - info.mtimeMs, staleMs) && !holderIsGone(lock)) throw busy();
       judged = typeof lock?.token === 'string' ? lock.token : null;
     } catch (e) {
       if (e instanceof LockBusyError) throw e;
@@ -189,7 +211,7 @@ export function acquireLock(dir: string, owner: string, staleMs = 10 * 60_000): 
       throw busy();
     }
   }
-  // Heartbeat keeps the lock fresh during long swaps.
+  // Heartbeat keeps the lock fresh during long swaps, often enough for a reader in another namespace.
   const beat = setInterval(() => {
     try {
       if (tokenAt(path) === token) {
@@ -199,7 +221,7 @@ export function acquireLock(dir: string, owner: string, staleMs = 10 * 60_000): 
     } catch {
       // Retried on the next beat.
     }
-  }, Math.max(1_000, Math.floor(staleMs / 3)));
+  }, Math.max(1_000, Math.floor(Math.min(staleMs, OTHER_NAMESPACE_STALE_MS) / 6)));
   beat.unref?.();
   const release = () => {
     clearInterval(beat);

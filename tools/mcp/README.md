@@ -45,7 +45,7 @@ limit. The server needs no `ORIENTIM_API_URL` (it uses `https://orientim.com`) a
 and its key message accepts Orientim's Terms of Use (orientim.com/terms). The command line needs both
 set; the Solana Agent Kit plugin needs the key. Fund the wallet with 0.01 SOL, held for the key and not spent,
 plus a little for each swap's network fee and rent; `orientim_wallet` gives its address. The owner's limits
-(`/etc/orientim/policy.json`, or `ORIENTIM_POLICY`) hold here too.
+(`/etc/orientim/policy.json`, or `ORIENTIM_POLICY`) hold here too, and without them nothing is quoted or swapped.
 
 Give the server a wallet of its own, holding only what it may swap. In a client where the agent also
 runs commands, it can read a key file the server can read: see "MCP server" and "Safe setup for an

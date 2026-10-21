@@ -5,6 +5,14 @@ Notable changes to `@orientimhq/swap`, in the format of
 
 ## Unreleased
 
+### Security
+
+- `orientim swap`, the MCP server's quotes and swaps, and the `prepare` and `finalize` commands need
+  the owner's policy: without one they stop before anything is prepared or signed, so a model's
+  request alone never decides what is swapped.
+- A wallet lock left by a container that was killed and restarted is taken after 30 seconds instead of
+  10 minutes. A live holder in another container refreshes its lock every 5 seconds and keeps it.
+
 ### Changed
 
 - The documents give a transaction's life as about 30 seconds: 150 blocks at Solana's 200 ms

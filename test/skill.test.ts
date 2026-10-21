@@ -13,7 +13,7 @@ import { describe, expect, it } from 'vitest';
 import { errorExitCode, errorLine, exitCodeOf } from '../src/agent.ts';
 import { call, ConfigError, dataOnly, OrientimApiError, safeCode, SKILL_VERSION, untrustedLine } from '../src/api.ts';
 import { isApiKeyMessage } from '../src/keys.ts';
-import { acquireLock, bootId, LockBusyError, lockHeld, pidNamespace, releaseHeldLocks } from '../src/lock.ts';
+import { acquireLock, bootId, LockBusyError, lockHeld, OTHER_NAMESPACE_STALE_MS, pidNamespace, releaseHeldLocks } from '../src/lock.ts';
 import { ApprovalError, approvalFor, checkPolicy, forgetApproval, heldToApproval, keptApproval, loadPolicy, parsePolicy, PolicyError, policyPathFor, recordApproval, stateDirFor } from '../src/policy.ts';
 import { createFileStore, movedNothing, PendingSwapError, recoverPending, resolvePending, settleOrder } from '../src/store.ts';
 import { fillAgainstQuote, IntentError, OrientimOrderError, preparedData, receivedFor } from '../src/swap.ts';
@@ -633,12 +633,27 @@ describe('the skill holds its own state and limits against what it is handed', (
     writeFileSync(policy, JSON.stringify({ maxAmountIn: { [BONK]: '1000' } }));
     const key = join(dir, 'key');
     writeFileSync(key, 'Nx8TkWq3JfSecretKeyInBase58');
-    const env = { ...process.env, ORIENTIM_API_URL: 'http://127.0.0.1:1', ORIENTIM_API_KEY: 'k', SOLANA_RPC_URL: 'http://127.0.0.1:1', ORIENTIM_WALLET_KEYPAIR: key, JUPITER_API_KEY: 'j' };
+    const env = { ...process.env, ORIENTIM_API_URL: 'http://127.0.0.1:1', ORIENTIM_API_KEY: 'k', SOLANA_RPC_URL: 'http://127.0.0.1:1', ORIENTIM_WALLET_KEYPAIR: key, JUPITER_API_KEY: 'j', ORIENTIM_POLICY: policy };
+    // Without the owner's limits nothing is quoted, prepared or signed.
+    const { ORIENTIM_POLICY: _, ...unlimited } = env;
+    for (const args of [['swap', '--in', USDC, '--out', BONK, '--amount', '1000000', '--owner', W, '--dry-run'], ['swap', '--in', USDC, '--out', BONK, '--amount', '1000000', '--id', 'k']]) {
+      const none = spawnSync(process.execPath, [BIN, ...args], { encoding: 'utf8', env: unlimited });
+      expect(none.status).toBe(2);
+      expect(none.stderr).toContain("No owner's policy is set");
+    }
+    for (const command of ['prepare', 'finalize']) {
+      const none = spawnSync(process.execPath, [BIN, command], { encoding: 'utf8', env: unlimited, input: '{}' });
+      expect(none.status).toBe(2);
+      expect(JSON.parse(none.stdout).error).toContain("No owner's policy is set");
+    }
     const dry = spawnSync(process.execPath, [BIN, 'swap', '--in', USDC, '--out', BONK, '--amount', '1000000', '--owner', W, '--dry-run'], {
-      encoding: 'utf8', env: { ...env, ORIENTIM_POLICY: policy },
+      encoding: 'utf8', env,
     });
     expect(dry.status).toBe(1);
     expect(dry.stderr).toContain('mint-not-allowed');
+    const usdc = join(dir, 'usdc.json');
+    writeFileSync(usdc, JSON.stringify({ maxAmountIn: { [USDC]: '1000000' } }));
+    env.ORIENTIM_POLICY = usdc;
     // A tolerance outside 10 to 1500 bps is a usage error, before anything is asked of anyone.
     const narrow = spawnSync(process.execPath, [BIN, 'swap', '--in', USDC, '--out', BONK, '--amount', '1000000', '--owner', W, '--dry-run', '--slippage-bps', '5'], {
       encoding: 'utf8', env,
@@ -786,6 +801,21 @@ describe('locks after a restart, transfer fees and retryable answers', () => {
     const dir = tmp();
     writeFileSync(join(dir, `lock-${W}`), JSON.stringify({ pid: process.pid, host: hostname(), at: Date.now(), token: 'theirs', pidNs: 'pid:[1]' }));
     expect(() => acquireLock(dir, W)).toThrow(LockBusyError);
+  });
+
+  it.runIf(!!pidNamespace() && !!bootId())('a lock from another pid namespace on this boot, as a container killed and restarted leaves it, is taken once it is 30 s old', () => {
+    const dir = tmp();
+    const path = join(dir, `lock-${W}`);
+    writeFileSync(path, JSON.stringify({ pid: 1, host: hostname(), at: Date.now(), token: 'killed', bootId: bootId(), pidNs: 'pid:[1]' }));
+    // Its holder, if alive, refreshes it every 5 s.
+    const beaten = new Date(Date.now() - 20_000);
+    utimesSync(path, beaten, beaten);
+    expect(lockHeld(dir, W)).toBe(true);
+    expect(() => acquireLock(dir, W)).toThrow(LockBusyError);
+    const left = new Date(Date.now() - OTHER_NAMESPACE_STALE_MS - 1_000);
+    utimesSync(path, left, left);
+    expect(lockHeld(dir, W)).toBe(false);
+    acquireLock(dir, W)();
   });
 
   it("a lock with this process's pid that this process does not hold is its predecessor's (a restarted container): taken at once", () => {

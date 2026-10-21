@@ -95,6 +95,17 @@ export function parsePolicy(raw: unknown, source: string): OwnerPolicy {
   };
 }
 
+/** Without the owner's limits a model's request alone would decide what is swapped, so signing needs them. */
+export const NO_POLICY = 'No owner\'s policy is set, and a swap needs one: the owner writes their limits (maxAmountIn per input mint) '
+  + 'to /etc/orientim/policy.json (C:\\ProgramData\\Orientim\\policy.json on Windows) or to a file named in ORIENTIM_POLICY. Nothing was prepared.';
+
+/** Loads the owner's policy, which every command that may sign requires. */
+export function requiredPolicy(named: string | undefined, system?: string): OwnerPolicy {
+  const path = policyPathFor(named, system);
+  if (!path) throw new ConfigError(NO_POLICY);
+  return loadPolicy(path);
+}
+
 /** Admin-owned system policy path. Hardcoded so unsetting `ORIENTIM_POLICY` cannot bypass it. */
 export const SYSTEM_POLICY_PATH = process.platform === 'win32' ? 'C:\\ProgramData\\Orientim\\policy.json' : '/etc/orientim/policy.json';
 

@@ -159,7 +159,7 @@ The user provides these; never ask for them in chat, and never print or log them
   that the service reads the transaction and its own policies apply). The
   service's signature is used only once it verifies against the checked message, and a service that
   changes the transaction is refused. One that can only sign and send cannot be used: Orientim signs last.
-- `ORIENTIM_POLICY` (optional, recommended for agents and unattended bots): path to the owner's limits,
+- `ORIENTIM_POLICY` (required for `orientim swap`, `prepare` and `finalize`): path to the owner's limits,
   a JSON file the owner writes and keeps where the agent cannot edit it. `/etc/orientim/policy.json`
   (`C:\ProgramData\Orientim\policy.json` on Windows), when it exists, is used instead, and any other
   file `ORIENTIM_POLICY` names is refused. `maxAmountIn` is the most one

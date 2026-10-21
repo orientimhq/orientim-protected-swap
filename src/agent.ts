@@ -5,7 +5,7 @@
  *   ORIENTIM_API_URL, ORIENTIM_API_KEY, SOLANA_RPC_URL   required
  *   ORIENTIM_WALLET_KEYPAIR    solana-keygen file (never paste a key in a prompt)
  *   JUPITER_API_KEY            recommended; keyless calls are throttled
- *   ORIENTIM_POLICY            owner limits (see OwnerPolicy); /etc/orientim/policy.json takes precedence
+ *   ORIENTIM_POLICY            owner limits (see OwnerPolicy), required; /etc/orientim/policy.json takes precedence
  *   ORIENTIM_TREASURY          optional, for other Orientim deployments
  *   ORIENTIM_ARCHIVE_RPC_URL   optional full-history RPC to prove expiry
  *   ORIENTIM_STATE_DIR         state directory (or --state; default ./.orientim-state)
@@ -26,7 +26,7 @@ import { ConfigError, ERROR_MEANINGS, OrientimApiError, PREPARE_WAIT_MS, prepare
 import type { Intent } from './api.ts';
 import type { Outcome } from './chain.ts';
 import { acquireLock, LockBusyError, lockHeld, releaseHeldLocks } from './lock.ts';
-import { APPROVAL_MS, checkPolicy, forgetApproval, heldToApproval, keptApproval, loadPolicy, PolicyError, policyPathFor, recordApproval, stateDirFor } from './policy.ts';
+import { APPROVAL_MS, checkPolicy, forgetApproval, heldToApproval, keptApproval, PolicyError, recordApproval, requiredPolicy, stateDirFor } from './policy.ts';
 import { createFileStore, pendingFor, PendingSwapError, PendingUnreadableError, recoverPending } from './store.ts';
 import { checkPrepared, FloorError, holdSolFee, IntentError, OrientimOrderError, ownFloor, preparedData, PriceImpactError, protectedSwap, withTolerance } from './swap.ts';
 import { noticesOf, preparationBudget, tokenRisk } from './verify.ts';
@@ -66,9 +66,8 @@ async function main() {
   // Verification is only as trustworthy as this RPC.
   const rpc = createSolanaRpc(need('SOLANA_RPC_URL'));
   const archive = process.env.ORIENTIM_ARCHIVE_RPC_URL ? createSolanaRpc(process.env.ORIENTIM_ARCHIVE_RPC_URL) : undefined;
-  // An unreadable policy aborts everything, including the dry run.
-  const policyPath = policyPathFor(process.env.ORIENTIM_POLICY || undefined);
-  const policy = policyPath ? loadPolicy(policyPath) : undefined;
+  // A missing or unreadable policy aborts everything, including the dry run.
+  const policy = requiredPolicy(process.env.ORIENTIM_POLICY || undefined);
 
   if (process.argv.includes('--dry-run')) {
     const owner = flag('owner') ?? (console.error('--dry-run needs --owner <address>.'), process.exit(2));
@@ -84,10 +83,8 @@ async function main() {
       return;
     }
     // Daily limits are checked by the real swap.
-    if (policy) {
-      const { maxAmountIn, allowedOutputMints } = policy;
-      await checkPolicy({ maxAmountIn, ...(allowedOutputMints ? { allowedOutputMints } : {}) }, { owner, inputMint, outputMint, amountIn });
-    }
+    const { maxAmountIn, allowedOutputMints } = policy;
+    await checkPolicy({ maxAmountIn, ...(allowedOutputMints ? { allowedOutputMints } : {}) }, { owner, inputMint, outputMint, amountIn });
     const budget = preparationBudget();
     const own = await ownFloor({ ...intent, owner }, { rpc, jupiterApiKey, policy, budget });
     const minOut = own.minOut;
@@ -104,7 +101,7 @@ async function main() {
     }
     const checked: Intent = withTolerance({ ...intent, owner, minOut }, own.slippageBps);
     await holdSolFee(checked, prepared, { jupiterApiKey, budget });
-    const problems = await checkPrepared(prepared, checked, rpc, { slippageCeilingBps: policy?.maxSlippageBps });
+    const problems = await checkPrepared(prepared, checked, rpc, { slippageCeilingBps: policy.maxSlippageBps });
     const risk = await tokenRisk(rpc, [inputMint, outputMint]);
     const shownData = preparedData(prepared);
     let approval: { minOut: string; until: string } | undefined;
