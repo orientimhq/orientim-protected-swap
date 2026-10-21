@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/orientimhq/orientim-protected-swap/security/policy
+    about: Please report vulnerabilities privately, as SECURITY.md describes, never in a public issue.

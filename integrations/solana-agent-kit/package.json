@@ -1,0 +1,52 @@
+{
+  "name": "@orientimhq/solana-agent-kit",
+  "version": "0.1.0",
+  "description": "A Solana Agent Kit plugin: one action, protectedSwap, that swaps through Orientim so the route can only touch the approved amount, checked on your own RPC before your wallet signs.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/orientimhq/orientim-protected-swap.git",
+    "directory": "integrations/solana-agent-kit"
+  },
+  "keywords": [
+    "solana",
+    "solana-agent-kit",
+    "swap",
+    "jupiter",
+    "agent",
+    "wallet"
+  ],
+  "engines": {
+    "node": ">=20.18"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "NOTICE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "peerDependencies": {
+    "@orientimhq/swap": "3.0.0",
+    "@solana/web3.js": "^1.98.2",
+    "zod": "^3.24.1"
+  },
+  "dependencies": {
+    "@solana/kit": "8.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.1",
+    "@solana/web3.js": "1.98.4",
+    "zod": "3.25.76"
+  }
+}

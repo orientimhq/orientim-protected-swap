@@ -1,0 +1,81 @@
+{
+  "name": "@orientimhq/swap",
+  "version": "3.0.0",
+  "mcpName": "io.github.orientimhq/swap",
+  "description": "Protected swaps on Solana through Orientim, for agents and bots: the route can only touch the approved amount, verified on your own RPC before your wallet signs.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/orientimhq/orientim-protected-swap.git"
+  },
+  "homepage": "https://orientim.com/developers",
+  "bugs": "https://github.com/orientimhq/orientim-protected-swap/issues",
+  "keywords": [
+    "solana",
+    "swap",
+    "jupiter",
+    "agent",
+    "mcp",
+    "model-context-protocol",
+    "wallet"
+  ],
+  "bin": {
+    "orientim": "./dist/bin/orientim.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/types/src/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./core": {
+      "types": "./dist/types/packages/core/src/index.d.ts",
+      "import": "./dist/core.mjs"
+    },
+    "./solana": {
+      "types": "./dist/types/packages/solana/src/index.d.ts",
+      "import": "./dist/solana.mjs"
+    },
+    "./verifier": {
+      "types": "./dist/types/packages/verifier/src/index.d.ts",
+      "import": "./dist/verifier.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/",
+    "!dist/*.mcpb",
+    "!dist/*.tgz",
+    "!dist/RELEASE-SHA256SUMS",
+    "skills/orientim-protected-swap/SKILL.md",
+    "skills/orientim-protected-swap/reference/",
+    "NOTICE"
+  ],
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "ultracite check",
+    "build": "node tools/build.ts"
+  },
+  "dependencies": {
+    "@solana/kit": "8.3.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@solana-program/compute-budget": "0.18.1",
+    "@solana-program/system": "0.14.1",
+    "@solana-program/token": "0.16.1",
+    "@types/node": "26.6.1",
+    "fast-check": "4.10.1",
+    "rolldown": "1.2.9",
+    "typescript": "7.0.2",
+    "ultracite": "8.0.1",
+    "vitest": "4.1.11"
+  },
+  "engines": {
+    "node": ">=20.18"
+  }
+}

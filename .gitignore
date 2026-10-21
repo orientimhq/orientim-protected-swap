@@ -1,0 +1,8 @@
+node_modules/
+dist/
+dist.partial/
+.orientim-state/
+coverage/
+*.log
+.env
+.env.*

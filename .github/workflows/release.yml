@@ -1,0 +1,123 @@
+name: Release
+
+# A published release v<version> publishes @orientimhq/swap to npm and attaches orientim.mcpb, the MCP
+# server as a Claude Desktop extension, with RELEASE-SHA256SUMS (the hashes of both). The tag must
+# name the package's own version. npm takes this workflow's own OIDC token (trusted publishing), for
+# this repository and this file only, so there is no npm token to keep or renew, and the package
+# carries npm's provenance. The workflow only stages the version (npm stage publish): it is public
+# once a maintainer approves it on npmjs.com with 2FA, so not even this workflow can publish alone.
+# Run by hand on a release tag (Use workflow from: the tag), it stages to npm only (a release whose
+# publish failed). It runs on a tag only, so the provenance npm shows names
+# the very commit that was built.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Tests and the build run with read access only: no step that runs the repository's or a
+  # dependency's code can publish, sign or write to the release.
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run on a release tag only
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          echo "::error::Run this on a release tag v<version> (Use workflow from: the tag), not on $GITHUB_REF."
+          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          # No cache where a release is built and signed: only the lockfile's hashes decide what is installed.
+          package-manager-cache: false
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm test
+      - name: The tag is the package's version
+        run: test "$GITHUB_REF_NAME" = "v$(node -p "require('./package.json').version")"
+      - run: npm run build
+      - name: The package, as npm will have it, and the extension
+        run: |
+          mkdir release
+          npm pack --ignore-scripts --pack-destination release
+          cp dist/orientim.mcpb release/
+          # The whole files' own hashes.
+          cd release && sha256sum orientimhq-swap-*.tgz orientim.mcpb > RELEASE-SHA256SUMS && cat RELEASE-SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release
+          path: release/
+          if-no-files-found: error
+          retention-days: 1
+
+  # Only this job can sign, attach and publish, and it runs none of the repository's code: it takes
+  # the files the build made, as they are.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # A signed statement, from GitHub, that these files were built here from this tag; and npm's
+      # trusted publishing, with its provenance.
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release
+          path: release
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      # Anyone can check a download with: gh attestation verify orientim.mcpb -R orientimhq/orientim-protected-swap
+      - if: github.event_name == 'release'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            release/orientimhq-swap-*.tgz
+            release/orientim.mcpb
+            release/RELEASE-SHA256SUMS
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Never over files already attached: a release's files, once there, stay what they were.
+        run: gh release upload "$GITHUB_REF_NAME" release/orientim.mcpb release/RELEASE-SHA256SUMS release/orientimhq-swap-*.tgz --repo "$GITHUB_REPOSITORY"
+      # Staged publishing needs npm 11.15.0 or later, pinned here.
+      - run: npm install --global --ignore-scripts --no-audit --no-fund npm@11.21.1
+      - name: Stage @orientimhq/swap on npm
+        run: |
+          tarball=$(ls release/orientimhq-swap-*.tgz)
+          version=${GITHUB_REF_NAME#v}
+          test "$tarball" = "release/orientimhq-swap-$version.tgz"
+          node -e "const [a,b,c]=process.argv[1].split('.').map(Number);process.exit(a>11||(a===11&&b>=15)?0:1)" "$(npm --version)" \
+            || { echo "::error::npm $(npm --version) cannot stage a publish (11.15.0 or later)"; exit 1; }
+          if [ "$(npm view "@orientimhq/swap@$version" version 2>/dev/null)" = "$version" ]; then
+            echo "@orientimhq/swap@$version is already on npm: nothing to publish."
+            # Still ask npm whether it trusts this workflow, as a publish would: the answer, never the token.
+            id=$(curl -sf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=npm:registry.npmjs.org" | node -p "JSON.parse(require('fs').readFileSync(0)).value")
+            answer=$(mktemp)
+            code=$(curl -s -o "$answer" -w '%{http_code}' -X POST -H "Authorization: Bearer $id" \
+              https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/@orientimhq%2fswap)
+            if [ "$code" = 201 ] || [ "$code" = 200 ]; then
+              rm -f "$answer"
+              echo "::notice::npm trusts this workflow to publish @orientimhq/swap."
+            else
+              why=$(node -p "try{JSON.parse(require('fs').readFileSync('$answer','utf8')).message}catch{''}")
+              rm -f "$answer"
+              echo "::error::npm does not trust this workflow to publish @orientimhq/swap (HTTP $code: $why): check its trusted publisher."
+              exit 1
+            fi
+          else
+            # "./": a bare release/x.tgz reads to npm as a GitHub repository, user/repo.
+            npm stage publish "./$tarball" --provenance --access public
+            echo "::notice::@orientimhq/swap@$version is staged: approve it on npmjs.com (Settings, staged versions) or with npm stage approve."
+          fi

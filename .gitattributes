@@ -1,0 +1,10 @@
+# Sources and docs keep LF line ends on every checkout, so that the package and orientim.mcpb are
+# the same bytes whichever system builds them.
+src/** text eol=lf
+packages/** text eol=lf
+tools/** text eol=lf
+skills/** text eol=lf
+examples/** text eol=lf
+
+# Images are bytes, never text: no line-end conversion on any system.
+*.png binary

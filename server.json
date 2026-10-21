@@ -1,0 +1,79 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.orientimhq/swap",
+  "title": "Orientim protected swap",
+  "description": "Protected Solana swaps for agents: the route touches only the approved amount, checked on your RPC.",
+  "websiteUrl": "https://orientim.com/developers",
+  "repository": {
+    "url": "https://github.com/orientimhq/orientim-protected-swap",
+    "source": "github"
+  },
+  "version": "3.0.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@orientimhq/swap",
+      "version": "3.0.0",
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        }
+      ],
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "SOLANA_RPC_URL",
+          "description": "Your own Solana mainnet RPC URL (a provider's free tier is enough), never Orientim's: every swap is checked against it before your wallet signs.",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "ORIENTIM_WALLET_KEYPAIR",
+          "description": "Absolute path to a solana-keygen file (a JSON array of 64 numbers) of a wallet of its own, holding only what may be swapped.",
+          "isRequired": true,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "JUPITER_API_KEY",
+          "description": "Your own Jupiter API key, free at developers.jup.ag. Strongly recommended: without one Jupiter throttles calls and a swap may stop.",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "ORIENTIM_API_KEY",
+          "description": "Optional for this server only. Leave unset and the wallet gets its own key (it must hold 0.01 SOL, not spent); that key message accepts orientim.com/terms.",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "ORIENTIM_POLICY",
+          "description": "Optional. Path to the owner's limits file; /etc/orientim/policy.json, when it exists, is used instead.",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "ORIENTIM_MAX_SLIPPAGE_BPS",
+          "description": "Optional. Most tolerance the model may ask for, in bps (10 to 1500). Default 300 (3%). Lower it to hold every quote closer to the market; \"auto\" is then refused.",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "number"
+        },
+        {
+          "name": "ORIENTIM_MAX_PRICE_IMPACT_BPS",
+          "description": "Optional. Most price impact accepted, in bps (0 to 2000). Default 500 (5%).",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "number"
+        }
+      ]
+    }
+  ]
+}

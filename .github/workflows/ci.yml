@@ -1,0 +1,149 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      # No package runs code of its own at install.
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      # Ultracite's rules as a check only: it reads the code and rewrites nothing (biome.jsonc).
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - name: The package installs on its own, and its types hold for a strict consumer
+        run: |
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP"
+          mkdir "$RUNNER_TEMP/consumer" && cd "$RUNNER_TEMP/consumer"
+          echo '{"name":"consumer","private":true,"type":"module"}' > package.json
+          npm install --ignore-scripts --no-audit --no-fund "$RUNNER_TEMP"/orientimhq-swap-*.tgz @types/node@26.6.1 typescript@7.0.2
+          cp "$GITHUB_WORKSPACE/examples/swap.ts" .
+          echo '{"compilerOptions":{"target":"ES2022","module":"nodenext","moduleResolution":"nodenext","strict":true,"noEmit":true,"types":["node"],"lib":["ES2022","DOM","ESNext.Disposable"],"allowImportingTsExtensions":true},"files":["swap.ts"]}' > tsconfig.json
+          npx tsc -p tsconfig.json
+          status=0; npx orientim > /dev/null || status=$?
+          test "$status" -eq 2
+          echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}' \
+            | npx orientim mcp | grep -q '"protocolVersion":"2025-11-25"'
+          # As an MCP client starts it, npx -y @orientimhq/swap mcp: the package's one command.
+          cd "$(mktemp -d)"
+          echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}' \
+            | npx -y "file:$(ls "$RUNNER_TEMP"/orientimhq-swap-*.tgz)" mcp | grep -q '"protocolVersion":"2025-11-25"'
+
+  solana-agent-kit:
+    # The plugin for Solana Agent Kit, against this source and against the real kit.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: integrations/solana-agent-kit
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+        working-directory: .
+      - run: npm ci --ignore-scripts --legacy-peer-deps
+      - run: npm install --no-save --ignore-scripts --legacy-peer-deps solana-agent-kit@2.0.10 @solana-agent-kit/adapter-mcp@2.0.7
+      - run: npm run typecheck
+      - run: npm test
+      - name: The plugin as npm ships it, in an app with the kit, on plain Node
+        run: |
+          (cd ../.. && npm run build && npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP")
+          npm run build
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP"
+          mkdir "$RUNNER_TEMP/app" && cp test/consumer.mjs "$RUNNER_TEMP/app/" && cd "$RUNNER_TEMP/app"
+          echo '{"name":"app","private":true,"type":"module"}' > package.json
+          npm install --ignore-scripts --no-audit --no-fund "$RUNNER_TEMP"/orientimhq-swap-*.tgz "$RUNNER_TEMP"/orientimhq-solana-agent-kit-*.tgz solana-agent-kit@2.0.10 @solana/web3.js@1.98.4 zod@3.25.76
+          node consumer.mjs
+
+  windows:
+    # The package runs on Windows too: its policy path, its state directory and the command.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm test
+
+  mcp:
+    # The MCP server as npm and Claude Desktop ship it, started as a client starts it, on every Node
+    # the package claims and on each system.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: ['20.18.0', '22', '24']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+      - run: node tools/mcp/smoke.mjs dist/bin/orientim.mjs
+      - run: node tools/mcp/smoke.mjs dist/orientim.mcpb
+
+  reproducible:
+    # The same source must give the same bytes on another runner image.
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - run: |
+          cd dist && find . -type f ! -name '*.tgz' | LC_ALL=C sort | xargs shasum -a 256 > "$RUNNER_TEMP/sha256-${{ matrix.os }}.txt"
+          cat "$RUNNER_TEMP/sha256-${{ matrix.os }}.txt"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sha256-${{ matrix.os }}
+          path: ${{ runner.temp }}/sha256-${{ matrix.os }}.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  reproducible-compare:
+    # Both runners' lists, compared: any file whose bytes differ fails the build.
+    needs: reproducible
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: sha256-*
+          path: ${{ runner.temp }}/lists
+      - run: |
+          cd "$RUNNER_TEMP/lists"
+          find . -type f | LC_ALL=C sort
+          ubuntu=$(find . -type f -name 'sha256-ubuntu-latest.txt' | head -1)
+          macos=$(find . -type f -name 'sha256-macos-latest.txt' | head -1)
+          test -s "$ubuntu" && test -s "$macos"
+          diff -u "$ubuntu" "$macos"
