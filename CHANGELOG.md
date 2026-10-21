@@ -3,21 +3,6 @@
 Notable changes to `@orientimhq/swap`, in the format of
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Earlier versions are on npm.
 
-## Unreleased
-
-### Security
-
-- `orientim swap`, the MCP server's quotes and swaps, and the `prepare` and `finalize` commands need
-  the owner's policy: without one they stop before anything is prepared or signed, so a model's
-  request alone never decides what is swapped.
-- A wallet lock left by a container that was killed and restarted is taken after 30 seconds instead of
-  10 minutes. A live holder in another container refreshes its lock every 5 seconds and keeps it.
-
-### Changed
-
-- The documents give a transaction's life as about 30 seconds: 150 blocks at Solana's 200 ms
-  blocks, since 2026-10-09. The verifier counts blocks, not seconds, so its checks are unchanged.
-
 ## 3.0.0 (2026-10-21)
 
 ### Breaking
@@ -37,6 +22,11 @@ Notable changes to `@orientimhq/swap`, in the format of
 - `orientim_swap` holds the swap to the minimum the user was shown, and a quote read back from disk
   is checked again before the user is asked.
 - A server's text never reaches the model.
+- `orientim swap`, the MCP server's quotes and swaps, and the `prepare` and `finalize` commands need
+  the owner's policy: without one they stop before anything is prepared or signed, so a model's
+  request alone never decides what is swapped.
+- A wallet lock left by a container that was killed and restarted is taken after 30 seconds instead of
+  10 minutes. A live holder in another container refreshes its lock every 5 seconds and keeps it.
 
 ### Added
 
@@ -62,4 +52,5 @@ Notable changes to `@orientimhq/swap`, in the format of
 
 - The rate limits as served: 60 prepares and 30 finalizes a minute per key, 120 prepares a minute
   per address, and `503 busy` at capacity.
-- A transaction lives 150 blocks, about 60 to 90 seconds.
+- A transaction lives 150 blocks, about 30 seconds at Solana's 200 ms blocks (since 2026-10-09).
+  The verifier counts blocks, not seconds.
