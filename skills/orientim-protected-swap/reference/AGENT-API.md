@@ -380,7 +380,9 @@ it does, the swap may still land.
 Finalizing the same ticket again, after an answer that never arrived, answers for the same
 transaction: while it is not on chain it is sent again (the same bytes can land only once), and
 once it is on chain the answer is `sent` with the same bytes, even after its lifetime or during a
-pause.
+pause. One exception: if Orientim restarted since the swap was prepared, a transaction not yet on
+chain is not sent again, and the answer is `409 server-restarted`. The earlier finalize may still
+have sent it, so wait as below before preparing again.
 
 **Before preparing again for the same swap**, make sure the transaction you signed can no longer
 land: its signature has no record on your RPC and the finalized block height is past
@@ -428,6 +430,7 @@ one to ask") lists what to do with each code.
 | 409 | `session-used` | With `ownRoutes`: Orientim already signed another transaction with this session's one-time key, and signs one per key. Prepare again without the session; this request signed and sent nothing. |
 | 409 | `output-balance-changed` | Your balance of the output token moved since prepare, so this request signed nothing. Check `signature` as above, then prepare again. |
 | 409 | `output-in-flight` | Another swap into the same output account (`inFlight`, its signature) is signed and has not landed or expired: its tokens would count towards this swap's minimum, so this request signed nothing. Wait `Retry-After` seconds and finalize again; once that swap has landed, this one is signed if your output balance is still the one prepare saw, and refused as `output-balance-changed` if not. |
+| 409 | `server-restarted` | Orientim restarted after this swap was prepared, and signs only swaps prepared since; this request signed and sent nothing. An earlier finalize of this ticket may have sent it: check `signature` as above, then prepare again. |
 | 410 | `expired` | The transaction's lifetime passed before this finalize signed it. Check `signature` as above, then prepare again. |
 | 422 | `unsupported-token`, `no-route`, `bad-quote`, `insufficient-sol`, `insufficient-balance`, `simulation-failed`, `verification-failed`, `token-data-mismatch`, `output-account-restricted`, `input-account-restricted` | This swap cannot be built safely right now; `message` says why. |
 | 422 | `amount-too-small` | The amount is below the smallest swap Orientim takes, about 0.004 SOL, or $1 of USDC or USDT (for a swap between two other tokens, its value in SOL). Swap a larger amount. Selling the whole balance of a token (not SOL) is allowed at any size. |
