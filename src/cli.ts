@@ -32,7 +32,7 @@ import { exitCodeOf, outcomeMeaning } from './agent.ts';
 import { OrientimApiError, rpcSender } from './api.ts';
 import { apiKeyChallenge, isApiKeyMessage, redeemApiKey } from './keys.ts';
 import { acquireLock, LockBusyError, releaseHeldLocks } from './lock.ts';
-import { ApprovalError, checkPolicy, DEFAULT_STATE_DIR, forgetApproval, heldToApproval, keptApproval, loadPolicy, NO_POLICY, PolicyError, policyPathFor, stateDirFor } from './policy.ts';
+import { ApprovalError, checkPolicy, DEFAULT_STATE_DIR, forgetApproval, heldToApproval, keptApproval, loadPolicy, NO_POLICY, PolicyError, policyPathFor, policyWarning, stateDirFor } from './policy.ts';
 import { createFileStore, movedNothing, pendingFor, PendingSwapError, recoverPending, resolvePending, settleOrder, takeOrder } from './store.ts';
 import { checkPrepared, finalizeSigned, FloorError, holdSolFee, IntentError, OrientimOrderError, ownFloor, prepareChecked, PriceImpactError, receivedFor, resumeSigned } from './swap.ts';
 import type { Intent, Prepared, SendTransaction } from './api.ts';
@@ -641,7 +641,11 @@ export async function main(): Promise<void> {
   if (!KEY_COMMANDS.includes(command)) {
     try {
       const policyPath = policyPathFor(process.env.ORIENTIM_POLICY || undefined);
-      if (policyPath) policy = loadPolicy(policyPath);
+      if (policyPath) {
+        policy = loadPolicy(policyPath);
+        const note = policyWarning(policyPath);
+        if (note && command !== 'recover' && command !== 'resolve') process.stderr.write(`${note}\n`);
+      }
     } catch (e) {
       if (command !== 'recover' && command !== 'resolve') return print(usage(messageOf(e)));
     }

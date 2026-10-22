@@ -411,6 +411,9 @@ read on your RPC: `permanentDelegate` (it can move or burn your balance at any t
 When the mints cannot be read it is `{"status": "unavailable"}`, never "no risk", and `notices` says so.
 This makes an issuer's power visible; it does not remove it. The swap itself is protected either way.
 
+The transaction revokes any delegate on the wallet's account for the token it buys. An approval given
+on that account before (to a DCA or limit-order program, say) ends with the swap: give it again after.
+
 The network fee follows the network's load, so it differs from one swap to the next; the check never
 lets it go above your cap (`maxNetworkFeeLamports`, 0.001 SOL unless you set it).
 `notices.networkBusy` in a prepared swap (`checked.prepared.notices.networkBusy` in the answer of
@@ -456,7 +459,9 @@ their own copy, knowingly; everything else is still checked.
   on several machines need a shared store with a lock of its own). The lock names its holder, and a
   worker whose lock was taken over never removes its successor's. A worker that was only paused and
   resumes after a takeover is stopped by the pending and order checks made just before finalize, and
-  a transaction it signed long before has expired by then.
+  a transaction it signed long before has expired by then. A container killed and restarted takes its
+  own old lock after 30 seconds; one recreated under a new hostname waits up to 10 minutes, so give
+  the container a fixed hostname (`hostname:` in Compose).
 - **One swap per wallet in flight.** With a pending store (`protectedSwap`'s `pending`, the command
   line's state directory), nothing is prepared or sent while another swap from the same wallet may
   still land (`PendingSwapError`; `orientim` exits 3), with or without an order id. The same

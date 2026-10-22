@@ -14,7 +14,7 @@ import { errorExitCode, errorLine, exitCodeOf } from '../src/agent.ts';
 import { call, ConfigError, dataOnly, OrientimApiError, safeCode, SKILL_VERSION, untrustedLine } from '../src/api.ts';
 import { isApiKeyMessage } from '../src/keys.ts';
 import { acquireLock, bootId, LockBusyError, lockHeld, OTHER_NAMESPACE_STALE_MS, pidNamespace, releaseHeldLocks } from '../src/lock.ts';
-import { ApprovalError, approvalFor, checkPolicy, forgetApproval, heldToApproval, keptApproval, loadPolicy, parsePolicy, PolicyError, policyPathFor, recordApproval, stateDirFor } from '../src/policy.ts';
+import { ApprovalError, approvalFor, checkPolicy, forgetApproval, heldToApproval, keptApproval, loadPolicy, parsePolicy, PolicyError, policyPathFor, policyWarning, recordApproval, stateDirFor } from '../src/policy.ts';
 import { createFileStore, movedNothing, PendingSwapError, recoverPending, resolvePending, settleOrder } from '../src/store.ts';
 import { fillAgainstQuote, IntentError, OrientimOrderError, preparedData, receivedFor } from '../src/swap.ts';
 import { runCli, withRetryHints } from '../src/cli.ts';
@@ -681,6 +681,19 @@ describe("the owner's policy at the system path", () => {
     expect(policyPathFor(undefined, system)).toBe(system);
     expect(policyPathFor(system, system)).toBe(system);
     expect(() => policyPathFor(other, system)).toThrow('which is not used');
+  });
+});
+
+describe("a policy the agent's user can write", () => {
+  it.runIf(process.platform !== 'win32' && process.getuid?.() !== 0)('is used, with a warning that names the administrator\'s policy', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orientim-own-'));
+    const own = join(dir, 'policy.json');
+    writeFileSync(own, JSON.stringify({ maxAmountIn: { [USDC]: '1000000' } }));
+    const system = join(dir, 'absent', 'policy.json');
+    expect(policyWarning(own, system)).toContain('an agent with a shell could raise its limits');
+    expect(policyWarning(own, system)).toContain(system);
+    expect(policyWarning(system, system)).toBeNull();
+    expect(policyWarning(own, system, 'win32')).toBeNull();
   });
 });
 

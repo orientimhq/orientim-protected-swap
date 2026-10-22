@@ -27,6 +27,10 @@ Notable changes to `@orientimhq/swap`, in the format of
   request alone never decides what is swapped.
 - A wallet lock left by a container that was killed and restarted is taken after 30 seconds instead of
   10 minutes. A live holder in another container refreshes its lock every 5 seconds and keeps it.
+- A policy named in `ORIENTIM_POLICY` that the user the agent runs as can change is used with a
+  warning naming the administrator's `/etc/orientim/policy.json`, which the agent cannot change.
+- The MCP server's saved quotes are checked with the question the user is asked, so an edited
+  question is never shown.
 
 ### Added
 
@@ -54,3 +58,8 @@ Notable changes to `@orientimhq/swap`, in the format of
   per address, and `503 busy` at capacity.
 - A transaction lives 150 blocks, about 30 seconds at Solana's 200 ms blocks (since 2026-10-09).
   The verifier counts blocks, not seconds.
+- The guide says that a swap revokes any delegate on the wallet's account for the token it buys, and
+  that a container recreated under a new hostname waits up to 10 minutes for its old lock.
+- The README says how 3.0.0 is checked: its tarball carries the release workflow's attestation, not
+  npm's provenance.
+- vitest 4.1.12, with a fixed vite, for the test tools only.

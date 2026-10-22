@@ -826,6 +826,23 @@ describe('a quote outlives the server', () => {
     expect(readdirSync(dir).filter(f => f.startsWith('quote-'))).toEqual([]);
   });
 
+  it('drops a quote file whose question was changed: the person is asked only what was quoted', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orientim-quotes-'));
+    const quoteStore = fileQuoteStore(dir);
+    const at = Date.now();
+    const id = '00000001-aaaa-bbbb-cccc-dddddddddddd';
+    quoteStore.save(id, {
+      wallet: W, inputMint: SOL, outputMint: USDC, amountIn: '10000000', inputDecimals: 9, outputDecimals: 6, minOut: '1490000',
+      flags: [], at, until: at + 10 * 60_000, tried: false, question: 'Swap 0.01 SOL for at least 1.49 USDC?',
+    });
+    expect(quoteStore.all()).toHaveLength(1);
+    const file = join(dir, `quote-${id}.json`);
+    const kept = JSON.parse(readFileSync(file, 'utf8'));
+    kept.quote.question = 'Swap 0.01 SOL for at least 149 USDC?';
+    writeFileSync(file, JSON.stringify(kept));
+    expect(quoteStore.all()).toEqual([]);
+  });
+
   it('a tried quote stays tried across a restart: the person is not asked twice for one yes', async () => {
     const quoteStore = fileQuoteStore(mkdtempSync(join(tmpdir(), 'orientim-quotes-')));
     const before = harness([() => ok(dryRun()), () => ({ code: 3, stdout: '', stderr: 'The outcome is still unknown.\n' })], { quoteStore });

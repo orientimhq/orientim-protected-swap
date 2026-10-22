@@ -244,10 +244,10 @@ export type QuoteStore = {
   remove(id: string): void;
 };
 
-/** Integrity digest over the approved fields of a quote. */
+/** Integrity digest over the approved fields of a quote and the question the user is asked. */
 export function quoteDigest(id: string, q: Quote): string {
   return createHash('sha256').update(JSON.stringify([
-    id, q.wallet, q.inputMint, q.outputMint, q.amountIn, q.minOut, q.until, q.flags, q.inputDecimals, q.outputDecimals,
+    id, q.wallet, q.inputMint, q.outputMint, q.amountIn, q.minOut, q.until, q.flags, q.inputDecimals, q.outputDecimals, q.question,
   ])).digest('hex');
 }
 

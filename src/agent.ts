@@ -67,7 +67,8 @@ async function main() {
   const rpc = createSolanaRpc(need('SOLANA_RPC_URL'));
   const archive = process.env.ORIENTIM_ARCHIVE_RPC_URL ? createSolanaRpc(process.env.ORIENTIM_ARCHIVE_RPC_URL) : undefined;
   // A missing or unreadable policy aborts everything, including the dry run.
-  const policy = requiredPolicy(process.env.ORIENTIM_POLICY || undefined);
+  const { policy, warning: policyNote } = requiredPolicy(process.env.ORIENTIM_POLICY || undefined);
+  if (policyNote) console.error(policyNote);
 
   if (process.argv.includes('--dry-run')) {
     const owner = flag('owner') ?? (console.error('--dry-run needs --owner <address>.'), process.exit(2));

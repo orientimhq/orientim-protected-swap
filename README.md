@@ -98,11 +98,13 @@ packages are bundled in.
 ## Check your copy
 
 Check the package against GitHub, not against the site that told you about it: it exists to protect
-you from a dishonest server, so a server cannot vouch for it. Each version from 2.0.0 on is published
-from this repository's release workflow with npm's provenance, which names the repository, the
-workflow and the commit. `npm audit signatures` checks that the signatures are valid, not who made
-them, and passes a version with none. The tarball npm serves is the one the release workflow built
-and attested, so GitHub's signed statement checks who built it:
+you from a dishonest server, so a server cannot vouch for it. Each version's tarball is built and
+attested by this repository's release workflow, and `gh attestation verify` below names the
+repository, the workflow and the tag. A version the workflow also published to npm carries npm's
+provenance, which names the commit; 3.0.0 was published by hand from the attested tarball, so it has
+the attestation but no npm provenance. `npm audit signatures` checks that the signatures are valid,
+not who made them, and passes a version with none. The tarball npm serves is the one the release
+workflow built and attested, so GitHub's signed statement checks who built it:
 
 ```bash
 npm install --save-exact @orientimhq/swap@<version> && npm audit signatures

@@ -99,11 +99,11 @@ export function parsePolicy(raw: unknown, source: string): OwnerPolicy {
 export const NO_POLICY = 'No owner\'s policy is set, and a swap needs one: the owner writes their limits (maxAmountIn per input mint) '
   + 'to /etc/orientim/policy.json (C:\\ProgramData\\Orientim\\policy.json on Windows) or to a file named in ORIENTIM_POLICY. Nothing was prepared.';
 
-/** Loads the owner's policy, which every command that may sign requires. */
-export function requiredPolicy(named: string | undefined, system?: string): OwnerPolicy {
+/** Loads the owner's policy, which every command that may sign requires, with any `policyWarning`. */
+export function requiredPolicy(named: string | undefined, system?: string): { policy: OwnerPolicy; warning: string | null } {
   const path = policyPathFor(named, system);
   if (!path) throw new ConfigError(NO_POLICY);
-  return loadPolicy(path);
+  return { policy: loadPolicy(path), warning: policyWarning(path, system) };
 }
 
 /** Admin-owned system policy path. Hardcoded so unsetting `ORIENTIM_POLICY` cannot bypass it. */
@@ -132,6 +132,23 @@ export function policyPathFor(named: string | undefined, system: string = SYSTEM
     return system;
   }
   return named || undefined;
+}
+
+/**
+ * A warning when the user this runs as can change the named policy file or its folder (POSIX only), so
+ * an agent with a shell could raise its own limits; null otherwise, and for the administrator's policy.
+ */
+export function policyWarning(path: string, system: string = SYSTEM_POLICY_PATH, platform: NodeJS.Platform = process.platform): string | null {
+  if (platform === 'win32' || process.getuid?.() === 0 || resolve(path) === resolve(system)) return null;
+  for (const p of [path, dirname(resolve(path))]) {
+    try {
+      accessSync(p, fsConstants.W_OK);
+    } catch {
+      continue;
+    }
+    return `The owner's policy ${path} can be changed by the user this runs as (${p} is writable), so an agent with a shell could raise its limits. For limits the agent cannot change, an administrator writes ${system}, writable only by root.`;
+  }
+  return null;
 }
 
 /** Fallback state directory, relative to the working directory. */
