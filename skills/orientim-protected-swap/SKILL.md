@@ -40,7 +40,7 @@ developers.jup.ag; without it Jupiter throttles calls and a swap may stop) and t
 `/etc/orientim/policy.json` or `ORIENTIM_POLICY`. The commands also need `ORIENTIM_API_URL`
 (`https://orientim.com`) and `ORIENTIM_API_KEY` (`orientim key-challenge`, then `key`; it accepts
 orientim.com/terms); the MCP server sets both itself. The wallet holds 0.01 SOL for its key (held, not
-spent), plus SOL for network fees and rent. Step by step: "Getting started" in the guide. A key file
+spent), plus SOL for network fees and rent. All settings: "Setup" in the guide. A key file
 the command can read, the agent can read too: see "Safe setup for an agent" in the guide.
 
 ## Swap
