@@ -135,8 +135,8 @@ export function policyPathFor(named: string | undefined, system: string = SYSTEM
 }
 
 /**
- * A warning when the user this runs as can change the named policy file or its folder (POSIX only), so
- * an agent with a shell could raise its own limits; null otherwise, and for the administrator's policy.
+ * A note for the owner when the user this runs as can change the named policy file or its folder (POSIX
+ * only); null otherwise, and for the administrator's policy.
  */
 export function policyWarning(path: string, system: string = SYSTEM_POLICY_PATH, platform: NodeJS.Platform = process.platform): string | null {
   if (platform === 'win32' || process.getuid?.() === 0 || resolve(path) === resolve(system)) return null;
@@ -146,7 +146,7 @@ export function policyWarning(path: string, system: string = SYSTEM_POLICY_PATH,
     } catch {
       continue;
     }
-    return `The owner's policy ${path} can be changed by the user this runs as (${p} is writable), so an agent with a shell could raise its limits. For limits the agent cannot change, an administrator writes ${system}, writable only by root.`;
+    return `The owner's policy ${path} is writable by the user this runs as (${p}). An administrator's ${system}, writable only by root, keeps the limits out of this user's reach.`;
   }
   return null;
 }

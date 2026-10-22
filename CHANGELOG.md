@@ -28,7 +28,7 @@ Notable changes to `@orientimhq/swap`, in the format of
 - A wallet lock left by a container that was killed and restarted is taken after 30 seconds instead of
   10 minutes. A live holder in another container refreshes its lock every 5 seconds and keeps it.
 - A policy named in `ORIENTIM_POLICY` that the user the agent runs as can change is used with a
-  warning naming the administrator's `/etc/orientim/policy.json`, which the agent cannot change.
+  note naming the administrator's `/etc/orientim/policy.json`, which that user cannot change.
 - The MCP server's saved quotes are checked with the question the user is asked, so an edited
   question is never shown.
 

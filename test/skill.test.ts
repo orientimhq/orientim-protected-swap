@@ -690,7 +690,7 @@ describe("a policy the agent's user can write", () => {
     const own = join(dir, 'policy.json');
     writeFileSync(own, JSON.stringify({ maxAmountIn: { [USDC]: '1000000' } }));
     const system = join(dir, 'absent', 'policy.json');
-    expect(policyWarning(own, system)).toContain('an agent with a shell could raise its limits');
+    expect(policyWarning(own, system)).toContain('is writable by the user this runs as');
     expect(policyWarning(own, system)).toContain(system);
     expect(policyWarning(system, system)).toBeNull();
     expect(policyWarning(own, system, 'win32')).toBeNull();
