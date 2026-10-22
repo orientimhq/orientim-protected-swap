@@ -63,3 +63,4 @@ Notable changes to `@orientimhq/swap`, in the format of
 - The README says how 3.0.0 is checked: its tarball carries the release workflow's attestation, not
   npm's provenance.
 - vitest 4.1.12, with a fixed vite, for the test tools only.
+- The API reference says one key takes at most a quarter of the prepares all keys share a minute.
