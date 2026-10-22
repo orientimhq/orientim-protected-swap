@@ -54,7 +54,7 @@ Notable changes to `@orientimhq/swap`, in the format of
 
 ### Changed
 
-- The rate limits as served: 60 prepares and 30 finalizes a minute per key, 120 prepares a minute
+- The rate limits as served: 20 prepares and 15 finalizes a minute per key, 120 prepares a minute
   per address, and `503 busy` at capacity.
 - A transaction lives 150 blocks, about 30 seconds at Solana's 200 ms blocks (since 2026-10-09).
   The verifier counts blocks, not seconds.

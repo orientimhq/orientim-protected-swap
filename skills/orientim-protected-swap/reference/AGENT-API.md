@@ -47,7 +47,7 @@ Every request carries an API key:
 Authorization: Bearer ori_...
 ```
 
-Requests are limited to 60 prepares and 30 finalizes a minute, counted per wallet for a self-serve key and per
+Requests are limited to 20 prepares and 15 finalizes a minute, counted per wallet for a self-serve key and per
 key for a key issued by hand; and to 120 prepares a minute from one client address, over all its keys. A `429`
 carries `Retry-After`: the seconds until the count starts again. When Orientim is at its capacity for new swaps
 (180 prepares a minute in all), a prepare is answered `503 busy` with `Retry-After`, and nothing is built. One key
