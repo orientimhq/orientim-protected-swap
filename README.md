@@ -51,7 +51,7 @@ On top of the rules, the client:
 - **Your RPC.** Chain state is read from the RPC you choose; it is trusted for that.
 - **The token.** `tokenRisk` reports what an issuer can still do (freeze, mint, a permanent delegate); it does not remove it.
 - **Availability.** Orientim's server can refuse or delay a swap. It cannot make your wallet sign a different one.
-- **Skipping the check.** A client that calls the API without the verifier trusts the server with the whole wallet.
+- **Skipping pre-sign verification.** A client that calls the API without the verifier trusts the server with the whole wallet.
 
 ## Check your copy
 

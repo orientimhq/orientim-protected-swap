@@ -6,7 +6,7 @@ of the npm package `@orientimhq/swap`.
 
 Orientim builds the transaction; the wallet signs first and Orientim signs last with a one-time key.
 Before signing, the package runs the verifier on the exact bytes with chain state from **your own RPC**
-(`checkPrepared`). With that check a compromised server can refuse or delay a swap, never make the
+(`checkPrepared`). With this pre-sign verification a compromised server can refuse or delay a swap, never make the
 wallet sign one that moves more than the approved amount or pays below your own floor. Without it you
 trust Orientim's server with the whole wallet. An API key or the `x-orientim-skill` header does not
 prove the check ran.
@@ -105,7 +105,7 @@ wallet must hold 0.01 SOL (held, not spent). A key works for that wallet only, f
 | `maxAmountIn` | The most one swap may spend of each input mint. A mint not listed is never sold: list every token the agent may need to sell back. |
 | `maxAmountInPerDay` | The most all swaps from the wallet signed in the last 24 hours may spend. A swap counts once signed, until the chain proves it moved nothing. Requires `stateDir`. |
 | `allowedOutputMints` | The only tokens the wallet may buy. Selling into SOL or USDC counts: list them too. |
-| `maxSlippageBps` | 10 to 1500. The most tolerance a route may be built at, held on the signed bytes too. |
+| `maxSlippageBps` | 10 to 1500. The most slippage a route may be built at, held on the signed bytes too. |
 | `maxBelowBps` | 0 to 2000. The furthest below Jupiter's price the agent's floor may sit. |
 | `maxPriceImpactBps` | 0 to 2000. The most price impact accepted. |
 | `allowUnknownPriceImpact` | `true` lets a swap go on when Jupiter states no price impact. |
@@ -123,12 +123,12 @@ A swap outside the policy is refused before prepare and again before finalize (`
 scratch.
 
 1. **Your own floor.** `ownMinimum` asks Jupiter and takes 2% off its price (5% on a Pump.fun curve), or
-   with `slippageBps` that tolerance plus 1.5% (2% on a curve). A minimum more than 20% below Jupiter's
+   with `slippageBps` that slippage plus 1.5% (2% on a curve). A minimum more than 20% below Jupiter's
    price is refused (`floor-too-low`), and so is a price impact above `maxPriceImpactBps` (default 5%)
    or an unknown one. For a large order, set `minOut` from a second source of your own.
 2. **Prepare.** `POST /api/v1/prepare` with `{ owner, inputMint, outputMint, amountIn, minOut }`.
    `slippageBps` is 10 to 1500 (default 0.5%, 3% on a Pump.fun curve); `"auto"` asks Jupiter for the
-   trade's own tolerance, 0.5% to 3%. Prefer a smaller amount to a wider tolerance. The fee and its
+   trade's own slippage, 0.5% to 3%. Prefer a smaller amount to a wider slippage. The fee and its
    side are in AGENT-API.md, "Fee".
 3. **Verify** with `checkPrepared(prepared, intent, rpc)`; sign nothing it refuses. It checks the answer
    against your intent and limits, every instruction against rules R1–R7 on your RPC, and simulates the
@@ -218,7 +218,7 @@ client that starts a local MCP server over stdio. Four tools:
   When the client supports elicitation, the server asks the person to confirm before signing.
 - `orientim_recover`: settles an interrupted swap.
 
-No tool takes a key, a minimum or a fee limit. The model may ask for a tolerance up to 300 bps (or
+No tool takes a key, a minimum or a fee limit. The model may ask for slippage up to 300 bps (or
 `"auto"`) and a price impact up to 500 bps; only the owner raises them, with
 `ORIENTIM_MAX_SLIPPAGE_BPS` and `ORIENTIM_MAX_PRICE_IMPACT_BPS`. URLs in answers are cut to their host.
 
