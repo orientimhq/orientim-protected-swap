@@ -16,17 +16,6 @@ npm test               # the tests
 npm run build          # dist/: the package, its declarations, and orientim.mcpb
 ```
 
-The Solana Agent Kit plugin has its own tests, run against this repository's source (after `npm ci`
-at the root):
-
-```bash
-cd integrations/solana-agent-kit
-npm ci --legacy-peer-deps
-npm run typecheck
-npm test               # add the kit to also test its adapters:
-                       # npm install --no-save --legacy-peer-deps solana-agent-kit@2.0.10 @solana-agent-kit/adapter-mcp@2.0.7
-```
-
 A pull request should pass all of these. CI runs them on Linux, macOS and Windows.
 
 ## Guidelines

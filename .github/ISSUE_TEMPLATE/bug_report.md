@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Something in @orientimhq/swap or the Solana Agent Kit plugin does not work as documented.
+about: Something in @orientimhq/swap does not work as documented.
 labels: bug
 ---
 
@@ -21,4 +21,4 @@ transaction signature or the answer's JSON helps.
 - `@orientimhq/swap`: <!-- npx @orientimhq/swap@<version> --version -->
 - Node.js:
 - OS:
-- How you run it: <!-- library, `orientim` command, MCP server (and client), Solana Agent Kit plugin -->
+- How you run it: <!-- library, `orientim` command, MCP server (and client) -->
