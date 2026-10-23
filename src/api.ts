@@ -251,7 +251,7 @@ export class OrientimApiError extends Error {
 export type Fetch = typeof fetch;
 
 /** Package version, sent as `x-orientim-skill` so outdated clients get a clear `skill-outdated` error. */
-export const SKILL_VERSION = '3.0.0';
+export const SKILL_VERSION = '3.0.1';
 
 /** Parses Retry-After in seconds, or null. */
 export const retryAfterOf = (res: Response) => {

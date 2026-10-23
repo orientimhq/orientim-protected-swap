@@ -1,5 +1,5 @@
 // Swaps 5 USDC for SOL, verified on your own RPC before the wallet signs.
-//   npm install --save-exact @orientimhq/swap@3.0.0
+//   npm install --save-exact @orientimhq/swap@3.0.1
 //   SOLANA_RPC_URL=... ORIENTIM_API_KEY=ori_... JUPITER_API_KEY=... ORIENTIM_WALLET_KEYPAIR=./wallet.json npx tsx swap.ts
 import { readFileSync } from 'node:fs';
 import { createKeyPairSignerFromBytes, createSolanaRpc } from '@solana/kit';

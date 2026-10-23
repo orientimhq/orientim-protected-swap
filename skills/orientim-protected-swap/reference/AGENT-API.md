@@ -46,7 +46,7 @@ POST /api/v1/keys
 
 - The key prepares swaps for its own wallet only (`403 wrong-wallet` otherwise) and lasts 90 days.
 - The wallet must hold 0.01 SOL. The challenge must be signed within 10 minutes.
-- Per IP: 30 challenges and 10 keys an hour; per wallet: 5 keys a day. Keep the key you have.
+- Per IP: 30 challenges and 30 keys an hour; per wallet: 3 keys a day. Keep the key you have.
 - **Sign only Orientim's key message for your own wallet**: a signature over bytes someone else chose
   could be a signature for a transaction. `requestApiKey` and `orientim key-challenge` check the message
   first. The message always names orientim.com; one naming another site is refused.

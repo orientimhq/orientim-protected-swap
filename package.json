@@ -1,8 +1,8 @@
 {
   "name": "@orientimhq/swap",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "mcpName": "io.github.orientimhq/swap",
-  "description": "Protected swaps on Solana through Orientim, for agents and bots: the route can only touch the approved amount, verified on your own RPC before your wallet signs.",
+  "description": "Zero-trust trade execution for AI agents on Solana. Pre-sign verification (R1–R7) on your own RPC: your wallet signs only the trade you asked for, within the limits you set.",
   "license": "Apache-2.0",
   "type": "module",
   "repository": {
@@ -13,12 +13,13 @@
   "bugs": "https://github.com/orientimhq/orientim-protected-swap/issues",
   "keywords": [
     "solana",
-    "swap",
-    "jupiter",
-    "agent",
+    "ai-agents",
+    "trading",
+    "zero-trust",
+    "pre-sign-verification",
     "mcp",
-    "model-context-protocol",
-    "wallet"
+    "jupiter",
+    "wallet-security"
   ],
   "bin": {
     "orientim": "./dist/bin/orientim.mjs"

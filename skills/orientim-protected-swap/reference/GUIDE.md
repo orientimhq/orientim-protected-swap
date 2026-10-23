@@ -229,7 +229,7 @@ Install `orientim.mcpb` in Claude Desktop (from the GitHub release or orientim.c
   "mcpServers": {
     "orientim": {
       "command": "npx",
-      "args": ["-y", "@orientimhq/swap@3.0.0", "mcp"],
+      "args": ["-y", "@orientimhq/swap@3.0.1", "mcp"],
       "env": {
         "SOLANA_RPC_URL": "https://your-own-rpc.example/...",
         "ORIENTIM_WALLET_KEYPAIR": "/absolute/path/to/agent-wallet.json",
@@ -241,7 +241,7 @@ Install `orientim.mcpb` in Claude Desktop (from the GitHub release or orientim.c
 ```
 
 Claude Code: `claude mcp add --transport stdio orientim --env SOLANA_RPC_URL=... --env
-ORIENTIM_WALLET_KEYPAIR=... --env JUPITER_API_KEY=... -- npx -y @orientimhq/swap@3.0.0 mcp`.
+ORIENTIM_WALLET_KEYPAIR=... --env JUPITER_API_KEY=... -- npx -y @orientimhq/swap@3.0.1 mcp`.
 
 The server gets the wallet's own API key and keeps it in `~/.orientim`, readable by its owner alone.
 The owner's policy holds as for the command line. In a client where the agent also runs commands, it
@@ -250,7 +250,7 @@ agent". The server runs where the wallet's key is, never on Orientim's side.
 
 ## Bots in other languages
 
-Install the package (`npm install --save-exact @orientimhq/swap@3.0.0`) and run
+Install the package (`npm install --save-exact @orientimhq/swap@3.0.1`) and run
 `node node_modules/@orientimhq/swap/dist/bin/orientim.mjs <command>`: JSON on stdin, JSON on stdout, an
 exit code. The bot keeps its key and signs one message; the command does the rest.
 
@@ -279,7 +279,7 @@ signature in base58 (or the signed transaction in base64 as `signedTransaction`)
 ```python
 import base64, json, subprocess
 
-ORIENTIM = "node_modules/@orientimhq/swap/dist/bin/orientim.mjs"  # npm install --save-exact @orientimhq/swap@3.0.0
+ORIENTIM = "node_modules/@orientimhq/swap/dist/bin/orientim.mjs"  # npm install --save-exact @orientimhq/swap@3.0.1
 
 def orientim(command, payload=None):
     # No short timeout: finalize waits for the chain. ORIENTIM_STATE_DIR is set in the bot's

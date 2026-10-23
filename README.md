@@ -1,4 +1,4 @@
-# Orientim protected swap
+# Orientim: zero-trust trade execution for AI agents on Solana
 
 [![CI](https://github.com/orientimhq/orientim-protected-swap/actions/workflows/ci.yml/badge.svg)](https://github.com/orientimhq/orientim-protected-swap/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@orientimhq/swap)](https://www.npmjs.com/package/@orientimhq/swap)

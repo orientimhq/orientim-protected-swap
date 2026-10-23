@@ -12,7 +12,7 @@ wallet sign one that moves more. Never skip that check. Everything else: `refere
 `reference/AGENT-API.md`.
 
 ```bash
-npx -y @orientimhq/swap@3.0.0 <command>       # or: npm install --save-exact @orientimhq/swap@3.0.0
+npx -y @orientimhq/swap@3.0.1 <command>       # or: npm install --save-exact @orientimhq/swap@3.0.1
 ```
 
 ## Before any swap
@@ -53,7 +53,7 @@ orientim swap --in <mint> --out <mint> --amount <base units> --id <order id>    
 Exit 0 confirmed; 1 nothing swapped; 2 usage or setup; 3 settle first (run again with the same `--id`);
 5 this order already swapped or may still land. `--slippage-bps N|auto`: only within the owner's limits.
 
-- **MCP clients** (Claude Desktop, Claude Code, Cursor): `npx -y @orientimhq/swap@3.0.0 mcp`, four tools
+- **MCP clients** (Claude Desktop, Claude Code, Cursor): `npx -y @orientimhq/swap@3.0.1 mcp`, four tools
   (`orientim_wallet`, `orientim_quote`, `orientim_swap`, `orientim_recover`); or `orientim.mcpb`.
 - **Bots in any language:** `orientim prepare | finalize | recover | resolve | check` with JSON on stdin and
   JSON on stdout, the exit codes above plus 4 (Orientim said no); the bot signs `message` itself

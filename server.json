@@ -2,18 +2,18 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.orientimhq/swap",
   "title": "Orientim protected swap",
-  "description": "Protected Solana swaps for agents: the route touches only the approved amount, checked on your RPC.",
+  "description": "Zero-trust trade execution for AI agents on Solana, verified on your own RPC before you sign.",
   "websiteUrl": "https://orientim.com/developers",
   "repository": {
     "url": "https://github.com/orientimhq/orientim-protected-swap",
     "source": "github"
   },
-  "version": "3.0.0",
+  "version": "3.0.1",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@orientimhq/swap",
-      "version": "3.0.0",
+      "version": "3.0.1",
       "packageArguments": [
         {
           "type": "positional",
